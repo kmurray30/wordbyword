@@ -1,0 +1,9 @@
+# Python
+apps/server/.venv/
+apps/server/data/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node (apps/web has its own .gitignore for the rest)
+node_modules/

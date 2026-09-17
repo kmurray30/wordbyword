@@ -1,0 +1,92 @@
+.chat-input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.chat-input__editor {
+  display: grid;
+  flex: 1;
+  border-radius: 10px;
+  background: #20242e;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.chat-input__highlight,
+.chat-input__textarea {
+  grid-area: 1 / 1 / 2 / 2;
+  margin: 0;
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  box-sizing: border-box;
+  min-height: 44px;
+}
+
+/* The highlight layer sits ON TOP of the textarea (not the usual way round)
+ * so its `.chat-input__flagged` spans can intercept hover/click for the
+ * translate-candidate popover. It's pointer-events:none everywhere else, so
+ * typing/clicking passes through to the textarea beneath; only the flagged
+ * words themselves capture the pointer. */
+.chat-input__highlight {
+  z-index: 2;
+  color: #f2f2f2;
+  pointer-events: none;
+  background: transparent;
+}
+
+.chat-input__flagged {
+  position: relative;
+  pointer-events: auto;
+  cursor: pointer;
+  border-bottom: 2px dashed #f2a65a;
+}
+
+.chat-input__textarea {
+  z-index: 1;
+  background: transparent;
+  color: transparent;
+  caret-color: #f2f2f2;
+  border: none;
+  border-radius: 10px;
+  resize: none;
+  overflow: hidden;
+}
+
+.chat-input__textarea:focus {
+  outline: none;
+}
+
+.chat-input__textarea::placeholder {
+  color: #8b93a6;
+}
+
+.chat-input__translate-all {
+  position: relative;
+  cursor: pointer;
+  opacity: 0.6;
+  padding-bottom: 10px;
+}
+
+.chat-input__translate-all:hover {
+  opacity: 1;
+}
+
+.chat-input button {
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: none;
+  background: #3b6ef0;
+  color: white;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.chat-input button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
