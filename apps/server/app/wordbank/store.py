@@ -57,10 +57,12 @@ def record_exposure(session: Session, lemma: str, pos: str = "", translation: st
     return entry
 
 
-def _apply(session: Session, lemma: str, transform) -> WordBankEntry | None:
-    entry = session.scalar(select(WordBankEntry).where(WordBankEntry.lemma == lemma))
-    if entry is None:
-        return None
+def _apply(session: Session, lemma: str, transform) -> WordBankEntry:
+    # get_or_create, not a plain lookup: userTypedSpanishWord can name a word
+    # the agent has never produced (so it has no word_bank row yet) but the
+    # user clearly already knows - that's still real active-recall evidence
+    # and shouldn't be dropped just because nothing introduced the word first.
+    entry = get_or_create(session, lemma)
     now = datetime.utcnow()
     updated = transform(_to_state(entry), now)
     entry.familiarity = updated.familiarity
@@ -69,7 +71,7 @@ def _apply(session: Session, lemma: str, transform) -> WordBankEntry | None:
     return entry
 
 
-def apply_reward_event(session: Session, event_type: str, lemma: str) -> WordBankEntry | None:
+def apply_reward_event(session: Session, event_type: str, lemma: str) -> WordBankEntry:
     transforms = {
         "wordSeenNoHover": apply_passive_exposure,
         "wordHovered": apply_hover_penalty,

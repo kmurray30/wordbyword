@@ -21,7 +21,7 @@ class ModelServerUnavailableError(RuntimeError):
     pass
 
 
-def chat(messages: list[dict[str, str]], logit_bias: dict[int, float], timeout: float = 60.0) -> str:
+def chat(messages: list[dict[str, str]], logit_bias: dict[int, float], timeout: float = 120.0) -> str:
     """Calls llama-server's OpenAI-compatible /v1/chat/completions endpoint
     with a single, non-streamed request, applying `logit_bias` (token id ->
     bias value) so specific word-bank words are genuinely more likely to be
@@ -40,6 +40,12 @@ def chat(messages: list[dict[str, str]], logit_bias: dict[int, float], timeout: 
             timeout=timeout,
         )
         response.raise_for_status()
+    except httpx.TimeoutException as exc:
+        raise ModelServerUnavailableError(
+            f"Model server at {MODEL_SERVER_BASE_URL} didn't respond within {timeout}s. "
+            "It may be under-resourced (check LLAMA_ARG_THREADS isn't oversubscribed "
+            "relative to the container's actual CPU allocation) rather than down."
+        ) from exc
     except httpx.HTTPError as exc:
         raise ModelServerUnavailableError(
             f"Could not reach the model server at {MODEL_SERVER_BASE_URL}. "

@@ -15,9 +15,6 @@ def reward_event(req: RewardEventRequest, session: Session = Depends(get_session
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"unknown lemma: {req.lemma}")
-
     session.commit()
     return RewardEventResponse(
         lemma=entry.lemma,

@@ -17,6 +17,13 @@ ENV LLAMA_ARG_HOST="0.0.0.0"
 ENV LLAMA_ARG_PORT="8080"
 ENV LLAMA_ARG_CTX_SIZE="4096"
 
+# llama.cpp defaults to auto-detecting thread count from the HOST's CPU count
+# (48 on Railway's build/run hosts), not the container's actual scheduled CPU
+# share. Spawning far more threads than there's real CPU quota for causes
+# severe contention and makes even a tiny 0.6B model pathologically slow -
+# pin it to a small, sane number instead.
+ENV LLAMA_ARG_THREADS="4"
+
 # Mount a Railway volume here so the ~400MB download only happens once, not
 # on every redeploy/restart.
 ENV LLAMA_CACHE="/models"
