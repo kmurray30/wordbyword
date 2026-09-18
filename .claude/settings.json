@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source .venv/bin/activate)",
+      "Bash(npm run build *)",
+      "Bash(npm run lint *)",
+      "mcp__Railway__search-docs",
+      "mcp__Railway__get-deployment-diagnosis",
+      "mcp__Railway__get-logs"
+    ]
+  }
+}
