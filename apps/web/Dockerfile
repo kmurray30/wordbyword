@@ -2,7 +2,7 @@
 # serve the `dist` output with Caddy on Railway's assigned $PORT.
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package*.json ./
+COPY package*.json .npmrc ./
 RUN npm ci
 COPY . .
 
