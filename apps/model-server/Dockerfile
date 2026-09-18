@@ -6,11 +6,13 @@
 # unresolved as of this writing).
 FROM ghcr.io/ggml-org/llama.cpp:server
 
-# Official Qwen3-0.6B GGUF weights, Q4_K_M quantization (~400MB). Using the
-# -hf/LLAMA_ARG_HF_REPO resolver instead of a hardcoded filename URL, since
-# the exact per-quant filename varies by repo and llama-server resolves it
-# for us.
-ENV LLAMA_ARG_HF_REPO="Qwen/Qwen3-0.6B-GGUF:Q4_K_M"
+# Official Qwen3-0.6B GGUF weights. Using the -hf/LLAMA_ARG_HF_REPO resolver
+# instead of a hardcoded filename URL, since the exact per-quant filename
+# varies by repo and llama-server resolves it for us. Q4_K_M isn't published
+# in Qwen's own GGUF repo (only Q8_0 is - confirmed by the resolver's own
+# error listing available files), so pin to Q8_0 (~650MB - still tiny, still
+# comfortably CPU-friendly) rather than depend on a third-party requant repo.
+ENV LLAMA_ARG_HF_REPO="Qwen/Qwen3-0.6B-GGUF:Q8_0"
 ENV LLAMA_ARG_HOST="0.0.0.0"
 ENV LLAMA_ARG_PORT="8080"
 ENV LLAMA_ARG_CTX_SIZE="4096"

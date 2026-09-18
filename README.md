@@ -55,7 +55,7 @@ docker build -t wordbyword-model apps/model-server
 docker run --rm -p 8080:8080 wordbyword-model
 ```
 
-First run downloads the Qwen3-0.6B-GGUF weights (~400MB) from Hugging Face;
+First run downloads the Qwen3-0.6B-GGUF weights (~650MB, Q8_0) from Hugging Face;
 subsequent runs reuse them if you mount a volume at `/models` (see the
 Dockerfile - `LLAMA_CACHE=/models`). Leave this running; the backend talks to
 it at `http://localhost:8080` by default.
