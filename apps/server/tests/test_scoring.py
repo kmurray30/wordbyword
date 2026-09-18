@@ -7,6 +7,7 @@ from app.wordbank.scoring import (
     apply_hover_penalty,
     apply_passive_exposure,
     effective_familiarity,
+    reinforce_urgency,
     select_new_words,
     select_reinforce_words,
     weighted_sample_without_replacement,
@@ -129,3 +130,19 @@ def test_select_new_words_returns_empty_when_all_known():
     candidates = ["ser", "estar"]
     known = {"ser", "estar"}
     assert select_new_words(candidates, known, k=2) == []
+
+
+def test_reinforce_urgency_normalizes_to_zero_one_and_ranks_correctly():
+    words = [
+        word(familiarity=0.95, days_since_review=0.0, interval=10.0, lemma="mastered"),
+        word(familiarity=0.1, days_since_review=10.0, interval=1.0, lemma="weak_and_overdue"),
+    ]
+    urgency = reinforce_urgency(words, NOW)
+    assert set(urgency.keys()) == {"mastered", "weak_and_overdue"}
+    assert all(0.0 <= v <= 1.0 for v in urgency.values())
+    assert urgency["weak_and_overdue"] > urgency["mastered"]
+    assert urgency["weak_and_overdue"] == 1.0  # the max gets normalized to exactly 1.0
+
+
+def test_reinforce_urgency_empty_input():
+    assert reinforce_urgency([], NOW) == {}

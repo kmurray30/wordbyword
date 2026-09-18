@@ -1,38 +1,64 @@
 # wordbyword
 
-A chat-based Spanish tutor. You talk to a locally-hosted LLM (via
-[Ollama](https://ollama.com)) whose vocabulary is steered by a per-word "word
-bank": every word you've been exposed to has a mastery score that decays over
-time and gets reinforced (or penalized) based on how you interact with it -
-mainly whether you hover to translate it. Hover any word, in the agent's
-replies or in your own draft, to see a translation; hover the 🌐 at the end of
-a message to translate the whole thing at once.
+A chat-based Spanish tutor. You talk to a locally-hosted LLM whose vocabulary
+is steered by a per-word "word bank": every word you've been exposed to has a
+mastery score that decays over time and gets reinforced (or penalized) based
+on how you interact with it - mainly whether you hover to translate it. Hover
+any word, in the agent's replies or in your own draft, to see a translation;
+hover the 🌐 at the end of a message to translate the whole thing at once.
 
 ## Architecture
 
 ```
-apps/server   Python (FastAPI) - word bank + RL-style weighting, chat
-              orchestration (talks to Ollama), translation (spaCy + Argos
-              Translate), SQLite storage. All in one process.
-apps/web      React + Vite + TypeScript - chat UI, hover tooltips, the
-              draft-input overlay that flags English words you type.
-              API types are generated from the backend's OpenAPI schema.
+apps/model-server  llama.cpp's own server (llama-server), running Qwen3-0.6B.
+                    Not Ollama - see "Why llama.cpp, not Ollama" below.
+apps/server         Python (FastAPI) - word bank + RL-style weighting, chat
+                    orchestration (talks to model-server), translation
+                    (spaCy + Argos Translate), SQLite storage.
+apps/web            React + Vite + TypeScript - chat UI, hover tooltips, the
+                    draft-input overlay that flags English words you type.
+                    API types are generated from the backend's OpenAPI schema.
 ```
 
-The backend only depends on Ollama's `/api/chat` HTTP contract, not any
-specific model - pull whatever chat-capable model you like.
+### Why llama.cpp, not Ollama
+
+The whole point of the word bank is to make the model **actually** more
+likely to use specific words - not just be asked nicely. That requires
+`logit_bias`: directly boosting a token's sampling probability during
+generation. **Ollama has no `logit_bias` support** - it's an open, unresolved
+feature request (`ollama/ollama#3795`, filed April 2024). Ollama can read
+token probabilities (`logprobs`) but can't bias them.
+
+`llama-server` (llama.cpp's own server binary, distinct from Ollama, which is
+itself built on llama.cpp) has a stable, documented `logit_bias` parameter on
+its `/v1/chat/completions` endpoint. `apps/server/app/chat/llama_client.py`
+calls it with a `logit_bias` computed per turn from each due-for-review or
+new word's first token id (`apps/server/app/chat/logit_bias.py`) - a real
+mechanical nudge, layered on top of (not instead of) the existing
+system-prompt instruction. See those two files' docstrings for the full
+reasoning, including why the bias only targets each word's dictionary/base
+form and not its inflected forms (a deliberate design choice, not a gap).
 
 ## Prerequisites
 
 - Python 3.11+
 - Node 20+
-- [Ollama](https://ollama.com), running locally with a model pulled:
-  ```
-  ollama pull llama3.1:8b   # or any other chat-capable model
-  ollama serve              # usually already running as a background service
-  ```
+- Docker (to run `llama-server` locally) - or a native llama.cpp build if you
+  prefer not to use Docker.
 
 ## Setup
+
+### Model server
+
+```bash
+docker build -t wordbyword-model apps/model-server
+docker run --rm -p 8080:8080 wordbyword-model
+```
+
+First run downloads the Qwen3-0.6B-GGUF weights (~400MB) from Hugging Face;
+subsequent runs reuse them if you mount a volume at `/models` (see the
+Dockerfile - `LLAMA_CACHE=/models`). Leave this running; the backend talks to
+it at `http://localhost:8080` by default.
 
 ### Backend
 
@@ -59,8 +85,8 @@ Environment variables (all optional, sensible defaults shown):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | where the server calls Ollama's chat API |
-| `OLLAMA_MODEL` | `llama3.1:8b` | model name passed to Ollama |
+| `MODEL_SERVER_BASE_URL` | `http://localhost:8080` | where the server calls llama-server's chat API |
+| `TOKENIZER_NAME` | `Qwen/Qwen3-0.6B` | HF tokenizer used to compute `logit_bias` token ids - must match the model running in model-server |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
 
 ### Frontend
@@ -95,9 +121,27 @@ three signals, all tied to what you actually do in the UI:
 
 Each chat turn, the server samples a small set of "due" words (weighted
 toward low-familiarity, overdue-for-review words, but not deterministically -
-see `app/wordbank/scoring.py`) and asks the model to prefer them, plus a
-capped number of brand-new words. Everything the model actually says gets
-lemmatized and recorded regardless, so nothing slips through untracked.
+see `app/wordbank/scoring.py`) and both (a) tells the model to prefer them in
+the system prompt and (b) computes a `logit_bias` that directly boosts those
+words' first-token sampling probability (`app/chat/logit_bias.py`), scaled by
+how overdue each word is. New words get a flat bias. Everything the model
+actually says gets lemmatized and recorded regardless, so nothing slips
+through untracked.
+
+## Deployed on Railway
+
+Three services in one Railway project, wired over private networking:
+
+| Service | What | Public? |
+|---|---|---|
+| `model-server` | `apps/model-server` - llama-server + Qwen3-0.6B | No - only `server` calls it, over `model-server.railway.internal:8080` |
+| `server` | `apps/server` - FastAPI backend | Yes - `web` calls it over its public domain |
+| `web` | `apps/web` - static Vite build | Yes |
+
+To redeploy: push to the branch each service tracks: Railway rebuilds
+automatically. `model-server`'s image only needs rebuilding if you change the
+model or quantization; `server`/`web` rebuild on every push that touches
+their directories.
 
 ## Known limitations (prototype scope)
 
@@ -115,6 +159,15 @@ lemmatized and recorded regardless, so nothing slips through untracked.
 - Runs as a **web app**; the longer-term plan is to port the UI to React
   Native. Because the backend is a plain HTTP/JSON API, that port doesn't
   require backend changes - RN talks to it the same way the web app does.
+- **`logit_bias` only targets a word's dictionary/base-form token** (`hablar`,
+  not `hablo`/`hablando`/`habló`). This is intentional, not a gap: each
+  inflected form is treated as its own vocabulary item to learn, not a
+  variant of the lemma - so the word bank tracking a lemma across its
+  conjugations (for the hover/translate/familiarity system) and the
+  `logit_bias` mechanism only weighting that lemma's base form are two
+  separate design choices that don't fully line up yet. Tracking surface
+  forms instead of lemmas throughout would resolve that, but it's a larger
+  refactor (`app/wordbank/`, `app/translate/lemmatizer.py`) left for later.
 
 ## Tests
 

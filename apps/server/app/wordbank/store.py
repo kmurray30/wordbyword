@@ -11,6 +11,7 @@ from app.wordbank.scoring import (
     apply_active_recall,
     apply_hover_penalty,
     apply_passive_exposure,
+    reinforce_urgency,
     select_new_words,
     select_reinforce_words,
 )
@@ -80,16 +81,20 @@ def apply_reward_event(session: Session, event_type: str, lemma: str) -> WordBan
     return _apply(session, lemma, transform)
 
 
-def pick_turn_vocabulary(session: Session) -> tuple[list[str], list[str]]:
-    """Returns (reinforce_lemmas, new_lemmas) for building this turn's prompt."""
+def pick_turn_vocabulary(session: Session) -> tuple[list[str], list[str], dict[str, float]]:
+    """Returns (reinforce_lemmas, new_lemmas, reinforce_urgency) for building
+    this turn's prompt and its logit_bias. `reinforce_urgency` is a [0, 1]
+    per-lemma score (only for the reinforce list) used to scale how strongly
+    each word's logit_bias nudges generation."""
     entries = session.scalars(select(WordBankEntry)).all()
     states = [_to_state(e) for e in entries]
     now = datetime.utcnow()
 
     reinforce = select_reinforce_words(states, now, REINFORCE_WORDS_PER_TURN)
+    urgency = reinforce_urgency(states, now)
     known_lemmas = {e.lemma for e in entries}
     new_words = select_new_words(FREQUENCY_RANKED_ES, known_lemmas, NEW_WORDS_PER_TURN)
-    return reinforce, new_words
+    return reinforce, new_words, {lemma: urgency[lemma] for lemma in reinforce}
 
 
 def list_all(session: Session) -> list[WordBankEntry]:

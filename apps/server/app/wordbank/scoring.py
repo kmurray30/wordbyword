@@ -111,6 +111,19 @@ def _reinforce_weight(word: WordState, now: datetime) -> float:
     return max(overdue_ratio, 0.01) * (1.0 - familiarity + 0.05)
 
 
+def reinforce_urgency(words: list[WordState], now: datetime) -> dict[str, float]:
+    """Per-lemma urgency in [0, 1], normalized across `words` by the same
+    signal used for reinforce sampling weights. Used to scale how strongly
+    each word's logit_bias nudges generation - a word that's barely overdue
+    gets a gentle nudge, a badly-overdue one gets a strong one, rather than
+    every selected word getting an identical flat bias."""
+    if not words:
+        return {}
+    raw = {w.lemma: _reinforce_weight(w, now) for w in words}
+    max_weight = max(raw.values()) or 1.0
+    return {lemma: weight / max_weight for lemma, weight in raw.items()}
+
+
 def weighted_sample_without_replacement(
     items: list[str], weights: list[float], k: int, rng: random.Random | None = None
 ) -> list[str]:

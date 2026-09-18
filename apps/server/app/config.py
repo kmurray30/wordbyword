@@ -6,8 +6,14 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DATABASE_URL = os.environ.get("WORDBYWORD_DB_URL", f"sqlite:///{DATA_DIR / 'wordbyword.db'}")
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
+# llama-server (llama.cpp), not Ollama - see app/chat/llama_client.py for why.
+# Local dev: run llama-server yourself (see README). In Railway, this points
+# at the model-server service over private networking.
+MODEL_SERVER_BASE_URL = os.environ.get("MODEL_SERVER_BASE_URL", "http://localhost:8080")
+
+# Pinned to the specific model deployed to model-server (apps/model-server/Dockerfile)
+# so the tokenizer used for logit_bias matches the model actually generating text.
+TOKENIZER_NAME = os.environ.get("TOKENIZER_NAME", "Qwen/Qwen3-0.6B")
 
 TARGET_LANGUAGE = "es"
 NATIVE_LANGUAGE = "en"

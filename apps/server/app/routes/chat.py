@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.chat.ollama_client import OllamaUnavailableError, chat as ollama_chat
+from app.chat.llama_client import ModelServerUnavailableError, chat as llama_chat
+from app.chat.logit_bias import build_logit_bias
 from app.chat.prompt_builder import build_messages
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
@@ -27,13 +28,14 @@ def _recent_history(session: Session) -> list[tuple[str, str]]:
 
 @router.post("/turn", response_model=ChatTurnResponse)
 def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
-    reinforce_lemmas, new_lemmas = store.pick_turn_vocabulary(session)
+    reinforce_lemmas, new_lemmas, reinforce_urgency = store.pick_turn_vocabulary(session)
     history = _recent_history(session)
     messages = build_messages(history, reinforce_lemmas, new_lemmas, req.message)
+    logit_bias = build_logit_bias(reinforce_lemmas, new_lemmas, reinforce_urgency)
 
     try:
-        reply_text = ollama_chat(messages)
-    except OllamaUnavailableError as exc:
+        reply_text = llama_chat(messages, logit_bias)
+    except ModelServerUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     session.add(ChatMessage(role="user", text=req.message))
