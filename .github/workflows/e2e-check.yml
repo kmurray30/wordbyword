@@ -1,10 +1,13 @@
 name: E2E check (deployed Railway app)
 
-# Manual, on-demand only - this hits live Railway URLs, not something to run
-# on every push. GitHub's runners have normal internet access, unlike the
-# dev sandbox this was built in (its egress policy blocks *.up.railway.app
-# outright), so this is the only place that can actually validate the
-# deployed app end to end.
+# GitHub's runners have normal internet access, unlike the dev sandbox this
+# app was built in (its egress policy blocks *.up.railway.app outright), so
+# this is the only place that can actually validate the deployed app end to
+# end. workflow_dispatch is the intended trigger, but GitHub only lets you
+# dispatch a workflow via API once it's been discovered on the default
+# branch - until this lands on main, the `push` trigger (scoped to this
+# workflow's own files, so it doesn't fire on unrelated app commits) is how
+# runs actually get kicked off.
 on:
   workflow_dispatch:
     inputs:
@@ -14,14 +17,19 @@ on:
       frontend_url:
         description: "Frontend base URL"
         default: "https://web-production-63d72.up.railway.app"
+  push:
+    branches: ["claude/language-learning-chat-app-krn12w"]
+    paths:
+      - ".github/workflows/e2e-check.yml"
+      - ".github/scripts/e2e-check.mjs"
 
 jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      BACKEND_URL: ${{ github.event.inputs.backend_url }}
-      FRONTEND_URL: ${{ github.event.inputs.frontend_url }}
+      BACKEND_URL: ${{ github.event.inputs.backend_url || 'https://server-production-f688.up.railway.app' }}
+      FRONTEND_URL: ${{ github.event.inputs.frontend_url || 'https://web-production-63d72.up.railway.app' }}
     steps:
       - uses: actions/checkout@v4
 
