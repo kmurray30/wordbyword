@@ -1,14 +1,17 @@
 // On-demand end-to-end check against the deployed Railway services. Runs on
 // GitHub Actions (not in the dev sandbox, which can't reach *.up.railway.app
-// at all - its egress policy blocks that domain outright). Two stages:
+// at all - its egress policy blocks that domain outright). Three stages:
 //  1. Hit the backend's /chat/turn directly - isolates "is the LLM path
 //     actually working" from any frontend issue.
-//  2. If that passes, drive the real site with Playwright end to end.
+//  2. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
+//     actually working" (right model/voice, valid token) from the frontend.
+//  3. If those pass, drive the real site with Playwright end to end.
 import { chromium } from "playwright";
 
 const BACKEND_URL = process.env.BACKEND_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const CHAT_TIMEOUT_MS = 100_000;
+const TTS_TIMEOUT_MS = 30_000;
 
 function fail(message) {
   console.error(`FAIL: ${message}`);
@@ -16,12 +19,12 @@ function fail(message) {
 }
 
 async function checkBackendDirect() {
-  console.log(`[1/2] Checking backend health at ${BACKEND_URL}/health ...`);
+  console.log(`[1/3] Checking backend health at ${BACKEND_URL}/health ...`);
   const health = await fetch(`${BACKEND_URL}/health`);
   if (!health.ok) fail(`/health returned ${health.status}`);
   console.log("  health OK");
 
-  console.log(`[1/2] Sending a direct /chat/turn request (up to ${CHAT_TIMEOUT_MS / 1000}s) ...`);
+  console.log(`[1/3] Sending a direct /chat/turn request (up to ${CHAT_TIMEOUT_MS / 1000}s) ...`);
   const start = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
@@ -51,8 +54,42 @@ async function checkBackendDirect() {
   console.log(`  tokens: ${data.tokens?.length ?? 0}`);
 }
 
+async function checkTTSDirect() {
+  console.log(`[2/3] Sending a direct /tts/speak request (up to ${TTS_TIMEOUT_MS / 1000}s) ...`);
+  const start = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TTS_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(`${BACKEND_URL}/tts/speak`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Hola, ¿cómo estás?" }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    fail(`/tts/speak request failed/timed out after ${Date.now() - start}ms: ${err}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const elapsed = Date.now() - start;
+  if (!res.ok) {
+    const body = await res.text();
+    fail(`/tts/speak returned ${res.status} after ${elapsed}ms: ${body}`);
+  }
+  const contentType = res.headers.get("content-type") ?? "";
+  const buf = await res.arrayBuffer();
+  if (!contentType.includes("audio")) {
+    fail(`/tts/speak returned 200 but content-type was ${JSON.stringify(contentType)}, not audio`);
+  }
+  if (buf.byteLength < 1000) {
+    fail(`/tts/speak returned 200 but only ${buf.byteLength} bytes - too small to be real audio`);
+  }
+  console.log(`  OK in ${elapsed}ms - ${contentType}, ${buf.byteLength} bytes`);
+}
+
 async function checkBrowserEndToEnd() {
-  console.log(`[2/2] Driving ${FRONTEND_URL} with Playwright ...`);
+  console.log(`[3/3] Driving ${FRONTEND_URL} with Playwright ...`);
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 900, height: 800 } });
   const consoleErrors = [];
@@ -87,6 +124,30 @@ async function checkBrowserEndToEnd() {
       console.log("  (no trackable word tokens in this reply - skipping hover check)");
     }
 
+    // Click the speaker button and confirm the browser's own /tts/speak
+    // request (not just our direct fetch above) actually gets real audio
+    // back and the <audio> element doesn't error.
+    const speakButton = page.locator(".chat-message--assistant .chat-message__speak").first();
+    if ((await speakButton.count()) > 0) {
+      const responsePromise = page.waitForResponse(
+        (res) => res.url().includes("/tts/speak") && res.request().method() === "POST",
+        { timeout: TTS_TIMEOUT_MS }
+      );
+      await speakButton.click();
+      const ttsResponse = await responsePromise;
+      if (!ttsResponse.ok()) {
+        const body = await ttsResponse.text();
+        fail(`browser /tts/speak request returned ${ttsResponse.status()}: ${body}`);
+      }
+      const ttsBody = await ttsResponse.body();
+      if (ttsBody.byteLength < 1000) {
+        fail(`browser /tts/speak response was only ${ttsBody.byteLength} bytes`);
+      }
+      console.log(`  OK - speaker button fetched ${ttsBody.byteLength} bytes of audio`);
+    } else {
+      fail("no speaker button (.chat-message__speak) found on the assistant message");
+    }
+
     if (consoleErrors.length > 0) {
       console.log("  Browser console errors seen:", consoleErrors);
     }
@@ -96,5 +157,6 @@ async function checkBrowserEndToEnd() {
 }
 
 await checkBackendDirect();
+await checkTTSDirect();
 await checkBrowserEndToEnd();
 console.log("ALL CHECKS PASSED");
