@@ -1,0 +1,46 @@
+name: E2E check (deployed Railway app)
+
+# Manual, on-demand only - this hits live Railway URLs, not something to run
+# on every push. GitHub's runners have normal internet access, unlike the
+# dev sandbox this was built in (its egress policy blocks *.up.railway.app
+# outright), so this is the only place that can actually validate the
+# deployed app end to end.
+on:
+  workflow_dispatch:
+    inputs:
+      backend_url:
+        description: "Backend base URL"
+        default: "https://server-production-f688.up.railway.app"
+      frontend_url:
+        description: "Frontend base URL"
+        default: "https://web-production-63d72.up.railway.app"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BACKEND_URL: ${{ github.event.inputs.backend_url }}
+      FRONTEND_URL: ${{ github.event.inputs.frontend_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright
+        run: |
+          npm install playwright@1.48
+          npx playwright install --with-deps chromium
+
+      - name: Run end-to-end check
+        run: node .github/scripts/e2e-check.mjs
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: e2e-*.png
+          if-no-files-found: ignore
