@@ -88,6 +88,9 @@ Environment variables (all optional, sensible defaults shown):
 | `MODEL_SERVER_BASE_URL` | `http://localhost:8080` | where the server calls llama-server's chat API |
 | `TOKENIZER_NAME` | `Qwen/Qwen3-0.6B` | HF tokenizer used to compute `logit_bias` token ids - must match the model running in model-server |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
+| `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |
+| `DEEPINFRA_TTS_MODEL` | `ResembleAI/chatterbox-multilingual` | DeepInfra model used to synthesize speech |
+| `DEEPINFRA_TTS_VOICE` | `Spanish Male` | voice passed to the TTS model |
 
 ### Frontend
 
@@ -127,6 +130,17 @@ words' first-token sampling probability (`app/chat/logit_bias.py`), scaled by
 how overdue each word is. New words get a flat bias. Everything the model
 actually says gets lemmatized and recorded regardless, so nothing slips
 through untracked.
+
+## Text-to-speech
+
+Click the 🔊 next to an assistant message to hear it spoken aloud, so you can
+hear correct pronunciation alongside the hover translations. `POST
+/tts/speak` (`app/tts/deepinfra_client.py`) calls DeepInfra's OpenAI-
+compatible `/v1/audio/speech` endpoint and streams the mp3 back; the frontend
+plays it via the browser's `Audio` API and caches the blob per message so
+replaying doesn't re-fetch. This is a separate hosted API from the
+self-hosted chat model above - it needs its own `DEEPINFRA_API_TOKEN` (see
+env vars) and has no Ollama-style local-only fallback.
 
 ## Deployed on Railway
 

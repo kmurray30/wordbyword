@@ -73,6 +73,10 @@ class RewardEventResponse(BaseModel):
     review_interval_days: float
 
 
+class TTSRequest(BaseModel):
+    text: str
+
+
 class WordBankEntryOut(BaseModel):
     lemma: str
     pos: str

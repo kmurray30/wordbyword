@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import init_db
-from app.routes import chat, events, translate
+from app.routes import chat, events, translate, tts
 
 app = FastAPI(title="wordbyword", version="0.1.0")
 
@@ -21,6 +21,7 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(translate.router)
 app.include_router(events.router)
+app.include_router(tts.router)
 
 
 @app.on_event("startup")

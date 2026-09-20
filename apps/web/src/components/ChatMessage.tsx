@@ -21,6 +21,14 @@ export function ChatMessage({ message }: { message: DisplayMessage }) {
   const resolvedLemmas = useRef<Set<string>>(new Set());
   const [translation, setTranslation] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
+  const audioUrlRef = useRef<string | null>(null);
+  const [speakState, setSpeakState] = useState<"idle" | "loading" | "error">("idle");
+
+  useEffect(() => {
+    return () => {
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (message.role !== "assistant" || !message.tokens) return;
@@ -58,6 +66,24 @@ export function ChatMessage({ message }: { message: DisplayMessage }) {
       .finally(() => setTranslating(false));
   };
 
+  const handleSpeak = () => {
+    if (speakState === "loading") return;
+    if (audioUrlRef.current) {
+      new Audio(audioUrlRef.current).play().catch(() => setSpeakState("error"));
+      return;
+    }
+    setSpeakState("loading");
+    api
+      .speak({ text: message.text })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        audioUrlRef.current = url;
+        setSpeakState("idle");
+        new Audio(url).play().catch(() => setSpeakState("error"));
+      })
+      .catch(() => setSpeakState("error"));
+  };
+
   const spaced = message.tokens ? joinTokens(message.tokens.map((t) => t.surface)) : null;
 
   return (
@@ -77,6 +103,18 @@ export function ChatMessage({ message }: { message: DisplayMessage }) {
           🌐
           {translation !== null && <TranslatePopover candidates={[{ translation }]} />}
         </span>
+        {message.role === "assistant" && (
+          <button
+            type="button"
+            className={`chat-message__speak chat-message__speak--${speakState}`}
+            onClick={handleSpeak}
+            disabled={speakState === "loading"}
+            aria-label="Play pronunciation"
+            title={speakState === "error" ? "Couldn't play audio - try again" : "Play pronunciation"}
+          >
+            {speakState === "loading" ? "⏳" : "🔊"}
+          </button>
+        )}
       </div>
     </div>
   );

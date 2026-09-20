@@ -41,3 +41,26 @@
 .chat-message__translate-all:hover {
   opacity: 1;
 }
+
+.chat-message__speak {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 0.85em;
+  vertical-align: middle;
+}
+
+.chat-message__speak:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.chat-message__speak:disabled {
+  cursor: default;
+}
+
+.chat-message__speak--error {
+  opacity: 0.9;
+}
