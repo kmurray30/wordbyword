@@ -125,8 +125,12 @@ async function checkBrowserEndToEnd() {
     }
 
     // Click the speaker button and confirm the browser's own /tts/speak
-    // request (not just our direct fetch above) actually gets real audio
-    // back and the <audio> element doesn't error.
+    // request (not just our direct fetch above) actually succeeds and the
+    // UI doesn't end up in its error state. Checked via response status +
+    // headers (reliable) rather than response.body() - buffering the full
+    // body through CDP after the page has already consumed it as a Blob is
+    // flaky and isn't needed: the direct backend check above already proved
+    // real audio bytes come back for identical text.
     const speakButton = page.locator(".chat-message--assistant .chat-message__speak").first();
     if ((await speakButton.count()) > 0) {
       const responsePromise = page.waitForResponse(
@@ -139,11 +143,22 @@ async function checkBrowserEndToEnd() {
         const body = await ttsResponse.text();
         fail(`browser /tts/speak request returned ${ttsResponse.status()}: ${body}`);
       }
-      const ttsBody = await ttsResponse.body();
-      if (ttsBody.byteLength < 1000) {
-        fail(`browser /tts/speak response was only ${ttsBody.byteLength} bytes`);
+      const contentType = ttsResponse.headers()["content-type"] ?? "";
+      const contentLength = Number(ttsResponse.headers()["content-length"] ?? "0");
+      if (!contentType.includes("audio")) {
+        fail(`browser /tts/speak response content-type was ${JSON.stringify(contentType)}, not audio`);
       }
-      console.log(`  OK - speaker button fetched ${ttsBody.byteLength} bytes of audio`);
+      if (contentLength < 1000) {
+        fail(`browser /tts/speak response content-length was only ${contentLength} bytes`);
+      }
+      // Give the page a moment to finish turning the response into a Blob
+      // and updating the button state, then confirm it didn't land on error.
+      await page.waitForTimeout(500);
+      const speakClass = (await speakButton.getAttribute("class")) ?? "";
+      if (speakClass.includes("chat-message__speak--error")) {
+        fail("speaker button ended up in its error state after clicking");
+      }
+      console.log(`  OK - speaker button fetched ${contentType}, ${contentLength} bytes`);
     } else {
       fail("no speaker button (.chat-message__speak) found on the assistant message");
     }
