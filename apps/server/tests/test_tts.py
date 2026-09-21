@@ -26,6 +26,29 @@ def test_synthesize_returns_audio_bytes_on_success():
     assert kwargs["json"]["input"] == "hola"
 
 
+def test_synthesize_picks_voice_from_language():
+    fake_response = Mock(content=b"fake-mp3-bytes")
+    fake_response.raise_for_status = Mock()
+
+    with patch("app.tts.deepinfra_client.DEEPINFRA_API_TOKEN", "fake-token"):
+        with patch("httpx.post", return_value=fake_response) as mock_post:
+            synthesize("bonjour", language="fr")
+
+    assert mock_post.call_args.kwargs["json"]["voice"] == "ff_siwis"
+
+
+def test_synthesize_voice_override_beats_language_map():
+    fake_response = Mock(content=b"fake-mp3-bytes")
+    fake_response.raise_for_status = Mock()
+
+    with patch("app.tts.deepinfra_client.DEEPINFRA_API_TOKEN", "fake-token"):
+        with patch("app.tts.deepinfra_client.DEEPINFRA_TTS_VOICE", "am_puck"):
+            with patch("httpx.post", return_value=fake_response) as mock_post:
+                synthesize("hola", language="es")
+
+    assert mock_post.call_args.kwargs["json"]["voice"] == "am_puck"
+
+
 def test_synthesize_wraps_http_status_error():
     request = httpx.Request("POST", "https://api.deepinfra.com/v1/audio/speech")
     response = httpx.Response(400, text="invalid voice", request=request)

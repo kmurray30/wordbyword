@@ -13,7 +13,7 @@ def speak(req: TTSRequest) -> Response:
         raise HTTPException(status_code=400, detail="text must not be empty")
 
     try:
-        audio = synthesize(req.text)
+        audio = synthesize(req.text, language=req.language)
     except TTSUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

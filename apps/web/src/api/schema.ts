@@ -184,6 +184,11 @@ export interface components {
         TTSRequest: {
             /** Text */
             text: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
         };
         /** TagInputRequest */
         TagInputRequest: {

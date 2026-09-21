@@ -7,7 +7,8 @@ own bearer token, so it gets its own client and its own failure mode.
 
 import httpx
 
-from app.config import DEEPINFRA_API_TOKEN, DEEPINFRA_TTS_MODEL, DEEPINFRA_TTS_VOICE
+from app.config import DEEPINFRA_API_TOKEN, DEEPINFRA_TTS_MODEL, DEEPINFRA_TTS_VOICE, TARGET_LANGUAGE
+from app.tts.kokoro_voices import voice_for_language
 
 DEEPINFRA_TTS_URL = "https://api.deepinfra.com/v1/audio/speech"
 
@@ -16,14 +17,16 @@ class TTSUnavailableError(RuntimeError):
     pass
 
 
-def synthesize(text: str) -> bytes:
+def synthesize(text: str, language: str = TARGET_LANGUAGE) -> bytes:
     if not DEEPINFRA_API_TOKEN:
         raise TTSUnavailableError("DEEPINFRA_API_TOKEN is not configured on the server")
+
+    voice = DEEPINFRA_TTS_VOICE or voice_for_language(language)
 
     payload = {
         "model": DEEPINFRA_TTS_MODEL,
         "input": text,
-        "voice": DEEPINFRA_TTS_VOICE,
+        "voice": voice,
         "response_format": "mp3",
     }
 

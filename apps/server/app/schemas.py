@@ -75,6 +75,7 @@ class RewardEventResponse(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
+    language: str = "es"
 
 
 class WordBankEntryOut(BaseModel):

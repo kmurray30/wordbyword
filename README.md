@@ -89,8 +89,8 @@ Environment variables (all optional, sensible defaults shown):
 | `TOKENIZER_NAME` | `Qwen/Qwen3-0.6B` | HF tokenizer used to compute `logit_bias` token ids - must match the model running in model-server |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
 | `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |
-| `DEEPINFRA_TTS_MODEL` | `ResembleAI/chatterbox-multilingual` | DeepInfra model used to synthesize speech |
-| `DEEPINFRA_TTS_VOICE` | `Spanish Male` | voice passed to the TTS model |
+| `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used to synthesize speech |
+| `DEEPINFRA_TTS_VOICE` | *(none)* | force one specific voice regardless of language - normally left unset so the voice is picked per-request from `app/tts/kokoro_voices.py`'s language map |
 
 ### Frontend
 
@@ -136,11 +136,21 @@ through untracked.
 Click the 🔊 next to an assistant message to hear it spoken aloud, so you can
 hear correct pronunciation alongside the hover translations. `POST
 /tts/speak` (`app/tts/deepinfra_client.py`) calls DeepInfra's OpenAI-
-compatible `/v1/audio/speech` endpoint and streams the mp3 back; the frontend
+compatible `/v1/audio/speech` endpoint, using [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)
+(`hexgrad/Kokoro-82M` on DeepInfra), and streams the mp3 back; the frontend
 plays it via the browser's `Audio` API and caches the blob per message so
 replaying doesn't re-fetch. This is a separate hosted API from the
 self-hosted chat model above - it needs its own `DEEPINFRA_API_TOKEN` (see
 env vars) and has no Ollama-style local-only fallback.
+
+Kokoro doesn't infer language from the input text - each of its 54 voices is
+tied to one language (its phonemizer rules follow the voice, not the text),
+so the request body includes a `language` field (`es` by default, matching
+`TARGET_LANGUAGE`) and `app/tts/kokoro_voices.py` maps it to the right voice:
+the full 9-language, 54-voice catalog Kokoro ships with, plus one default
+voice per language (`voice_for_language`). Spanish text uses `ef_dora`.
+`DEEPINFRA_TTS_VOICE` overrides the map entirely if you want to force one
+specific voice regardless of language.
 
 ## Deployed on Railway
 

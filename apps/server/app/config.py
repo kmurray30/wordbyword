@@ -15,15 +15,18 @@ MODEL_SERVER_BASE_URL = os.environ.get("MODEL_SERVER_BASE_URL", "http://localhos
 # so the tokenizer used for logit_bias matches the model actually generating text.
 TOKENIZER_NAME = os.environ.get("TOKENIZER_NAME", "Qwen/Qwen3-0.6B")
 
-# Text-to-speech (DeepInfra, a hosted API - separate from the self-hosted chat
-# model above). Empty token means TTS is disabled; app/tts/deepinfra_client.py
-# raises a clear error rather than silently failing.
-DEEPINFRA_API_TOKEN = os.environ.get("DEEPINFRA_API_TOKEN", "")
-DEEPINFRA_TTS_MODEL = os.environ.get("DEEPINFRA_TTS_MODEL", "ResembleAI/chatterbox-multilingual")
-DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "Spanish Male")
-
 TARGET_LANGUAGE = "es"
 NATIVE_LANGUAGE = "en"
+
+# Text-to-speech (DeepInfra, a hosted API - separate from the self-hosted chat
+# model above). Empty token means TTS is disabled; app/tts/deepinfra_client.py
+# raises a clear error rather than silently failing. Voice is picked per
+# request from app/tts/kokoro_voices.py's language map, not a fixed default -
+# DEEPINFRA_TTS_VOICE below is only an escape hatch to force one voice
+# regardless of language.
+DEEPINFRA_API_TOKEN = os.environ.get("DEEPINFRA_API_TOKEN", "")
+DEEPINFRA_TTS_MODEL = os.environ.get("DEEPINFRA_TTS_MODEL", "hexgrad/Kokoro-82M")
+DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "")
 
 # Word-bank / RL weighting tuning knobs.
 NEW_WORDS_PER_TURN = 2

@@ -74,7 +74,7 @@ export function ChatMessage({ message }: { message: DisplayMessage }) {
     }
     setSpeakState("loading");
     api
-      .speak({ text: message.text })
+      .speak({ text: message.text, language: "es" })
       .then((blob) => {
         const url = URL.createObjectURL(blob);
         audioUrlRef.current = url;
