@@ -1,6 +1,6 @@
 // On-demand end-to-end check against the deployed Railway services. Runs on
 // GitHub Actions (not in the dev sandbox, which can't reach *.up.railway.app
-// at all - its egress policy blocks that domain outright). Four stages:
+// at all - its egress policy blocks that domain outright). Five stages:
 //  1. Hit the backend's /chat/turn directly - isolates "is the LLM path
 //     actually working" from any frontend issue.
 //  2. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
@@ -8,7 +8,12 @@
 //  3. Hit /tts/voices and /tts/speak for each Spanish voice directly -
 //     confirms every voice the picker offers is a real, working DeepInfra
 //     voice id, not just the default.
-//  4. If those pass, drive the real site with Playwright end to end,
+//  4. Send an English message to /chat/turn, and a fixed Spanish phrase to
+//     /translate/text - prints both for a human to eyeball (semantic
+//     correctness isn't something a script can assert), but at least
+//     confirms the LLM-backed translation path actually returns something,
+//     not the old Argos error string.
+//  5. If those pass, drive the real site with Playwright end to end,
 //     including switching the voice picker and confirming that request
 //     actually carries the chosen voice.
 import { chromium } from "playwright";
@@ -24,12 +29,12 @@ function fail(message) {
 }
 
 async function checkBackendDirect() {
-  console.log(`[1/4] Checking backend health at ${BACKEND_URL}/health ...`);
+  console.log(`[1/5] Checking backend health at ${BACKEND_URL}/health ...`);
   const health = await fetch(`${BACKEND_URL}/health`);
   if (!health.ok) fail(`/health returned ${health.status}`);
   console.log("  health OK");
 
-  console.log(`[1/4] Sending a direct /chat/turn request (up to ${CHAT_TIMEOUT_MS / 1000}s) ...`);
+  console.log(`[1/5] Sending a direct /chat/turn request (up to ${CHAT_TIMEOUT_MS / 1000}s) ...`);
   const start = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
@@ -93,13 +98,13 @@ async function speakDirect(voice) {
 }
 
 async function checkTTSDirect() {
-  console.log(`[2/4] Sending a direct /tts/speak request (up to ${TTS_TIMEOUT_MS / 1000}s) ...`);
+  console.log(`[2/5] Sending a direct /tts/speak request (up to ${TTS_TIMEOUT_MS / 1000}s) ...`);
   const { elapsed, contentType, bytes } = await speakDirect(undefined);
   console.log(`  OK in ${elapsed}ms - ${contentType}, ${bytes} bytes`);
 }
 
 async function checkVoicesDirect() {
-  console.log(`[3/4] Checking /tts/voices?language=es and every Spanish voice ...`);
+  console.log(`[3/5] Checking /tts/voices?language=es and every Spanish voice ...`);
   const res = await fetch(`${BACKEND_URL}/tts/voices?language=es`);
   if (!res.ok) fail(`/tts/voices?language=es returned ${res.status}`);
   const data = await res.json();
@@ -116,8 +121,36 @@ async function checkVoicesDirect() {
   }
 }
 
+async function checkEnglishInputAndTranslation() {
+  console.log(`[4/5] Sending an English message to /chat/turn ...`);
+  const chatRes = await fetch(`${BACKEND_URL}/chat/turn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: "Hi, what hobbies do you like?" }),
+  });
+  if (!chatRes.ok) fail(`/chat/turn (English input) returned ${chatRes.status}: ${await chatRes.text()}`);
+  const chatData = await chatRes.json();
+  if (!chatData.text || chatData.text.trim().length === 0) {
+    fail(`/chat/turn (English input) returned 200 but empty text: ${JSON.stringify(chatData)}`);
+  }
+  console.log(`  reply: ${JSON.stringify(chatData.text)} (eyeball: does this answer, or just echo/translate the question?)`);
+
+  console.log(`[4/5] Sending a direct /translate/text request ...`);
+  const translateRes = await fetch(`${BACKEND_URL}/translate/text`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "¡Hola! ¿Estás bien?", source_lang: "es", target_lang: "en" }),
+  });
+  if (!translateRes.ok) fail(`/translate/text returned ${translateRes.status}: ${await translateRes.text()}`);
+  const translateData = await translateRes.json();
+  if (!translateData.translation || translateData.translation.startsWith("(translation unavailable")) {
+    fail(`/translate/text returned an unusable translation: ${JSON.stringify(translateData)}`);
+  }
+  console.log(`  "¡Hola! ¿Estás bien?" -> ${JSON.stringify(translateData.translation)}`);
+}
+
 async function checkBrowserEndToEnd() {
-  console.log(`[4/4] Driving ${FRONTEND_URL} with Playwright ...`);
+  console.log(`[5/5] Driving ${FRONTEND_URL} with Playwright ...`);
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 900, height: 800 } });
   const consoleErrors = [];
@@ -229,5 +262,6 @@ async function checkBrowserEndToEnd() {
 await checkBackendDirect();
 await checkTTSDirect();
 await checkVoicesDirect();
+await checkEnglishInputAndTranslation();
 await checkBrowserEndToEnd();
 console.log("ALL CHECKS PASSED");
