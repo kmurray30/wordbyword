@@ -29,8 +29,12 @@ DEEPINFRA_TTS_MODEL = os.environ.get("DEEPINFRA_TTS_MODEL", "hexgrad/Kokoro-82M"
 DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "")
 
 # Word-bank / RL weighting tuning knobs.
-NEW_WORDS_PER_TURN = 2
-REINFORCE_WORDS_PER_TURN = 6
+# Kept modest (was 2/6): Qwen3-0.6B is small enough that forcing many words
+# into one short reply via logit_bias tends to produce ungrammatical output
+# rather than a natural sentence - fewer, gentler nudges per turn holds up
+# better than more aggressive ones on a model this size.
+NEW_WORDS_PER_TURN = 1
+REINFORCE_WORDS_PER_TURN = 3
 DEFAULT_REVIEW_INTERVAL_DAYS = 1.0
 MIN_REVIEW_INTERVAL_DAYS = 0.25
 MAX_REVIEW_INTERVAL_DAYS = 60.0

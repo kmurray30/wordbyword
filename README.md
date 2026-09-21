@@ -131,6 +131,20 @@ how overdue each word is. New words get a flat bias. Everything the model
 actually says gets lemmatized and recorded regardless, so nothing slips
 through untracked.
 
+Only open-class content words (nouns, verbs, adjectives, adverbs) are ever
+picked for this - `app/wordbank/function_words.py` excludes closed-class
+words (prepositions, conjunctions, determiners, pronouns) from both the
+reinforce and new-word candidate pools. Those have a narrow, fixed
+grammatical slot, so hard-boosting one on a small model tends to produce a
+broken sentence (e.g. a reply ending in a dangling "...por qué?") rather
+than a natural one - they still get tracked from ordinary exposure, just
+never targeted for forced introduction. For the same reason, `logit_bias`
+is deliberately mild (see the magnitudes in `logit_bias.py`) and only a
+few words are targeted per turn (`REINFORCE_WORDS_PER_TURN` /
+`NEW_WORDS_PER_TURN` in `config.py`) - Qwen3-0.6B is small enough that
+forcing many words into one short reply hurts coherence more than it helps
+review.
+
 ## Text-to-speech
 
 Click the 🔊 next to an assistant message to hear it spoken aloud, so you can

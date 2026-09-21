@@ -3,6 +3,8 @@ introducing new words. Roughly ordered most- to least-common; good enough to
 seed the "new word" selector without needing an external frequency corpus.
 Swap this for a proper frequency dictionary later if desired."""
 
+from app.wordbank.function_words import SPANISH_FUNCTION_WORD_LEMMAS
+
 FREQUENCY_RANKED_ES = [
     "ser", "estar", "tener", "hacer", "poder", "decir", "ir", "ver", "dar", "saber",
     "querer", "llegar", "pasar", "deber", "poner", "parecer", "quedar", "creer", "hablar", "llevar",
@@ -33,3 +35,11 @@ FREQUENCY_RANKED_ES = [
     "perro", "gato", "pajaro", "pez", "arbol", "flor", "sol", "luna", "estrella", "cielo",
     "mar", "montana", "rio", "playa", "bosque", "ciudad", "pueblo", "calle", "plaza", "mercado",
 ]
+
+# Candidate pool for the "new word" selector: content words only. A few
+# entries here are ambiguous between a content and a function reading in
+# isolation (e.g. "bajo" as the adjective "short" vs. the preposition
+# "under") - excluded anyway, since there's no context here to disambiguate
+# and losing one adjective candidate from an otherwise large pool is cheap
+# insurance against forcing the wrong sense in.
+NEW_WORD_CANDIDATES_ES = [w for w in FREQUENCY_RANKED_ES if w not in SPANISH_FUNCTION_WORD_LEMMAS]

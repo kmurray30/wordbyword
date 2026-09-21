@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.config import DEFAULT_REVIEW_INTERVAL_DAYS, NEW_WORDS_PER_TURN, REINFORCE_WORDS_PER_TURN
 from app.models import WordBankEntry
-from app.wordbank.frequency_list import FREQUENCY_RANKED_ES
+from app.wordbank.frequency_list import NEW_WORD_CANDIDATES_ES
+from app.wordbank.function_words import EXCLUDED_REINFORCE_POS
 from app.wordbank.scoring import (
     WordState,
     apply_active_recall,
@@ -83,19 +84,29 @@ def apply_reward_event(session: Session, event_type: str, lemma: str) -> WordBan
     return _apply(session, lemma, transform)
 
 
+def _reinforce_candidates(entries: list[WordBankEntry]) -> list[WordBankEntry]:
+    """Word-bank entries eligible to be force-boosted via logit_bias this
+    turn - excludes closed-class (function) words. See function_words.py
+    for why: they have a narrow grammatical slot, so hard-boosting one
+    tends to produce a broken sentence rather than a natural one. Entries
+    created before a POS was known (e.g. via a reward event for a word the
+    agent never produced) have pos == "" and stay eligible by default."""
+    return [e for e in entries if e.pos not in EXCLUDED_REINFORCE_POS]
+
+
 def pick_turn_vocabulary(session: Session) -> tuple[list[str], list[str], dict[str, float]]:
     """Returns (reinforce_lemmas, new_lemmas, reinforce_urgency) for building
     this turn's prompt and its logit_bias. `reinforce_urgency` is a [0, 1]
     per-lemma score (only for the reinforce list) used to scale how strongly
     each word's logit_bias nudges generation."""
     entries = session.scalars(select(WordBankEntry)).all()
-    states = [_to_state(e) for e in entries]
     now = datetime.utcnow()
 
-    reinforce = select_reinforce_words(states, now, REINFORCE_WORDS_PER_TURN)
-    urgency = reinforce_urgency(states, now)
+    reinforce_states = [_to_state(e) for e in _reinforce_candidates(entries)]
+    reinforce = select_reinforce_words(reinforce_states, now, REINFORCE_WORDS_PER_TURN)
+    urgency = reinforce_urgency(reinforce_states, now)
     known_lemmas = {e.lemma for e in entries}
-    new_words = select_new_words(FREQUENCY_RANKED_ES, known_lemmas, NEW_WORDS_PER_TURN)
+    new_words = select_new_words(NEW_WORD_CANDIDATES_ES, known_lemmas, NEW_WORDS_PER_TURN)
     return reinforce, new_words, {lemma: urgency[lemma] for lemma in reinforce}
 
 

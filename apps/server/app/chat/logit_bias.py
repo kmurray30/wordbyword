@@ -23,9 +23,12 @@ from functools import lru_cache
 
 from app.config import TOKENIZER_NAME
 
-MIN_REINFORCE_BIAS = 1.5
-MAX_REINFORCE_BIAS = 5.0
-NEW_WORD_BIAS = 2.5
+# Lowered from 1.5/5.0/2.5: at the old magnitudes (+5.0 is roughly a 150x
+# relative boost to that token's odds) a 0.6B model would often force the
+# word in wherever, grammatical or not, rather than working it in naturally.
+MIN_REINFORCE_BIAS = 1.0
+MAX_REINFORCE_BIAS = 3.0
+NEW_WORD_BIAS = 1.5
 
 
 @lru_cache(maxsize=1)
