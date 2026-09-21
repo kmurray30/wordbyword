@@ -76,6 +76,12 @@ class RewardEventResponse(BaseModel):
 class TTSRequest(BaseModel):
     text: str
     language: str = "es"
+    voice: str | None = None
+
+
+class TTSVoicesResponse(BaseModel):
+    voices: list[str]
+    default: str
 
 
 class WordBankEntryOut(BaseModel):

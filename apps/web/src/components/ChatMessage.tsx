@@ -17,11 +17,12 @@ export interface DisplayMessage {
 // recognition (a small familiarity boost) rather than "still pending".
 const RESOLUTION_DELAY_MS = 6000;
 
-export function ChatMessage({ message }: { message: DisplayMessage }) {
+export function ChatMessage({ message, voice }: { message: DisplayMessage; voice?: string }) {
   const resolvedLemmas = useRef<Set<string>>(new Set());
   const [translation, setTranslation] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
   const audioUrlRef = useRef<string | null>(null);
+  const audioVoiceRef = useRef<string | undefined>(undefined);
   const [speakState, setSpeakState] = useState<"idle" | "loading" | "error">("idle");
 
   useEffect(() => {
@@ -68,16 +69,18 @@ export function ChatMessage({ message }: { message: DisplayMessage }) {
 
   const handleSpeak = () => {
     if (speakState === "loading") return;
-    if (audioUrlRef.current) {
+    if (audioUrlRef.current && audioVoiceRef.current === voice) {
       new Audio(audioUrlRef.current).play().catch(() => setSpeakState("error"));
       return;
     }
     setSpeakState("loading");
     api
-      .speak({ text: message.text, language: "es" })
+      .speak({ text: message.text, language: "es", voice })
       .then((blob) => {
+        if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
         const url = URL.createObjectURL(blob);
         audioUrlRef.current = url;
+        audioVoiceRef.current = voice;
         setSpeakState("idle");
         new Audio(url).play().catch(() => setSpeakState("error"));
       })

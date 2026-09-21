@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tts/voices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Voices */
+        get: operations["list_voices_tts_voices_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tts/speak": {
         parameters: {
             query?: never;
@@ -189,6 +206,15 @@ export interface components {
              * @default es
              */
             language: string;
+            /** Voice */
+            voice?: string | null;
+        };
+        /** TTSVoicesResponse */
+        TTSVoicesResponse: {
+            /** Voices */
+            voices: string[];
+            /** Default */
+            default: string;
         };
         /** TagInputRequest */
         TagInputRequest: {
@@ -436,6 +462,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RewardEventResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_voices_tts_voices_get: {
+        parameters: {
+            query?: {
+                language?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TTSVoicesResponse"];
                 };
             };
             /** @description Validation Error */

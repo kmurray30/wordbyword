@@ -152,6 +152,13 @@ voice per language (`voice_for_language`). Spanish text uses `ef_dora`.
 `DEEPINFRA_TTS_VOICE` overrides the map entirely if you want to force one
 specific voice regardless of language.
 
+The "Voice" picker in the header lets you choose between Spanish's three
+voices - Dora (`ef_dora`), Alex (`em_alex`), Santa (`em_santa`) - fetched
+from `GET /tts/voices?language=es` and persisted in `localStorage`, and
+never any of Kokoro's other languages' voices. `POST /tts/speak` takes an
+optional `voice` field and rejects one that isn't valid for the given
+`language` with a 400.
+
 ## Deployed on Railway
 
 Three services in one Railway project, wired over private networking:

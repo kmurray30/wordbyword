@@ -29,6 +29,8 @@ type RewardEventResponse =
 
 type TTSRequest =
   paths["/tts/speak"]["post"]["requestBody"]["content"]["application/json"];
+type TTSVoicesResponse =
+  paths["/tts/voices"]["get"]["responses"][200]["content"]["application/json"];
 
 async function post<Req, Res>(path: string, body: Req): Promise<Res> {
   const response = await fetch(`${BASE_URL}${path}`, {
@@ -41,6 +43,15 @@ async function post<Req, Res>(path: string, body: Req): Promise<Res> {
     throw new Error(`${path} failed (${response.status}): ${detail}`);
   }
   return response.json() as Promise<Res>;
+}
+
+async function listVoices(language: string): Promise<TTSVoicesResponse> {
+  const response = await fetch(`${BASE_URL}/tts/voices?language=${encodeURIComponent(language)}`);
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`/tts/voices failed (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<TTSVoicesResponse>;
 }
 
 async function speak(body: TTSRequest): Promise<Blob> {
@@ -66,6 +77,7 @@ export const api = {
   rewardEvent: (body: RewardEventRequest) =>
     post<RewardEventRequest, RewardEventResponse>("/events/reward", body),
   speak,
+  listVoices,
 };
 
 export type TokenAnnotation = ChatTurnResponse["tokens"][number];
@@ -78,4 +90,5 @@ export type {
   TranslateTextResponse,
   TagInputResponse,
   RewardEventRequest,
+  TTSVoicesResponse,
 };

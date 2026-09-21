@@ -37,14 +37,25 @@ def test_synthesize_picks_voice_from_language():
     assert mock_post.call_args.kwargs["json"]["voice"] == "ff_siwis"
 
 
-def test_synthesize_voice_override_beats_language_map():
+def test_synthesize_explicit_voice_beats_language_default():
+    fake_response = Mock(content=b"fake-mp3-bytes")
+    fake_response.raise_for_status = Mock()
+
+    with patch("app.tts.deepinfra_client.DEEPINFRA_API_TOKEN", "fake-token"):
+        with patch("httpx.post", return_value=fake_response) as mock_post:
+            synthesize("hola", language="es", voice="em_alex")
+
+    assert mock_post.call_args.kwargs["json"]["voice"] == "em_alex"
+
+
+def test_synthesize_env_override_beats_everything():
     fake_response = Mock(content=b"fake-mp3-bytes")
     fake_response.raise_for_status = Mock()
 
     with patch("app.tts.deepinfra_client.DEEPINFRA_API_TOKEN", "fake-token"):
         with patch("app.tts.deepinfra_client.DEEPINFRA_TTS_VOICE", "am_puck"):
             with patch("httpx.post", return_value=fake_response) as mock_post:
-                synthesize("hola", language="es")
+                synthesize("hola", language="es", voice="em_alex")
 
     assert mock_post.call_args.kwargs["json"]["voice"] == "am_puck"
 

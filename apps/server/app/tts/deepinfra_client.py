@@ -17,11 +17,14 @@ class TTSUnavailableError(RuntimeError):
     pass
 
 
-def synthesize(text: str, language: str = TARGET_LANGUAGE) -> bytes:
+def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | None = None) -> bytes:
     if not DEEPINFRA_API_TOKEN:
         raise TTSUnavailableError("DEEPINFRA_API_TOKEN is not configured on the server")
 
-    voice = DEEPINFRA_TTS_VOICE or voice_for_language(language)
+    # DEEPINFRA_TTS_VOICE is an admin-level escape hatch that overrides
+    # everything; otherwise an explicit request voice wins over the
+    # language's default.
+    voice = DEEPINFRA_TTS_VOICE or voice or voice_for_language(language)
 
     payload = {
         "model": DEEPINFRA_TTS_MODEL,
