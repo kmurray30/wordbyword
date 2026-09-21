@@ -14,7 +14,9 @@ apps/model-server  llama.cpp's own server (llama-server), running Qwen3-0.6B.
                     Not Ollama - see "Why llama.cpp, not Ollama" below.
 apps/server         Python (FastAPI) - word bank + RL-style weighting, chat
                     orchestration (talks to model-server), translation
-                    (spaCy + Argos Translate), SQLite storage.
+                    (spaCy for lemmatizing, a dictionary + Argos Translate
+                    for single words, the LLM itself for whole-message
+                    translation), SQLite storage.
 apps/web            React + Vite + TypeScript - chat UI, hover tooltips, the
                     draft-input overlay that flags English words you type.
                     API types are generated from the backend's OpenAPI schema.
@@ -145,6 +147,23 @@ few words are targeted per turn (`REINFORCE_WORDS_PER_TURN` /
 forcing many words into one short reply hurts coherence more than it helps
 review.
 
+## Whole-message translation
+
+Hovering the 🌐 on a message shows a translation of the whole thing (better
+word order than stitching together the per-word glosses). This used to go
+through Argos Translate (still used for single-word lookups - see
+`app/translate/service.py`), but its offline MT produced rough, sometimes
+outright wrong translations on short/informal Spanish. `POST
+/translate/text` (`app/translate/llm_translate.py`) now asks the same local
+chat model (`llama_client.chat`) to translate instead, with a system prompt
+that asks for the translation only, no commentary.
+
+The LLM is slower per call than Argos was, so the frontend doesn't wait for
+a hover to ask for it: `ChatMessage.tsx` fires the request automatically as
+soon as an assistant reply is shown, in the background, so it's normally
+already cached by the time anyone hovers. Either way it never blocks the
+reply itself from rendering.
+
 ## Text-to-speech
 
 Click the 🔊 next to an assistant message to hear it spoken aloud, so you can
@@ -201,6 +220,13 @@ their directories.
 - **The new-word candidate pool** (`app/wordbank/frequency_list.py`) is a
   small hand-curated list, not a real frequency corpus.
 - **Single user, no auth.** The whole app is one word bank in one SQLite file.
+- **Whole-message translation doubles the load on model-server per turn**
+  (one call to generate the reply, one to translate it) since both now go
+  through the same small local LLM. Fine at this app's traffic level: the
+  translate call only fires after the chat call has already finished, so
+  they don't contend for the same request, and model-server sits mostly
+  idle between turns at this app's traffic level - but worth knowing if
+  you scale up usage.
 - Runs as a **web app**; the longer-term plan is to port the UI to React
   Native. Because the backend is a plain HTTP/JSON API, that port doesn't
   require backend changes - RN talks to it the same way the web app does.

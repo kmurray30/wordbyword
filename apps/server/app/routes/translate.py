@@ -11,7 +11,7 @@ from app.schemas import (
     TranslateWordResponse,
     InputTokenAnnotation,
 )
-from app.translate import mt
+from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
 from app.translate.service import word_candidates
 
@@ -34,8 +34,8 @@ def translate_word(req: TranslateWordRequest) -> TranslateWordResponse:
 @router.post("/text", response_model=TranslateTextResponse)
 def translate_text(req: TranslateTextRequest) -> TranslateTextResponse:
     try:
-        translation = mt.translate_text(req.text, req.source_lang, req.target_lang)
-    except mt.TranslationUnavailableError as exc:
+        translation = llm_translate.translate_text(req.text, req.source_lang, req.target_lang)
+    except llm_translate.TranslationUnavailableError as exc:
         return TranslateTextResponse(translation=f"(translation unavailable: {exc})")
     return TranslateTextResponse(translation=translation)
 

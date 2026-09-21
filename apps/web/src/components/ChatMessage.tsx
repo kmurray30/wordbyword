@@ -67,6 +67,19 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
       .finally(() => setTranslating(false));
   };
 
+  // Kick the translation off in the background as soon as the reply is
+  // shown, rather than waiting for a hover - the LLM-backed translation
+  // (see app/translate/llm_translate.py) is slower than the old offline MT
+  // was, so pre-fetching means it's usually ready by the time anyone
+  // actually hovers 🌐. Fires after the bubble has already rendered, so it
+  // never delays showing the reply itself.
+  useEffect(() => {
+    if (message.role === "assistant") {
+      handleTranslateAll();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message.id]);
+
   const handleSpeak = () => {
     if (speakState === "loading") return;
     if (audioUrlRef.current && audioVoiceRef.current === voice) {
