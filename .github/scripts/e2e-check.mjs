@@ -1,6 +1,6 @@
 // On-demand end-to-end check against the deployed Railway services. Runs on
 // GitHub Actions (not in the dev sandbox, which can't reach *.up.railway.app
-// at all - its egress policy blocks that domain outright). Five stages:
+// at all - its egress policy blocks that domain outright). Six stages:
 //  1. Hit the backend's /chat/turn directly - isolates "is the LLM path
 //     actually working" from any frontend issue.
 //  2. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
@@ -13,28 +13,29 @@
 //     correctness isn't something a script can assert), but at least
 //     confirms the LLM-backed translation path actually returns something,
 //     not the old Argos error string.
-//  5. If those pass, drive the real site with Playwright end to end,
-//     including switching the voice picker and confirming that request
-//     actually carries the chosen voice.
+//  5. Confirm GET /chat/history reflects what stages 1/4 just sent, and
+//     that POST /chat/history/clear actually empties it.
+//  6. If those pass, drive the real site with Playwright end to end,
+//     including switching the voice picker, confirming that request
+//     actually carries the chosen voice, and clicking "Clear chat".
+//
+// Stages 1-5 all use one throwaway session id (see TEST_SESSION_ID) so this
+// script's own chat traffic never lands in - or pollutes - anyone real's
+// conversation history, and gets explicitly cleared at the end regardless.
 import { chromium } from "playwright";
 
 const BACKEND_URL = process.env.BACKEND_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const CHAT_TIMEOUT_MS = 100_000;
 const TTS_TIMEOUT_MS = 30_000;
+const TEST_SESSION_ID = `e2e-${crypto.randomUUID()}`;
 
 function fail(message) {
   console.error(`FAIL: ${message}`);
   process.exit(1);
 }
 
-async function checkBackendDirect() {
-  console.log(`[1/5] Checking backend health at ${BACKEND_URL}/health ...`);
-  const health = await fetch(`${BACKEND_URL}/health`);
-  if (!health.ok) fail(`/health returned ${health.status}`);
-  console.log("  health OK");
-
-  console.log(`[1/5] Sending a direct /chat/turn request (up to ${CHAT_TIMEOUT_MS / 1000}s) ...`);
+async function chatTurn(message) {
   const start = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
@@ -43,25 +44,35 @@ async function checkBackendDirect() {
     res = await fetch(`${BACKEND_URL}/chat/turn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "Hola" }),
+      body: JSON.stringify({ message, session_id: TEST_SESSION_ID }),
       signal: controller.signal,
     });
   } catch (err) {
-    fail(`/chat/turn request failed/timed out after ${Date.now() - start}ms: ${err}`);
+    fail(`/chat/turn (${JSON.stringify(message)}) failed/timed out after ${Date.now() - start}ms: ${err}`);
   } finally {
     clearTimeout(timer);
   }
   const elapsed = Date.now() - start;
   if (!res.ok) {
-    const body = await res.text();
-    fail(`/chat/turn returned ${res.status} after ${elapsed}ms: ${body}`);
+    fail(`/chat/turn (${JSON.stringify(message)}) returned ${res.status} after ${elapsed}ms: ${await res.text()}`);
   }
   const data = await res.json();
   if (!data.text || data.text.trim().length === 0) {
-    fail(`/chat/turn returned 200 but empty text: ${JSON.stringify(data)}`);
+    fail(`/chat/turn (${JSON.stringify(message)}) returned 200 but empty text: ${JSON.stringify(data)}`);
   }
-  console.log(`  OK in ${elapsed}ms - reply: ${JSON.stringify(data.text)}`);
-  console.log(`  tokens: ${data.tokens?.length ?? 0}`);
+  return { elapsed, text: data.text, tokenCount: data.tokens?.length ?? 0 };
+}
+
+async function checkBackendDirect() {
+  console.log(`[1/6] Checking backend health at ${BACKEND_URL}/health ...`);
+  const health = await fetch(`${BACKEND_URL}/health`);
+  if (!health.ok) fail(`/health returned ${health.status}`);
+  console.log("  health OK");
+
+  console.log(`[1/6] Sending a direct /chat/turn request (session ${TEST_SESSION_ID}, up to ${CHAT_TIMEOUT_MS / 1000}s) ...`);
+  const { elapsed, text, tokenCount } = await chatTurn("Hola");
+  console.log(`  OK in ${elapsed}ms - reply: ${JSON.stringify(text)}`);
+  console.log(`  tokens: ${tokenCount}`);
 }
 
 async function speakDirect(voice) {
@@ -98,13 +109,13 @@ async function speakDirect(voice) {
 }
 
 async function checkTTSDirect() {
-  console.log(`[2/5] Sending a direct /tts/speak request (up to ${TTS_TIMEOUT_MS / 1000}s) ...`);
+  console.log(`[2/6] Sending a direct /tts/speak request (up to ${TTS_TIMEOUT_MS / 1000}s) ...`);
   const { elapsed, contentType, bytes } = await speakDirect(undefined);
   console.log(`  OK in ${elapsed}ms - ${contentType}, ${bytes} bytes`);
 }
 
 async function checkVoicesDirect() {
-  console.log(`[3/5] Checking /tts/voices?language=es and every Spanish voice ...`);
+  console.log(`[3/6] Checking /tts/voices?language=es and every Spanish voice ...`);
   const res = await fetch(`${BACKEND_URL}/tts/voices?language=es`);
   if (!res.ok) fail(`/tts/voices?language=es returned ${res.status}`);
   const data = await res.json();
@@ -122,20 +133,11 @@ async function checkVoicesDirect() {
 }
 
 async function checkEnglishInputAndTranslation() {
-  console.log(`[4/5] Sending an English message to /chat/turn ...`);
-  const chatRes = await fetch(`${BACKEND_URL}/chat/turn`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: "Hi, what hobbies do you like?" }),
-  });
-  if (!chatRes.ok) fail(`/chat/turn (English input) returned ${chatRes.status}: ${await chatRes.text()}`);
-  const chatData = await chatRes.json();
-  if (!chatData.text || chatData.text.trim().length === 0) {
-    fail(`/chat/turn (English input) returned 200 but empty text: ${JSON.stringify(chatData)}`);
-  }
-  console.log(`  reply: ${JSON.stringify(chatData.text)} (eyeball: does this answer, or just echo/translate the question?)`);
+  console.log(`[4/6] Sending an English message to /chat/turn (session ${TEST_SESSION_ID}, no prior turns polluting it) ...`);
+  const { text } = await chatTurn("Hi, what hobbies do you like?");
+  console.log(`  reply: ${JSON.stringify(text)} (eyeball: does this answer, or just echo/translate the question?)`);
 
-  console.log(`[4/5] Sending a direct /translate/text request ...`);
+  console.log(`[4/6] Sending a direct /translate/text request ...`);
   const translateRes = await fetch(`${BACKEND_URL}/translate/text`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -149,8 +151,38 @@ async function checkEnglishInputAndTranslation() {
   console.log(`  "¡Hola! ¿Estás bien?" -> ${JSON.stringify(translateData.translation)}`);
 }
 
+async function checkHistoryAndClear() {
+  console.log(`[5/6] Checking GET /chat/history reflects this session's turns ...`);
+  const historyRes = await fetch(`${BACKEND_URL}/chat/history?session_id=${encodeURIComponent(TEST_SESSION_ID)}`);
+  if (!historyRes.ok) fail(`/chat/history returned ${historyRes.status}: ${await historyRes.text()}`);
+  const historyData = await historyRes.json();
+  // 2 chatTurn() calls so far (stage 1's "Hola", stage 4's hobbies
+  // question) = 4 messages (user+assistant each).
+  if (historyData.messages.length !== 4) {
+    fail(`/chat/history returned ${historyData.messages.length} messages, expected 4: ${JSON.stringify(historyData)}`);
+  }
+  console.log(`  OK - ${historyData.messages.length} messages recorded for this session`);
+
+  console.log(`[5/6] Clearing this session's history via POST /chat/history/clear ...`);
+  const clearRes = await fetch(`${BACKEND_URL}/chat/history/clear?session_id=${encodeURIComponent(TEST_SESSION_ID)}`, {
+    method: "POST",
+  });
+  if (!clearRes.ok) fail(`/chat/history/clear returned ${clearRes.status}: ${await clearRes.text()}`);
+  const clearData = await clearRes.json();
+  if (clearData.cleared !== 4) {
+    fail(`/chat/history/clear reported clearing ${clearData.cleared} messages, expected 4`);
+  }
+
+  const afterRes = await fetch(`${BACKEND_URL}/chat/history?session_id=${encodeURIComponent(TEST_SESSION_ID)}`);
+  const afterData = await afterRes.json();
+  if (afterData.messages.length !== 0) {
+    fail(`/chat/history still returned ${afterData.messages.length} messages after clearing`);
+  }
+  console.log(`  OK - history empty after clearing`);
+}
+
 async function checkBrowserEndToEnd() {
-  console.log(`[5/5] Driving ${FRONTEND_URL} with Playwright ...`);
+  console.log(`[6/6] Driving ${FRONTEND_URL} with Playwright ...`);
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 900, height: 800 } });
   const consoleErrors = [];
@@ -251,6 +283,31 @@ async function checkBrowserEndToEnd() {
       fail("no voice picker (.app__voice-picker select) found in the header");
     }
 
+    // Reload and confirm history hydration actually restores the
+    // conversation - not just that /chat/turn works in the moment.
+    await page.reload({ waitUntil: "load", timeout: 30_000 });
+    await page.waitForSelector(".chat-message--assistant", { timeout: 15_000 });
+    console.log("  OK - conversation persisted across a page reload");
+
+    // "Clear chat" should wipe the visible conversation via the real
+    // backend endpoint, not just a client-side reset.
+    const clearButton = page.locator(".app__clear-chat");
+    if ((await clearButton.count()) > 0) {
+      const clearResponsePromise = page.waitForResponse(
+        (res) => res.url().includes("/chat/history/clear") && res.request().method() === "POST",
+        { timeout: 15_000 }
+      );
+      await clearButton.click();
+      const clearResponse = await clearResponsePromise;
+      if (!clearResponse.ok()) {
+        fail(`browser "Clear chat" request returned ${clearResponse.status()}`);
+      }
+      await page.waitForSelector("text=Say hello to start a conversation", { timeout: 10_000 });
+      console.log("  OK - Clear chat button emptied the conversation");
+    } else {
+      fail('no "Clear chat" button (.app__clear-chat) found - expected one once a conversation exists');
+    }
+
     if (consoleErrors.length > 0) {
       console.log("  Browser console errors seen:", consoleErrors);
     }
@@ -263,5 +320,6 @@ await checkBackendDirect();
 await checkTTSDirect();
 await checkVoicesDirect();
 await checkEnglishInputAndTranslation();
+await checkHistoryAndClear();
 await checkBrowserEndToEnd();
 console.log("ALL CHECKS PASSED");

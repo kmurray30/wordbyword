@@ -11,6 +11,13 @@ export interface DisplayMessage {
   role: "user" | "assistant";
   text: string;
   tokens?: TokenAnnotation[];
+  // True for messages hydrated from GET /chat/history on page load, as
+  // opposed to ones just generated this session. Passive-exposure credit
+  // and the eager translate-on-mount fetch already happened for real the
+  // first time a message was shown - replaying them on every reload would
+  // re-award familiarity for words you've seen many times before and
+  // re-fire an LLM translation call per historical message, for nothing.
+  fromHistory?: boolean;
 }
 
 // How long an agent word can go un-hovered before we count that as passive
@@ -32,7 +39,7 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
   }, []);
 
   useEffect(() => {
-    if (message.role !== "assistant" || !message.tokens) return;
+    if (message.role !== "assistant" || !message.tokens || message.fromHistory) return;
     const trackedLemmas = [...new Set(message.tokens.filter((t) => t.gloss).map((t) => t.lemma))];
 
     const timer = setTimeout(() => {
@@ -74,7 +81,7 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
   // actually hovers 🌐. Fires after the bubble has already rendered, so it
   // never delays showing the reply itself.
   useEffect(() => {
-    if (message.role === "assistant") {
+    if (message.role === "assistant" && !message.fromHistory) {
       handleTranslateAll();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

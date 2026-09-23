@@ -38,6 +38,12 @@ class ChatMessage(Base):
     __tablename__ = "chat_message"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Per-browser session (see lib/session.ts on the frontend), not a login -
+    # this app is still single-user/no-auth (see README), but each session
+    # gets its own conversation thread rather than sharing one global chat
+    # history. Empty string on rows written before this column existed;
+    # those are simply invisible to every session now, which is fine.
+    session_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

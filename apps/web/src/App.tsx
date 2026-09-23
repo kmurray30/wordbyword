@@ -3,6 +3,7 @@ import { api } from "./api/client";
 import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
+import { getSessionId } from "./lib/session";
 import "./App.css";
 
 let nextLocalId = -1;
@@ -16,9 +17,12 @@ function voiceLabel(voiceId: string): string {
 }
 
 function App() {
+  const [sessionId] = useState(getSessionId);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [voices, setVoices] = useState<string[]>([]);
   const [voice, setVoice] = useState<string | null>(() => {
     try {
@@ -38,6 +42,35 @@ function App() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    api
+      .chatHistory(sessionId)
+      .then((res) => {
+        setMessages(
+          res.messages.map((m) => ({
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            text: m.text,
+            tokens: m.tokens,
+            fromHistory: true,
+          }))
+        );
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setHistoryLoaded(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
+  const handleClear = () => {
+    if (clearing) return;
+    setClearing(true);
+    api
+      .clearChatHistory(sessionId)
+      .then(() => setMessages([]))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setClearing(false));
+  };
+
   const handleVoiceChange = (next: string) => {
     setVoice(next);
     try {
@@ -53,7 +86,7 @@ function App() {
     setSending(true);
 
     api
-      .chatTurn({ message: text })
+      .chatTurn({ message: text, session_id: sessionId })
       .then((res) => {
         setMessages((prev) => [
           ...prev,
@@ -69,22 +102,30 @@ function App() {
       <header className="app__header">
         <h1>wordbyword</h1>
         <p>Chat in Spanish. Hover any word for a translation.</p>
-        {voices.length > 0 && voice && (
-          <label className="app__voice-picker">
-            Voice:{" "}
-            <select value={voice} onChange={(e) => handleVoiceChange(e.target.value)}>
-              {voices.map((v) => (
-                <option key={v} value={v}>
-                  {voiceLabel(v)}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+        <div className="app__header-controls">
+          {voices.length > 0 && voice && (
+            <label className="app__voice-picker">
+              Voice:{" "}
+              <select value={voice} onChange={(e) => handleVoiceChange(e.target.value)}>
+                {voices.map((v) => (
+                  <option key={v} value={v}>
+                    {voiceLabel(v)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {messages.length > 0 && (
+            <button type="button" className="app__clear-chat" onClick={handleClear} disabled={clearing}>
+              {clearing ? "Clearing…" : "Clear chat"}
+            </button>
+          )}
+        </div>
       </header>
 
       <main className="app__chat">
-        {messages.length === 0 && (
+        {!historyLoaded && <p className="app__empty">Loading…</p>}
+        {historyLoaded && messages.length === 0 && (
           <p className="app__empty">Say hello to start a conversation - ¡Hola!</p>
         )}
         {messages.map((m) => (

@@ -11,12 +11,28 @@ class TokenAnnotation(BaseModel):
 
 class ChatTurnRequest(BaseModel):
     message: str
+    session_id: str
 
 
 class ChatTurnResponse(BaseModel):
     message_id: int
     text: str
     tokens: list[TokenAnnotation]
+
+
+class ChatHistoryMessage(BaseModel):
+    id: int
+    role: str
+    text: str
+    tokens: list[TokenAnnotation] = []
+
+
+class ChatHistoryResponse(BaseModel):
+    messages: list[ChatHistoryMessage]
+
+
+class ClearHistoryResponse(BaseModel):
+    cleared: int
 
 
 class TranslateWordRequest(BaseModel):

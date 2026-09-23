@@ -8,7 +8,14 @@ from app.chat.prompt_builder import build_messages
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
 from app.models import ChatMessage, MessageToken
-from app.schemas import ChatTurnRequest, ChatTurnResponse, TokenAnnotation
+from app.schemas import (
+    ChatHistoryMessage,
+    ChatHistoryResponse,
+    ChatTurnRequest,
+    ChatTurnResponse,
+    ClearHistoryResponse,
+    TokenAnnotation,
+)
 from app.translate.lemmatizer import analyze
 from app.translate.service import gloss
 from app.wordbank import store
@@ -18,18 +25,50 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 HISTORY_TURNS = 10
 
 
-def _recent_history(session: Session) -> list[tuple[str, str]]:
+def _recent_history(session: Session, session_id: str) -> list[tuple[str, str]]:
     rows = session.scalars(
-        select(ChatMessage).order_by(ChatMessage.id.desc()).limit(HISTORY_TURNS)
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.id.desc())
+        .limit(HISTORY_TURNS)
     ).all()
     rows = list(reversed(rows))
     return [(row.role, row.text) for row in rows]
 
 
+@router.get("/history", response_model=ChatHistoryResponse)
+def get_history(session_id: str, session: Session = Depends(get_session)) -> ChatHistoryResponse:
+    rows = session.scalars(
+        select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.id)
+    ).all()
+    messages = [
+        ChatHistoryMessage(
+            id=row.id,
+            role=row.role,
+            text=row.text,
+            tokens=[
+                TokenAnnotation(surface=t.surface, lemma=t.lemma, pos=t.pos, gloss=t.gloss, is_new=t.is_new)
+                for t in row.tokens
+            ],
+        )
+        for row in rows
+    ]
+    return ChatHistoryResponse(messages=messages)
+
+
+@router.post("/history/clear", response_model=ClearHistoryResponse)
+def clear_history(session_id: str, session: Session = Depends(get_session)) -> ClearHistoryResponse:
+    rows = session.scalars(select(ChatMessage).where(ChatMessage.session_id == session_id)).all()
+    for row in rows:
+        session.delete(row)
+    session.commit()
+    return ClearHistoryResponse(cleared=len(rows))
+
+
 @router.post("/turn", response_model=ChatTurnResponse)
 def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
     reinforce_lemmas, new_lemmas, reinforce_urgency = store.pick_turn_vocabulary(session)
-    history = _recent_history(session)
+    history = _recent_history(session, req.session_id)
     messages = build_messages(history, reinforce_lemmas, new_lemmas, req.message)
     logit_bias = build_logit_bias(reinforce_lemmas, new_lemmas, reinforce_urgency)
 
@@ -38,7 +77,7 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
     except ModelServerUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    session.add(ChatMessage(role="user", text=req.message))
+    session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
 
     new_lemma_set = set(new_lemmas)
     tokens = analyze(reply_text)
@@ -68,7 +107,7 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
             )
         )
 
-    assistant_message = ChatMessage(role="assistant", text=reply_text, tokens=token_rows)
+    assistant_message = ChatMessage(session_id=req.session_id, role="assistant", text=reply_text, tokens=token_rows)
     session.add(assistant_message)
     session.commit()
     session.refresh(assistant_message)

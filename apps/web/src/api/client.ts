@@ -6,6 +6,10 @@ type ChatTurnRequest =
   paths["/chat/turn"]["post"]["requestBody"]["content"]["application/json"];
 type ChatTurnResponse =
   paths["/chat/turn"]["post"]["responses"][200]["content"]["application/json"];
+type ChatHistoryResponse =
+  paths["/chat/history"]["get"]["responses"][200]["content"]["application/json"];
+type ClearHistoryResponse =
+  paths["/chat/history/clear"]["post"]["responses"][200]["content"]["application/json"];
 
 type TranslateWordRequest =
   paths["/translate/word"]["post"]["requestBody"]["content"]["application/json"];
@@ -45,6 +49,26 @@ async function post<Req, Res>(path: string, body: Req): Promise<Res> {
   return response.json() as Promise<Res>;
 }
 
+async function chatHistory(sessionId: string): Promise<ChatHistoryResponse> {
+  const response = await fetch(`${BASE_URL}/chat/history?session_id=${encodeURIComponent(sessionId)}`);
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`/chat/history failed (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<ChatHistoryResponse>;
+}
+
+async function clearChatHistory(sessionId: string): Promise<ClearHistoryResponse> {
+  const response = await fetch(`${BASE_URL}/chat/history/clear?session_id=${encodeURIComponent(sessionId)}`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`/chat/history/clear failed (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<ClearHistoryResponse>;
+}
+
 async function listVoices(language: string): Promise<TTSVoicesResponse> {
   const response = await fetch(`${BASE_URL}/tts/voices?language=${encodeURIComponent(language)}`);
   if (!response.ok) {
@@ -78,11 +102,14 @@ export const api = {
     post<RewardEventRequest, RewardEventResponse>("/events/reward", body),
   speak,
   listVoices,
+  chatHistory,
+  clearChatHistory,
 };
 
 export type TokenAnnotation = ChatTurnResponse["tokens"][number];
 export type InputTokenAnnotation = TagInputResponse["tokens"][number];
 export type TranslateCandidate = TranslateWordResponse["candidates"][number];
+export type ChatHistoryMessage = ChatHistoryResponse["messages"][number];
 
 export type {
   ChatTurnResponse,
@@ -91,4 +118,5 @@ export type {
   TagInputResponse,
   RewardEventRequest,
   TTSVoicesResponse,
+  ChatHistoryResponse,
 };

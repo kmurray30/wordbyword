@@ -109,6 +109,20 @@ regenerate the typed client with the backend running:
 npm run gen:api-types   # reads http://localhost:8000/openapi.json -> src/api/schema.ts
 ```
 
+## Chat history
+
+Reloading the page restores your prior conversation instead of starting
+blank - the frontend fetches `GET /chat/history?session_id=...` on mount
+and renders it before you send anything new. "Clear chat" in the header
+(shown once there's a conversation to clear) calls `POST
+/chat/history/clear?session_id=...`, which deletes only that session's
+messages - the word bank isn't touched, so vocabulary progress survives a
+cleared chat. Messages restored from history skip the passive-exposure
+timer and the eager whole-message-translation fetch (`ChatMessage.tsx`'s
+`fromHistory` flag) - both already fired for real the first time each
+message was shown, so replaying them on every reload would double-count
+familiarity and re-run LLM translation calls for nothing.
+
 ## How the word bank / weighting works
 
 Every lemma (dictionary base form - `hablar`, not `hablando`) the agent has
@@ -219,7 +233,14 @@ their directories.
   words may occasionally get flagged as "unknown."
 - **The new-word candidate pool** (`app/wordbank/frequency_list.py`) is a
   small hand-curated list, not a real frequency corpus.
-- **Single user, no auth.** The whole app is one word bank in one SQLite file.
+- **Single user, no auth, but per-browser chat history.** There's still one
+  shared word bank in one SQLite file (vocabulary mastery is meant to
+  persist regardless of device), but each browser gets its own chat
+  history thread via a random id generated client-side and kept in
+  `localStorage` (`app/lib/session.ts`) - not real session/auth, just
+  enough to stop every visitor's conversation from landing in one shared
+  thread (`apps/web/src/lib/session.ts`). No server-side session expiry; a
+  thread lives until its "Clear chat" button is used.
 - **Whole-message translation doubles the load on model-server per turn**
   (one call to generate the reply, one to translate it) since both now go
   through the same small local LLM. Fine at this app's traffic level: the
