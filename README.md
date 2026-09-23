@@ -93,6 +93,7 @@ Environment variables (all optional, sensible defaults shown):
 | `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |
 | `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used to synthesize speech |
 | `DEEPINFRA_TTS_VOICE` | *(none)* | force one specific voice regardless of language - normally left unset so the voice is picked per-request from `app/tts/kokoro_voices.py`'s language map |
+| `WORD_WEIGHTING_ENABLED` | `true` | kill switch for vocabulary steering (`logit_bias` + the prompt's "prefer/introduce these words" lines) - set to `false` to compare the model's raw, unsteered behavior. Word-bank tracking (exposure, hover, familiarity) keeps working either way |
 
 ### Frontend
 
@@ -160,6 +161,12 @@ few words are targeted per turn (`REINFORCE_WORDS_PER_TURN` /
 `NEW_WORDS_PER_TURN` in `config.py`) - even Qwen3-1.7B is small enough
 that forcing many words into one short reply hurts coherence more than it
 helps review.
+
+Set `WORD_WEIGHTING_ENABLED=false` to turn steering off entirely - no
+`logit_bias`, and the system prompt's vocabulary-rules section goes empty
+- while leaving all the tracking (exposure counts, hover, familiarity)
+running underneath. Useful for isolating "is the model bad" from "is the
+steering making the model worse" when a reply looks off.
 
 ## Whole-message translation
 

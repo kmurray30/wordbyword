@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.wordbank.store import _reinforce_candidates
+from app.wordbank.store import _reinforce_candidates, pick_turn_vocabulary_if_enabled
 
 
 @dataclass
@@ -34,3 +34,17 @@ def test_keeps_entries_with_unknown_empty_pos():
 
 def test_empty_input():
     assert _reinforce_candidates([]) == []
+
+
+class ExplodingSession:
+    """Stands in for a DB session that must never be touched - proves
+    pick_turn_vocabulary_if_enabled(disabled) really is a no-op short
+    circuit, not just returning the right thing after doing real work."""
+
+    def scalars(self, *args, **kwargs):
+        raise AssertionError("session should not be queried when weighting is disabled")
+
+
+def test_disabled_returns_empty_without_touching_the_session():
+    result = pick_turn_vocabulary_if_enabled(ExplodingSession(), enabled=False)
+    assert result == ([], [], {})

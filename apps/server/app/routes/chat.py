@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.chat.llama_client import ModelServerUnavailableError, chat as llama_chat
 from app.chat.logit_bias import build_logit_bias
 from app.chat.prompt_builder import build_messages
-from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
+from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE, WORD_WEIGHTING_ENABLED
 from app.db import get_session
 from app.models import ChatMessage, MessageToken
 from app.schemas import (
@@ -67,7 +67,9 @@ def clear_history(session_id: str, session: Session = Depends(get_session)) -> C
 
 @router.post("/turn", response_model=ChatTurnResponse)
 def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
-    reinforce_lemmas, new_lemmas, reinforce_urgency = store.pick_turn_vocabulary(session)
+    reinforce_lemmas, new_lemmas, reinforce_urgency = store.pick_turn_vocabulary_if_enabled(
+        session, WORD_WEIGHTING_ENABLED
+    )
     history = _recent_history(session, req.session_id)
     messages = build_messages(history, reinforce_lemmas, new_lemmas, req.message)
     logit_bias = build_logit_bias(reinforce_lemmas, new_lemmas, reinforce_urgency)

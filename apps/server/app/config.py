@@ -18,6 +18,15 @@ TOKENIZER_NAME = os.environ.get("TOKENIZER_NAME", "Qwen/Qwen3-1.7B")
 TARGET_LANGUAGE = "es"
 NATIVE_LANGUAGE = "en"
 
+# Kill switch for word-bank vocabulary steering - the logit_bias boost and
+# the "prefer/introduce these words" lines in the system prompt. Lets you
+# compare the model's raw, unsteered behavior against steered behavior
+# without losing the tuning knobs below (which stay in effect the moment
+# this is flipped back on). Word-bank tracking itself (exposure counts,
+# hover/familiarity, review scheduling) is untouched either way - this only
+# controls whether any of that gets used to steer generation.
+WORD_WEIGHTING_ENABLED = os.environ.get("WORD_WEIGHTING_ENABLED", "true").strip().lower() not in ("false", "0", "")
+
 # Text-to-speech (DeepInfra, a hosted API - separate from the self-hosted chat
 # model above). Empty token means TTS is disabled; app/tts/deepinfra_client.py
 # raises a clear error rather than silently failing. Voice is picked per

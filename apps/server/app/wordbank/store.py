@@ -110,5 +110,18 @@ def pick_turn_vocabulary(session: Session) -> tuple[list[str], list[str], dict[s
     return reinforce, new_words, {lemma: urgency[lemma] for lemma in reinforce}
 
 
+def pick_turn_vocabulary_if_enabled(
+    session: Session, enabled: bool
+) -> tuple[list[str], list[str], dict[str, float]]:
+    """Same as pick_turn_vocabulary, but returns nothing to steer toward
+    when `enabled` is False (config.WORD_WEIGHTING_ENABLED) - the kill
+    switch for comparing raw vs. steered model behavior. Doesn't touch the
+    session at all in that case, so it's safe to call with disabled=True
+    outside of a real request too."""
+    if not enabled:
+        return [], [], {}
+    return pick_turn_vocabulary(session)
+
+
 def list_all(session: Session) -> list[WordBankEntry]:
     return list(session.scalars(select(WordBankEntry).order_by(WordBankEntry.lemma)).all())
