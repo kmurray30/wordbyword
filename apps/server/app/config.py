@@ -13,7 +13,7 @@ MODEL_SERVER_BASE_URL = os.environ.get("MODEL_SERVER_BASE_URL", "http://localhos
 
 # Pinned to the specific model deployed to model-server (apps/model-server/Dockerfile)
 # so the tokenizer used for logit_bias matches the model actually generating text.
-TOKENIZER_NAME = os.environ.get("TOKENIZER_NAME", "Qwen/Qwen3-0.6B")
+TOKENIZER_NAME = os.environ.get("TOKENIZER_NAME", "Qwen/Qwen3-1.7B")
 
 TARGET_LANGUAGE = "es"
 NATIVE_LANGUAGE = "en"
@@ -29,10 +29,11 @@ DEEPINFRA_TTS_MODEL = os.environ.get("DEEPINFRA_TTS_MODEL", "hexgrad/Kokoro-82M"
 DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "")
 
 # Word-bank / RL weighting tuning knobs.
-# Kept modest (was 2/6): Qwen3-0.6B is small enough that forcing many words
-# into one short reply via logit_bias tends to produce ungrammatical output
-# rather than a natural sentence - fewer, gentler nudges per turn holds up
-# better than more aggressive ones on a model this size.
+# Kept modest (was 2/6): forcing many words into one short reply via
+# logit_bias tends to produce ungrammatical output rather than a natural
+# sentence on a small local model - fewer, gentler nudges per turn holds up
+# better than more aggressive ones. Left conservative after the 0.6B->1.7B
+# upgrade too; revisit if the bigger model handles more forcing gracefully.
 NEW_WORDS_PER_TURN = 1
 REINFORCE_WORDS_PER_TURN = 3
 DEFAULT_REVIEW_INTERVAL_DAYS = 1.0

@@ -10,7 +10,7 @@ hover the 🌐 at the end of a message to translate the whole thing at once.
 ## Architecture
 
 ```
-apps/model-server  llama.cpp's own server (llama-server), running Qwen3-0.6B.
+apps/model-server  llama.cpp's own server (llama-server), running Qwen3-1.7B.
                     Not Ollama - see "Why llama.cpp, not Ollama" below.
 apps/server         Python (FastAPI) - word bank + RL-style weighting, chat
                     orchestration (talks to model-server), translation
@@ -57,8 +57,8 @@ docker build -t wordbyword-model apps/model-server
 docker run --rm -p 8080:8080 wordbyword-model
 ```
 
-First run downloads the Qwen3-0.6B-GGUF weights (~650MB, Q8_0) from Hugging Face;
-subsequent runs reuse them if you mount a volume at `/models` (see the
+First run downloads the Qwen3-1.7B-GGUF weights (~1.3GB, Q4_K_M) from Hugging
+Face; subsequent runs reuse them if you mount a volume at `/models` (see the
 Dockerfile - `LLAMA_CACHE=/models`). Leave this running; the backend talks to
 it at `http://localhost:8080` by default.
 
@@ -88,7 +88,7 @@ Environment variables (all optional, sensible defaults shown):
 | Variable | Default | Purpose |
 |---|---|---|
 | `MODEL_SERVER_BASE_URL` | `http://localhost:8080` | where the server calls llama-server's chat API |
-| `TOKENIZER_NAME` | `Qwen/Qwen3-0.6B` | HF tokenizer used to compute `logit_bias` token ids - must match the model running in model-server |
+| `TOKENIZER_NAME` | `Qwen/Qwen3-1.7B` | HF tokenizer used to compute `logit_bias` token ids - must match the model running in model-server |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
 | `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |
 | `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used to synthesize speech |
@@ -143,9 +143,9 @@ than a natural one - they still get tracked from ordinary exposure, just
 never targeted for forced introduction. For the same reason, `logit_bias`
 is deliberately mild (see the magnitudes in `logit_bias.py`) and only a
 few words are targeted per turn (`REINFORCE_WORDS_PER_TURN` /
-`NEW_WORDS_PER_TURN` in `config.py`) - Qwen3-0.6B is small enough that
-forcing many words into one short reply hurts coherence more than it helps
-review.
+`NEW_WORDS_PER_TURN` in `config.py`) - even Qwen3-1.7B is small enough
+that forcing many words into one short reply hurts coherence more than it
+helps review.
 
 ## Whole-message translation
 
@@ -198,7 +198,7 @@ Three services in one Railway project, wired over private networking:
 
 | Service | What | Public? |
 |---|---|---|
-| `model-server` | `apps/model-server` - llama-server + Qwen3-0.6B | No - only `server` calls it, over `model-server.railway.internal:8080` |
+| `model-server` | `apps/model-server` - llama-server + Qwen3-1.7B | No - only `server` calls it, over `model-server.railway.internal:8080` |
 | `server` | `apps/server` - FastAPI backend | Yes - `web` calls it over its public domain |
 | `web` | `apps/web` - static Vite build | Yes |
 
