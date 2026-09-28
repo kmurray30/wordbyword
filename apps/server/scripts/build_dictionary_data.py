@@ -105,7 +105,10 @@ def _process_spanish_line(line: str, es_freq: set[str], out: dict[str, list[dict
         return
     word = entry.get("word", "")
     if word.lower() in _DEBUG_WORDS:
-        print(f"DEBUG raw Spanish entry for {word!r}: {line[:3000]}", file=sys.stderr)
+        senses_summary = [
+            {"glosses": s.get("glosses"), "tags": s.get("tags")} for s in (entry.get("senses") or [])
+        ]
+        print(f"DEBUG Spanish entry {word!r} (pos={entry.get('pos')}): senses={senses_summary}", file=sys.stderr)
     if not _WORD_RE.match(word):
         return
     lemma = word.lower()
@@ -147,7 +150,14 @@ def _process_english_line(line: str, en_freq: set[str], out: dict[str, list[dict
         return
     word = entry.get("word", "")
     if word.lower() in _DEBUG_WORDS:
-        print(f"DEBUG raw English entry for {word!r}: {line[:3000]}", file=sys.stderr)
+        senses_summary = [
+            {"glosses": s.get("glosses"), "tags": s.get("tags")} for s in (entry.get("senses") or [])
+        ]
+        es_only = [t for t in (entry.get("translations") or []) if t.get("code") == "es"]
+        print(
+            f"DEBUG English entry {word!r} (pos={entry.get('pos')}): senses={senses_summary} translations_es={es_only}",
+            file=sys.stderr,
+        )
     if not _WORD_RE.match(word):
         return
     es_translations = [t for t in (entry.get("translations") or []) if t.get("code") == "es" and t.get("word")]
