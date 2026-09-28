@@ -156,17 +156,51 @@ grammatical slot, so hard-boosting one on a small model tends to produce a
 broken sentence (e.g. a reply ending in a dangling "...por qué?") rather
 than a natural one - they still get tracked from ordinary exposure, just
 never targeted for forced introduction. For the same reason, `logit_bias`
-is deliberately mild (see the magnitudes in `logit_bias.py`) and only a
-few words are targeted per turn (`REINFORCE_WORDS_PER_TURN` /
-`NEW_WORDS_PER_TURN` in `config.py`) - even Qwen3-1.7B is small enough
-that forcing many words into one short reply hurts coherence more than it
-helps review.
+is deliberately mild (see the magnitudes in `logit_bias.py`) and only one
+word is targeted per turn by default (`REINFORCE_WORDS_PER_TURN` /
+`NEW_WORDS_PER_TURN` in `config.py`, currently 1/0) - even Qwen3-1.7B is
+small enough that forcing several words into one short reply derails the
+reply more than it helps review (see below).
 
 Set `WORD_WEIGHTING_ENABLED=false` to turn steering off entirely - no
 `logit_bias`, and the system prompt's vocabulary-rules section goes empty
 - while leaving all the tracking (exposure counts, hover, familiarity)
 running underneath. Useful for isolating "is the model bad" from "is the
 steering making the model worse" when a reply looks off.
+
+### Tuning history: why the numbers are what they are
+
+An A/B test (`WORD_WEIGHTING_ENABLED=false` vs `true`, several distinct
+messages sampled each way against the live deploy) traced two separate bugs
+that had been making replies look "dumb," neither of which turned out to be
+word-bank steering being fundamentally incompatible with reply quality:
+
+1. **Some replies came back completely empty**, under both weighting on and
+   off - not a steering bug. Qwen3's chat template enables its
+   `<think>...</think>` reasoning mode by default with no token cap; on a bad
+   roll the model spent the whole turn "thinking" and emitted nothing after
+   the closing tag. Fixed by passing `chat_template_kwargs.enable_thinking:
+   false` in `llama_client.chat`'s request payload - this app has no UI for a
+   reasoning trace anyway.
+2. With thinking disabled, the original forcing (`REINFORCE_WORDS_PER_TURN=3`,
+   `NEW_WORDS_PER_TURN=1`, `logit_bias` up to 3.0) made the model **echo the
+   question back as a reworded question with zero actual answer**, on every
+   sampled message - worse than the empty-reply bug it replaced. A small
+   model without its reasoning scratchpad leaned much more heavily on literal
+   prompt-following, and forcing several words into a reply left no room for
+   one that actually answered anything.
+
+The fix wasn't to give up on steering - it was lowering
+`REINFORCE_WORDS_PER_TURN`/`NEW_WORDS_PER_TURN` to 1/0 and the `logit_bias`
+magnitudes further (see `logit_bias.py`), plus rewriting the system prompt's
+top instruction to include a concrete good/bad example of exactly the
+echoing failure mode instead of just an abstract "don't do this" rule - small
+models pattern-match a concrete example far more reliably than they follow
+an abstract prohibition. Re-tested after both changes: 6/6 sampled replies
+were real, on-topic, grammatically correct answers with a natural follow-up
+question, no empties, no echoing. `WORD_WEIGHTING_ENABLED` stays `true`
+permanently as the default; the toggle remains useful as a standing
+diagnostic for isolating future "is the model bad" reports.
 
 ## Whole-message translation
 
