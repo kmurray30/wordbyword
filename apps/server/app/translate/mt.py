@@ -1,6 +1,7 @@
 """Offline machine translation via Argos Translate, used for whole-sentence
-translation and as the fallback for single words the curated dictionary
-doesn't cover.
+translation and as the last-resort fallback for single words neither the
+curated dictionary nor the bundled Wiktionary dataset covers (see
+app/translate/service.py's word_candidates() for the full fallback chain).
 
 Requires the en<->es language packages to be installed once - see
 scripts/install_translate_models.py.

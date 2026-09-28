@@ -12,7 +12,10 @@
 //     /translate/text - prints both for a human to eyeball (semantic
 //     correctness isn't something a script can assert), but at least
 //     confirms the LLM-backed translation path actually returns something,
-//     not the old Argos error string.
+//     not the old Argos error string. Also checks /translate/word for a
+//     few known slang words (bro/sup/partner) - regression coverage for a
+//     real bug where Argos's word-level fallback echoed unknown words back
+//     unchanged instead of translating them.
 //  5. Confirm GET /chat/history reflects what stages 1/4 just sent, and
 //     that POST /chat/history/clear actually empties it.
 //  6. If those pass, drive the real site with Playwright end to end: send a
@@ -152,6 +155,32 @@ async function checkEnglishInputAndTranslation() {
     fail(`/translate/text returned an unusable translation: ${JSON.stringify(translateData)}`);
   }
   console.log(`  "¡Hola! ¿Estás bien?" -> ${JSON.stringify(translateData.translation)}`);
+
+  // Regression check for a real reported bug: Argos MT's word-level lookup
+  // (used before the Wiktionary dataset was added) had no way to say "I
+  // don't know this word" - for slang never seen in its formal training
+  // corpus, it just echoed the input back unchanged, which looked exactly
+  // like a real (wrong) translation rather than a miss. Confirms these now
+  // resolve to a real, different word via the bundled Wiktionary dictionary
+  // (see app/translate/service.py's word_candidates()).
+  console.log(`[4/6] Checking /translate/word no longer echoes known slang back unchanged ...`);
+  for (const word of ["bro", "sup", "partner"]) {
+    const res = await fetch(`${BACKEND_URL}/translate/word`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ word, source_lang: "en" }),
+    });
+    if (!res.ok) fail(`/translate/word(${word}) returned ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    const best = data.candidates?.[0];
+    if (!best || !best.translation) {
+      fail(`/translate/word(${word}) returned no usable candidate: ${JSON.stringify(data)}`);
+    }
+    if (best.translation.toLowerCase() === word.toLowerCase()) {
+      fail(`/translate/word(${word}) echoed the input back unchanged: ${JSON.stringify(data)}`);
+    }
+    console.log(`  "${word}" -> ${JSON.stringify(best.translation)} (${data.candidates.length} candidate(s))`);
+  }
 }
 
 async function checkHistoryAndClear() {

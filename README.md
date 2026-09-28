@@ -72,12 +72,16 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m spacy download es_core_news_sm
 python scripts/install_translate_models.py   # installs Argos Translate en<->es packages
+python scripts/build_dictionary_data.py      # bundles a Wiktionary EN<->ES dictionary
 ```
 
-`install_translate_models.py` downloads from Argos Translate's package index,
-which needs unrestricted outbound access - it will fail in network-locked
-sandboxes (it does in this repo's dev container) but works fine on a normal
-machine.
+Both scripts download from the network (Argos Translate's package index and
+kaikki.org's Wiktionary exports, respectively) and need unrestricted outbound
+access - they'll fail in network-locked sandboxes (as this repo's own dev
+container does) but work fine on a normal machine. Neither failing is fatal
+to running the app: word-level translation just falls back further down its
+chain (see app/translate/service.py) - to Argos-only if the Wiktionary
+dataset is missing, or to "no translation found" if Argos is missing too.
 
 Run it:
 

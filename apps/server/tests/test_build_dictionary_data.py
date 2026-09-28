@@ -1,0 +1,117 @@
+from scripts.build_dictionary_data import (
+    _format_description,
+    _process_english_line,
+    _process_spanish_line,
+    _short,
+)
+
+
+def _es_line(word, senses):
+    import json
+
+    return json.dumps({"word": word, "lang_code": "es", "senses": senses})
+
+
+def _en_line(word, senses, translations):
+    import json
+
+    return json.dumps({"word": word, "lang_code": "en", "senses": senses, "translations": translations})
+
+
+def test_short_truncates_with_ellipsis():
+    assert _short("hi", 10) == "hi"
+    assert _short("a" * 20, 10) == "a" * 9 + "…"
+
+
+def test_format_description_combines_register_tag_and_example():
+    desc = _format_description({"informal", "grammar-unrelated-tag"}, example="¡Qué tal, tío!")
+    assert desc == "(informal) ¡Qué tal, tío!"
+
+
+def test_process_spanish_line_includes_common_word():
+    line = _es_line("banco", [{"glosses": ["bank (financial institution)"], "tags": [], "examples": []}])
+    out = {}
+    _process_spanish_line(line, {"banco"}, out)
+    assert out["banco"] == [{"translation": "bank (financial institution)", "description": ""}]
+
+
+def test_process_spanish_line_excludes_uncommon_non_informal_word():
+    # Leaves an empty candidate list rather than no key at all - pruned by
+    # _build_direction() before the dataset is written out.
+    line = _es_line("esotericismo", [{"glosses": ["esotericism"], "tags": [], "examples": []}])
+    out = {}
+    _process_spanish_line(line, set(), out)
+    assert out == {"esotericismo": []}
+
+
+def test_process_spanish_line_rescues_informal_word_despite_low_frequency():
+    line = _es_line("tío", [{"glosses": ["dude, guy"], "tags": ["informal"], "examples": [{"text": "¡Qué tal, tío!"}]}])
+    out = {}
+    _process_spanish_line(line, set(), out)
+    assert out["tío"][0]["translation"] == "dude, guy"
+    assert "informal" in out["tío"][0]["description"]
+
+
+def test_process_spanish_line_caps_candidates_per_word():
+    senses = [{"glosses": [f"sense {i}"], "tags": [], "examples": []} for i in range(10)]
+    line = _es_line("muchosentidos", senses)
+    out = {}
+    _process_spanish_line(line, {"muchosentidos"}, out)
+    assert len(out["muchosentidos"]) <= 4
+
+
+def test_process_english_line_skips_word_with_no_spanish_translation():
+    line = _en_line("gizmo", [{"glosses": ["a gadget"], "tags": [], "examples": []}], [])
+    out = {}
+    _process_english_line(line, {"gizmo"}, out)
+    assert out == {}
+
+
+def test_process_english_line_includes_common_word_with_translation():
+    line = _en_line(
+        "partner",
+        [{"glosses": ["a person one is romantically involved with"], "tags": [], "examples": []}],
+        [{"code": "es", "word": "pareja", "sense": "a person one is romantically involved with"}],
+    )
+    out = {}
+    _process_english_line(line, {"partner"}, out)
+    assert out["partner"] == [
+        {"translation": "pareja", "description": "a person one is romantically involved with"}
+    ]
+
+
+def test_process_english_line_rescues_informal_slang_despite_low_frequency():
+    line = _en_line(
+        "sup",
+        [{"glosses": ["informal greeting"], "tags": ["informal"], "examples": []}],
+        [{"code": "es", "word": "qué tal", "sense": "informal greeting"}],
+    )
+    out = {}
+    _process_english_line(line, set(), out)
+    assert out["sup"][0]["translation"] == "qué tal"
+
+
+def test_process_english_line_skips_self_translation_when_alternative_exists():
+    line = _en_line(
+        "bro",
+        [{"glosses": ["informal term for a close friend"], "tags": ["informal"], "examples": []}],
+        [
+            {"code": "es", "word": "tío", "sense": "informal term for a close friend"},
+            {"code": "es", "word": "bro", "sense": "informal term for a close friend"},
+        ],
+    )
+    out = {}
+    _process_english_line(line, set(), out)
+    translations = [c["translation"] for c in out["bro"]]
+    assert translations == ["tío"]
+
+
+def test_process_english_line_keeps_self_translation_when_it_is_the_only_candidate():
+    line = _en_line(
+        "hotel",
+        [{"glosses": ["a place offering lodging"], "tags": [], "examples": []}],
+        [{"code": "es", "word": "hotel", "sense": "a place offering lodging"}],
+    )
+    out = {}
+    _process_english_line(line, {"hotel"}, out)
+    assert out["hotel"] == [{"translation": "hotel", "description": "a place offering lodging"}]
