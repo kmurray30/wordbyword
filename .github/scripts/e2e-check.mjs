@@ -1,14 +1,14 @@
 // On-demand end-to-end check against the deployed Railway services. Runs on
 // GitHub Actions (not in the dev sandbox, which can't reach *.up.railway.app
-// at all - its egress policy blocks that domain outright). Six stages:
+// at all - its egress policy blocks that domain outright). Six stages, in an
+// order that deliberately checks the backend's own LLM/translation logic
+// (stages 1-2) BEFORE anything that depends on DeepInfra, a third-party TTS
+// provider that's had real, repeated slow/down patches unrelated to this
+// app's own code (stages 3-4) - so a DeepInfra outage fails loudly on its
+// own stage instead of masking whether the actual application logic works:
 //  1. Hit the backend's /chat/turn directly - isolates "is the LLM path
 //     actually working" from any frontend issue.
-//  2. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
-//     actually working" (right model/voice, valid token) from the frontend.
-//  3. Hit /tts/voices and /tts/speak for each Spanish voice directly -
-//     confirms every voice the picker offers is a real, working DeepInfra
-//     voice id, not just the default.
-//  4. Send an English message to /chat/turn, and a fixed Spanish phrase to
+//  2. Send an English message to /chat/turn, and a fixed Spanish phrase to
 //     /translate/text - prints both for a human to eyeball (semantic
 //     correctness isn't something a script can assert), but at least
 //     confirms the LLM-backed translation path actually returns something,
@@ -16,7 +16,12 @@
 //     few known slang words (bro/sup/partner) - regression coverage for a
 //     real bug where Argos's word-level fallback echoed unknown words back
 //     unchanged instead of translating them.
-//  5. Confirm GET /chat/history reflects what stages 1/4 just sent, and
+//  3. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
+//     actually working" (right model/voice, valid token) from the frontend.
+//  4. Hit /tts/voices and /tts/speak for each Spanish voice directly -
+//     confirms every voice the picker offers is a real, working DeepInfra
+//     voice id, not just the default.
+//  5. Confirm GET /chat/history reflects what stages 1/2 just sent, and
 //     that POST /chat/history/clear actually empties it.
 //  6. If those pass, drive the real site with Playwright end to end: send a
 //     message, hover a word gloss, play its audio, toggle both messages'
@@ -121,13 +126,13 @@ async function speakDirect(voice) {
 }
 
 async function checkTTSDirect() {
-  console.log(`[2/6] Sending a direct /tts/speak request (up to ${TTS_TIMEOUT_MS / 1000}s) ...`);
+  console.log(`[3/6] Sending a direct /tts/speak request (up to ${TTS_TIMEOUT_MS / 1000}s) ...`);
   const { elapsed, contentType, bytes } = await speakDirect(undefined);
   console.log(`  OK in ${elapsed}ms - ${contentType}, ${bytes} bytes`);
 }
 
 async function checkVoicesDirect() {
-  console.log(`[3/6] Checking /tts/voices?language=es and every Spanish voice ...`);
+  console.log(`[4/6] Checking /tts/voices?language=es and every Spanish voice ...`);
   const res = await fetch(`${BACKEND_URL}/tts/voices?language=es`);
   if (!res.ok) fail(`/tts/voices?language=es returned ${res.status}`);
   const data = await res.json();
@@ -145,11 +150,11 @@ async function checkVoicesDirect() {
 }
 
 async function checkEnglishInputAndTranslation() {
-  console.log(`[4/6] Sending an English message to /chat/turn (session ${TEST_SESSION_ID}, no prior turns polluting it) ...`);
+  console.log(`[2/6] Sending an English message to /chat/turn (session ${TEST_SESSION_ID}, no prior turns polluting it) ...`);
   const { text } = await chatTurn("Hi, what hobbies do you like?");
   console.log(`  reply: ${JSON.stringify(text)} (eyeball: does this answer, or just echo/translate the question?)`);
 
-  console.log(`[4/6] Sending a direct /translate/text request ...`);
+  console.log(`[2/6] Sending a direct /translate/text request ...`);
   const translateRes = await fetch(`${BACKEND_URL}/translate/text`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -177,7 +182,7 @@ async function checkEnglishInputAndTranslation() {
   // "bro"), "partner" via Wiktionary's own translation table. "bro" and
   // "sup" must each offer more than one real candidate (the whole point of
   // the cycle button) - "partner" already does via Wiktionary alone.
-  console.log(`[4/6] Checking /translate/word no longer echoes known slang back unchanged ...`);
+  console.log(`[2/6] Checking /translate/word no longer echoes known slang back unchanged ...`);
   for (const word of ["bro", "sup", "partner"]) {
     const res = await fetch(`${BACKEND_URL}/translate/word`, {
       method: "POST",
@@ -460,9 +465,9 @@ async function checkBrowserEndToEnd() {
 }
 
 await checkBackendDirect();
+await checkEnglishInputAndTranslation();
 await checkTTSDirect();
 await checkVoicesDirect();
-await checkEnglishInputAndTranslation();
 await checkHistoryAndClear();
 await checkBrowserEndToEnd();
 console.log("ALL CHECKS PASSED");
