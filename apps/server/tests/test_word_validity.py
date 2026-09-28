@@ -20,3 +20,9 @@ def test_ordinary_english_word_not_valid_spanish():
 
 def test_case_insensitive():
     assert is_valid_spanish_word("Hola") is True
+
+
+def test_spanish_word_valid_even_with_accent_dropped():
+    # The checker's own dictionary has "área" (accented) but not "area" -
+    # a learner who drops the accent should still be recognized.
+    assert is_valid_spanish_word("area") is True

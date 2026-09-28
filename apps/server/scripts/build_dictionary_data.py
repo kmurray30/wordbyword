@@ -59,6 +59,21 @@ MAX_TRANSLATION_LEN = 60
 
 _WORD_RE = re.compile(r"^[a-zA-ZñÑáéíóúüÁÉÍÓÚÜ]+$")
 
+# Duplicated from app/translate/text_normalize.py rather than imported: this
+# script deliberately runs (see Dockerfile) before the full app/ source is
+# copied into the image, so the expensive download+build layer stays cached
+# across ordinary app code changes - importing from app.* would defeat that.
+# Deliberately an explicit table, not blanket Unicode decompose-and-strip:
+# "ñ" decomposes to "n" + a combining tilde, but ñ is its own letter in
+# Spanish, not an accented "n" - stripping it would collide real word pairs
+# that differ only by ñ/n (e.g. "año" "year" vs "ano" - a real, not
+# hypothetical, embarrassing bug this specifically avoids).
+_ACCENT_MAP = str.maketrans("áéíóúÁÉÍÓÚüÜ", "aeiouAEIOUuU")
+
+
+def _strip_accents(text: str) -> str:
+    return text.translate(_ACCENT_MAP)
+
 
 def _short(text: str, limit: int) -> str:
     text = text.strip()
@@ -100,7 +115,9 @@ def _process_spanish_line(line: str, es_freq: set[str], out: dict[str, list[dict
     word = entry.get("word", "")
     if not _WORD_RE.match(word):
         return
-    lemma = word.lower()
+    # Accent-stripped key so "como" and "cómo" share one entry - a learner
+    # who drops (or mistypes) an accent still finds the word.
+    lemma = _strip_accents(word.lower())
     candidates = out.setdefault(lemma, [])
     if len(candidates) >= MAX_CANDIDATES_PER_WORD:
         return

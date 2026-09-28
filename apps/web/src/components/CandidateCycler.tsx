@@ -12,12 +12,11 @@ interface CandidateCyclerProps {
   onSelect?: (translation: string) => void;
 }
 
-// One translation candidate at a time, with prev/next arrows to step
-// through alternates (e.g. "tener" -> "to have" / "to be (years old)") and
-// a short description of the shown sense - more compact than listing every
-// candidate as its own row, and scales to however many candidates a given
-// source (curated dictionary, LLM) actually has. Arrows/counter only show
-// once there's more than one candidate to step through.
+// One translation candidate at a time - word and its short sense
+// description inline on a single line, with a single "next" button to step
+// through alternates (e.g. "tener" -> "to have" / "to be (years old)").
+// Only shows the button once there's more than one candidate to step
+// through; wraps back to the first after the last.
 export function CandidateCycler({ candidates, clickable, onSelect }: CandidateCyclerProps) {
   const [index, setIndex] = useState(0);
   if (candidates.length === 0) return null;
@@ -26,25 +25,20 @@ export function CandidateCycler({ candidates, clickable, onSelect }: CandidateCy
   const current = candidates[clamped];
   const hasMultiple = candidates.length > 1;
 
-  const step = (delta: number) => (e: React.MouseEvent) => {
+  const next = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setIndex((i) => (i + delta + candidates.length) % candidates.length);
+    setIndex((i) => (i + 1) % candidates.length);
   };
 
   const body = (
-    <>
+    <span className="candidate-cycler__text">
       <span className="translation">{current.translation || "…"}</span>
       {current.description && <span className="description">{current.description}</span>}
-    </>
+    </span>
   );
 
   return (
     <div className="candidate-cycler">
-      {hasMultiple && (
-        <button type="button" className="candidate-cycler__arrow" aria-label="Previous option" onClick={step(-1)}>
-          ‹
-        </button>
-      )}
       {clickable && onSelect ? (
         <button type="button" className="candidate-cycler__main" onClick={() => onSelect(current.translation)}>
           {body}
@@ -53,14 +47,9 @@ export function CandidateCycler({ candidates, clickable, onSelect }: CandidateCy
         <div className="candidate-cycler__main candidate-cycler__main--static">{body}</div>
       )}
       {hasMultiple && (
-        <button type="button" className="candidate-cycler__arrow" aria-label="Next option" onClick={step(1)}>
-          ›
+        <button type="button" className="candidate-cycler__next" aria-label="Next option" onClick={next}>
+          ↻
         </button>
-      )}
-      {hasMultiple && (
-        <span className="candidate-cycler__count">
-          {clamped + 1}/{candidates.length}
-        </span>
       )}
     </div>
   );

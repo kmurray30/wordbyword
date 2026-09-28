@@ -26,12 +26,24 @@ def test_wiktionary_hit_returns_before_mt_en_to_es():
         {"translation": "hermano", "description": "brother, also used affectionately"},
     ]
     with (
+        patch("app.translate.service.informal_dictionary.lookup", return_value=[]),
         patch("app.translate.service.wiktionary_dict.lookup_en_to_es", return_value=wiktionary_entries),
         patch("app.translate.service.mt.translate_word") as mocked_mt,
     ):
-        candidates = word_candidates("bro", source_lang="en", target_lang="es")
+        candidates = word_candidates("gizmo", source_lang="en", target_lang="es")
     mocked_mt.assert_not_called()
     assert candidates == wiktionary_entries
+
+
+def test_informal_dictionary_hit_returns_before_wiktionary_and_mt():
+    with (
+        patch("app.translate.service.wiktionary_dict.lookup_en_to_es") as mocked_wiktionary,
+        patch("app.translate.service.mt.translate_word") as mocked_mt,
+    ):
+        candidates = word_candidates("bro", source_lang="en", target_lang="es")
+    mocked_wiktionary.assert_not_called()
+    mocked_mt.assert_not_called()
+    assert len(candidates) >= 2
 
 
 def test_dictionary_and_wiktionary_miss_falls_back_to_mt():
@@ -80,11 +92,12 @@ def test_mt_pass_through_is_reported_as_no_translation_found():
     # training corpus) it just echoes the input back unchanged, which would
     # otherwise look exactly like a real (wrong) translation.
     with (
+        patch("app.translate.service.informal_dictionary.lookup", return_value=[]),
         patch("app.translate.service.wiktionary_dict.lookup_en_to_es", return_value=[]),
-        patch("app.translate.service.mt.translate_word", return_value="bro"),
+        patch("app.translate.service.mt.translate_word", return_value="gizmo"),
     ):
-        candidates = word_candidates("bro", source_lang="en", target_lang="es")
-    assert candidates == [{"translation": "", "description": 'no translation found for "bro"'}]
+        candidates = word_candidates("gizmo", source_lang="en", target_lang="es")
+    assert candidates == [{"translation": "", "description": 'no translation found for "gizmo"'}]
 
 
 def test_mt_pass_through_detection_is_case_insensitive():

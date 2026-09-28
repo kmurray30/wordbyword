@@ -1,5 +1,5 @@
 from app.config import TARGET_LANGUAGE
-from app.translate import dictionary, mt, wiktionary_dict
+from app.translate import dictionary, informal_dictionary, mt, wiktionary_dict
 
 
 def _normalize_word_translation(text: str) -> str:
@@ -21,19 +21,23 @@ def word_candidates(lemma: str, source_lang: str, target_lang: str) -> list[dict
     /translate routes and the chat turn pipeline (which glosses every word
     the agent produces).
 
-    Three tiers, in order:
-    1. The small hand-curated dictionary (dictionary.py) - only for ES->EN,
-       only ~30 words, but with hand-written sense descriptions.
+    Tiers, in order:
+    1. The small hand-curated dictionaries - dictionary.py (ES->EN, ~30
+       words) and informal_dictionary.py (EN->ES slang/greetings, e.g.
+       "sup"/"bro") - hand-written sense descriptions, and hand-picked
+       specifically for words Wiktionary's crowd-sourced data covers
+       poorly or not at all (its translation tables are thorough for
+       formal vocabulary but thin for slang).
     2. The bundled Wiktionary dataset (wiktionary_dict.py) - built at Docker
        build time from real dictionary data (definitions, usage examples,
        colloquial/slang register tags), covering both directions and,
        unlike Argos, offering genuinely multiple candidates per word.
     3. Argos Translate, as a last resort for words neither dictionary
        covers. Argos has no way to say "I don't know this word" - for an
-       out-of-vocabulary word (slang like "bro"/"sup" that never appeared in
-       its formal training corpus) it just echoes the input back unchanged,
-       which would otherwise look like a real (wrong) translation. Detected
-       and reported as "no translation found" instead of silently shown.
+       out-of-vocabulary word (slang that never appeared in its formal
+       training corpus) it just echoes the input back unchanged, which
+       would otherwise look like a real (wrong) translation. Detected and
+       reported as "no translation found" instead of silently shown.
     """
     if source_lang == TARGET_LANGUAGE:
         entries = dictionary.lookup(lemma)
@@ -43,6 +47,9 @@ def word_candidates(lemma: str, source_lang: str, target_lang: str) -> list[dict
         if entries:
             return entries
     else:
+        entries = informal_dictionary.lookup(lemma)
+        if entries:
+            return entries
         entries = wiktionary_dict.lookup_en_to_es(lemma)
         if entries:
             return entries

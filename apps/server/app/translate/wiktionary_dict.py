@@ -20,6 +20,8 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
+from app.translate.text_normalize import strip_accents
+
 DATA_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "wiktionary_dictionary.json"
 
 
@@ -32,8 +34,10 @@ def _data() -> dict[str, dict[str, list[dict[str, str]]]]:
 
 
 def lookup_es_to_en(lemma: str) -> list[dict[str, str]]:
-    return _data()["es_to_en"].get(lemma.lower(), [])
+    # Keys are stored accent-stripped (see build_dictionary_data.py) so a
+    # learner typing "como" still finds "cómo"'s entry.
+    return _data()["es_to_en"].get(strip_accents(lemma.lower()), [])
 
 
 def lookup_en_to_es(lemma: str) -> list[dict[str, str]]:
-    return _data()["en_to_es"].get(lemma.lower(), [])
+    return _data()["en_to_es"].get(strip_accents(lemma.lower()), [])

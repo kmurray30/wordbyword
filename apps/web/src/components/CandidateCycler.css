@@ -1,24 +1,7 @@
 .candidate-cycler {
   display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.candidate-cycler__arrow {
-  all: unset;
-  box-sizing: border-box;
-  flex: none;
-  cursor: pointer;
-  padding: 2px 5px;
-  border-radius: 4px;
-  opacity: 0.6;
-  font-size: 0.95rem;
-  line-height: 1;
-}
-
-.candidate-cycler__arrow:hover {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.1);
+  align-items: baseline;
+  gap: 4px;
 }
 
 .candidate-cycler__main {
@@ -40,20 +23,41 @@
   background: rgba(255, 255, 255, 0.1);
 }
 
-.candidate-cycler .translation {
+/* Translation and description read as one line ("bro - (slang) close male
+   friend") instead of stacked blocks - far more compact vertically, and the
+   popover's own width (see WordCandidatesPopover.css/TranslatePopover.css)
+   is generous enough that this rarely needs to wrap either. */
+.candidate-cycler__text {
   display: block;
+  white-space: normal;
+}
+
+.candidate-cycler .translation {
   font-weight: 600;
 }
 
 .candidate-cycler .description {
-  display: block;
   color: #b7bcc7;
   font-size: 0.78rem;
 }
 
-.candidate-cycler__count {
+.candidate-cycler .description::before {
+  content: " \2013 ";
+}
+
+.candidate-cycler__next {
+  all: unset;
+  box-sizing: border-box;
   flex: none;
-  font-size: 0.68rem;
-  opacity: 0.5;
-  padding-left: 2px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0.6;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.candidate-cycler__next:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.1);
 }

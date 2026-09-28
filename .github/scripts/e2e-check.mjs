@@ -168,17 +168,15 @@ async function checkEnglishInputAndTranslation() {
   // corpus, it just echoed the input back unchanged with no explanation,
   // which looked exactly like a real (wrong) translation rather than a
   // miss. The bug signature specifically is translation === input AND no
-  // description - an UNEXPLAINED echo. That's different from "bro", which
-  // (confirmed live) has its own real Wiktionary entry as an attested
-  // Spanish loanword ("bro (a male comrade or friend)", tagged slang) -
-  // translation "bro" carrying that description is a legitimate, sourced
-  // answer, not the bug.
+  // description - an UNEXPLAINED echo.
   //
-  // "bro" and "partner" both have real Wiktionary-sourced candidates
-  // (confirmed live) and must resolve to one. "sup" ("what's up")
-  // genuinely has no Spanish equivalent anywhere in Wiktionary's data in
-  // either direction (confirmed live) - an honest data gap, not a bug, so
-  // it's allowed to report "no translation found" instead.
+  // "bro", "sup" and "partner" all have real candidates now: "sup" and
+  // "bro" via the curated informal_dictionary.py override (Wiktionary's
+  // crowd-sourced translation tables were too thin for these - no "es"
+  // entry for "sup" at all, and only a bare self-referential one for
+  // "bro"), "partner" via Wiktionary's own translation table. "bro" and
+  // "sup" must each offer more than one real candidate (the whole point of
+  // the cycle button) - "partner" already does via Wiktionary alone.
   console.log(`[4/6] Checking /translate/word no longer echoes known slang back unchanged ...`);
   for (const word of ["bro", "sup", "partner"]) {
     const res = await fetch(`${BACKEND_URL}/translate/word`, {
@@ -189,19 +187,17 @@ async function checkEnglishInputAndTranslation() {
     if (!res.ok) fail(`/translate/word(${word}) returned ${res.status}: ${await res.text()}`);
     const data = await res.json();
     const best = data.candidates?.[0];
-    if (!best) fail(`/translate/word(${word}) returned no candidate at all: ${JSON.stringify(data)}`);
-    const isUnexplainedEcho = best.translation && best.translation.toLowerCase() === word.toLowerCase() && !best.description;
+    if (!best || !best.translation) {
+      fail(`/translate/word(${word}) returned no usable candidate: ${JSON.stringify(data)}`);
+    }
+    const isUnexplainedEcho = best.translation.toLowerCase() === word.toLowerCase() && !best.description;
     if (isUnexplainedEcho) {
       fail(`/translate/word(${word}) echoed the input back unchanged with no explanation: ${JSON.stringify(data)}`);
     }
-    if (!best.translation && word !== "sup") {
-      fail(`/translate/word(${word}) unexpectedly found no translation: ${JSON.stringify(data)}`);
+    if (data.candidates.length < 2) {
+      fail(`/translate/word(${word}) returned only ${data.candidates.length} candidate(s) - expected multiple: ${JSON.stringify(data)}`);
     }
-    console.log(
-      best.translation
-        ? `  "${word}" -> ${JSON.stringify(best.translation)} (${JSON.stringify(best.description)}, ${data.candidates.length} candidate(s))`
-        : `  "${word}" -> no translation found (expected - no Spanish equivalent exists in Wiktionary's data)`
-    );
+    console.log(`  "${word}" -> ${JSON.stringify(best.translation)} (${JSON.stringify(best.description)}, ${data.candidates.length} candidate(s))`);
   }
 }
 

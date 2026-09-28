@@ -5,6 +5,7 @@ from scripts.build_dictionary_data import (
     _process_english_line,
     _process_spanish_line,
     _short,
+    _strip_accents,
 )
 
 
@@ -50,8 +51,9 @@ def test_process_spanish_line_rescues_informal_word_despite_low_frequency():
     line = _es_line("tío", [{"glosses": ["dude, guy"], "tags": ["informal"], "examples": [{"text": "¡Qué tal, tío!"}]}])
     out = {}
     _process_spanish_line(line, set(), out)
-    assert out["tío"][0]["translation"] == "dude, guy"
-    assert "informal" in out["tío"][0]["description"]
+    # Keyed by the accent-stripped lemma ("tio", not "tío").
+    assert out["tio"][0]["translation"] == "dude, guy"
+    assert "informal" in out["tio"][0]["description"]
 
 
 def test_process_spanish_line_caps_candidates_per_word():
@@ -181,3 +183,36 @@ def test_augment_self_loanwords_does_not_duplicate_existing_entry():
     en_to_es = {"hotel": [{"translation": "hotel", "description": "a place offering lodging"}]}
     _augment_en_to_es_self_loanwords(es_to_en, en_to_es, en_freq={"hotel"})
     assert en_to_es["hotel"] == [{"translation": "hotel", "description": "a place offering lodging"}]
+
+
+def test_strip_accents_preserves_enye():
+    assert _strip_accents("año") == "año"
+
+
+def test_strip_accents_normalizes_vowel_accents():
+    assert _strip_accents("cómo") == "como"
+
+
+def test_process_spanish_line_keys_by_accent_stripped_lemma():
+    line = _es_line("cómo", [{"glosses": ["how"], "tags": [], "examples": []}])
+    out = {}
+    _process_spanish_line(line, {"como"}, out)
+    assert "como" in out
+    assert "cómo" not in out
+
+
+def test_process_spanish_line_merges_accented_and_unaccented_headwords():
+    # Real Wiktionary data: "como" (comparison/1st-person "I eat") and
+    # "cómo" (question word "how") are separate JSONL entries that should
+    # end up under the same accent-stripped key, each contributing its own
+    # senses, so a learner who drops the accent still finds both.
+    out = {}
+    _process_spanish_line(
+        _es_line("como", [{"glosses": ["like / as"], "tags": [], "examples": []}]), {"como"}, out
+    )
+    _process_spanish_line(
+        _es_line("cómo", [{"glosses": ["how"], "tags": [], "examples": []}]), {"como"}, out
+    )
+    translations = [c["translation"] for c in out["como"]]
+    assert "like / as" in translations
+    assert "how" in translations

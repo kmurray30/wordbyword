@@ -4,6 +4,10 @@ translation with no sense disambiguation; this override exists specifically
 for common words where showing the user multiple senses (with a short
 description of each) is more useful than a single guess."""
 
+from functools import lru_cache
+
+from app.translate.text_normalize import strip_accents
+
 DICTIONARY_ES_EN: dict[str, list[dict[str, str]]] = {
     "ser": [
         {"translation": "to be", "description": "permanent/inherent state (nationality, identity, characteristics)"},
@@ -77,5 +81,10 @@ DICTIONARY_ES_EN: dict[str, list[dict[str, str]]] = {
 }
 
 
+@lru_cache(maxsize=1)
+def _normalized_index() -> dict[str, list[dict[str, str]]]:
+    return {strip_accents(k): v for k, v in DICTIONARY_ES_EN.items()}
+
+
 def lookup(lemma: str) -> list[dict[str, str]]:
-    return DICTIONARY_ES_EN.get(lemma.lower(), [])
+    return _normalized_index().get(strip_accents(lemma.lower()), [])
