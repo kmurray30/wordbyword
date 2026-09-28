@@ -1,5 +1,6 @@
 from scripts.build_dictionary_data import (
     _augment_en_to_es_from_es_glosses,
+    _augment_en_to_es_self_loanwords,
     _format_description,
     _process_english_line,
     _process_spanish_line,
@@ -148,3 +149,35 @@ def test_augment_does_not_duplicate_existing_translations_table_entry():
     en_to_es = {"partner": [{"translation": "pareja", "description": "a person one is romantically involved with"}]}
     _augment_en_to_es_from_es_glosses(es_to_en, en_to_es, en_freq={"partner"})
     assert en_to_es["partner"] == [{"translation": "pareja", "description": "a person one is romantically involved with"}]
+
+
+def test_augment_self_loanwords_recovers_word_with_its_own_es_entry():
+    # Real data, confirmed live: Spanish Wiktionary independently defines
+    # "bro" as a Spanish loanword ("bro (a male comrade or friend)",
+    # tagged slang) - "bro" itself has NO entry in its own English
+    # translation table, so _process_english_line alone never finds it.
+    es_to_en = {
+        "bro": [
+            {"translation": "bro (a male comrade or friend)", "description": "(slang)"},
+            {"translation": "bro (used to address a male)", "description": "(slang)"},
+        ]
+    }
+    en_to_es: dict = {}
+    _augment_en_to_es_self_loanwords(es_to_en, en_to_es, en_freq={"bro"})
+    assert en_to_es["bro"] == [
+        {"translation": "bro", "description": "(slang) bro (a male comrade or friend)"}
+    ]
+
+
+def test_augment_self_loanwords_requires_common_or_informal_english():
+    es_to_en = {"esoterismo": [{"translation": "esotericism (a body of knowledge)", "description": ""}]}
+    en_to_es: dict = {}
+    _augment_en_to_es_self_loanwords(es_to_en, en_to_es, en_freq=set())
+    assert en_to_es == {}
+
+
+def test_augment_self_loanwords_does_not_duplicate_existing_entry():
+    es_to_en = {"hotel": [{"translation": "a place offering lodging", "description": ""}]}
+    en_to_es = {"hotel": [{"translation": "hotel", "description": "a place offering lodging"}]}
+    _augment_en_to_es_self_loanwords(es_to_en, en_to_es, en_freq={"hotel"})
+    assert en_to_es["hotel"] == [{"translation": "hotel", "description": "a place offering lodging"}]

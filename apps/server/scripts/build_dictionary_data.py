@@ -222,6 +222,34 @@ def _augment_en_to_es_from_es_glosses(
             out_list.append({"translation": es_word, "description": cand["description"] or gloss})
 
 
+def _augment_en_to_es_self_loanwords(
+    es_to_en: dict[str, list[dict[str, str]]], en_to_es: dict[str, list[dict[str, str]]], en_freq: set[str]
+) -> None:
+    """Some Spanish headwords in the ES dataset ARE an English word, used
+    as-is - a genuine borrowed loanword (Spanish slang "bro", independently
+    defined with its own Wiktionary entry: "bro (a male comrade or
+    friend)"), not an Argos-style guess. That's different from the
+    self-translation noise _process_english_line() filters out (a
+    translation TABLE listing a word as its own entry, unverified) - here
+    the ES side's own dictionary entry is the evidence. For any such
+    headword that's also common/informal English, offer it back as a
+    legitimate EN->ES candidate, carrying the ES entry's own description
+    so it reads as "yes, this is valid, informal Spanish" rather than a
+    bare unexplained echo."""
+    for es_word, candidates in es_to_en.items():
+        lemma = es_word.lower()
+        if not (_WORD_RE.match(es_word) and re.match(r"^[a-z]+$", lemma)):
+            continue
+        if lemma not in en_freq or not candidates:
+            continue
+        out_list = en_to_es.setdefault(lemma, [])
+        if len(out_list) >= MAX_CANDIDATES_PER_WORD or any(c["translation"].lower() == lemma for c in out_list):
+            continue
+        best = candidates[0]
+        desc = _short(f"{best['description']} {best['translation']}".strip(), MAX_DESCRIPTION_LEN)
+        out_list.append({"translation": es_word, "description": desc})
+
+
 def _load_frequency_lists() -> tuple[set[str], set[str]]:
     try:
         from wordfreq import top_n_list
@@ -262,6 +290,11 @@ def main() -> None:
     before = len(en_to_es)
     _augment_en_to_es_from_es_glosses(es_to_en, en_to_es, en_freq)
     print(f"  en->es: reverse-index augmentation added {len(en_to_es) - before} more headwords "
+          f"(now {len(en_to_es)})")
+
+    before = len(en_to_es)
+    _augment_en_to_es_self_loanwords(es_to_en, en_to_es, en_freq)
+    print(f"  en->es: self-loanword augmentation added {len(en_to_es) - before} more headwords "
           f"(now {len(en_to_es)})")
 
     with OUT_PATH.open("w", encoding="utf-8") as f:
