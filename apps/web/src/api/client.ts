@@ -26,6 +26,11 @@ type TagInputRequest =
 type TagInputResponse =
   paths["/translate/tag-input"]["post"]["responses"][200]["content"]["application/json"];
 
+type InterpretInputRequest =
+  paths["/translate/interpret"]["post"]["requestBody"]["content"]["application/json"];
+type InterpretInputResponse =
+  paths["/translate/interpret"]["post"]["responses"][200]["content"]["application/json"];
+
 type RewardEventRequest =
   paths["/events/reward"]["post"]["requestBody"]["content"]["application/json"];
 type RewardEventResponse =
@@ -98,6 +103,8 @@ export const api = {
   translateText: (body: TranslateTextRequest) =>
     post<TranslateTextRequest, TranslateTextResponse>("/translate/text", body),
   tagInput: (body: TagInputRequest) => post<TagInputRequest, TagInputResponse>("/translate/tag-input", body),
+  interpretInput: (body: InterpretInputRequest) =>
+    post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", body),
   rewardEvent: (body: RewardEventRequest) =>
     post<RewardEventRequest, RewardEventResponse>("/events/reward", body),
   speak,
@@ -116,6 +123,7 @@ export type {
   TranslateWordResponse,
   TranslateTextResponse,
   TagInputResponse,
+  InterpretInputResponse,
   RewardEventRequest,
   TTSVoicesResponse,
   ChatHistoryResponse,

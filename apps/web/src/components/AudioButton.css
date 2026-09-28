@@ -1,0 +1,23 @@
+.audio-button {
+  flex: none;
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 0.85em;
+  vertical-align: middle;
+}
+
+.audio-button:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.audio-button:disabled {
+  cursor: default;
+}
+
+.audio-button--error {
+  opacity: 0.9;
+}

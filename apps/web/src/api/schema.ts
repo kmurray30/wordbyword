@@ -89,6 +89,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/translate/interpret": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Interpret Input
+         * @description For the learner's own message: infers what they meant across a
+         *     possible mix of English/Spanish and grammar mistakes, returning a
+         *     corrected English restatement alongside its Spanish translation - used
+         *     to show both under the user's chat bubble rather than a single literal
+         *     (and possibly nonsensical) pass.
+         */
+        post: operations["interpret_input_translate_interpret_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/translate/tag-input": {
         parameters: {
             query?: never;
@@ -98,7 +122,13 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Tag Input */
+        /**
+         * Tag Input
+         * @description Every real word gets at least one translation column, in whichever
+         *     direction spaCy's is_spanish flag implies; a word in COMMON_ES_EN_COGNATES
+         *     gets both directions, since it's a real word in either language and the
+         *     flag can only pick one.
+         */
         post: operations["tag_input_translate_tag_input_post"];
         delete?: never;
         options?: never;
@@ -236,10 +266,22 @@ export interface components {
             /** End */
             end: number;
             /**
-             * Candidates
+             * Columns
              * @default []
              */
-            candidates: components["schemas"]["TranslateCandidate"][];
+            columns: components["schemas"]["TranslationColumn"][];
+        };
+        /** InterpretInputRequest */
+        InterpretInputRequest: {
+            /** Text */
+            text: string;
+        };
+        /** InterpretInputResponse */
+        InterpretInputResponse: {
+            /** Native */
+            native: string;
+            /** Target */
+            target: string;
         };
         /** RewardEventRequest */
         RewardEventRequest: {
@@ -345,6 +387,13 @@ export interface components {
             word: string;
             /** Lemma */
             lemma: string;
+            /** Candidates */
+            candidates: components["schemas"]["TranslateCandidate"][];
+        };
+        /** TranslationColumn */
+        TranslationColumn: {
+            /** Language */
+            language: string;
             /** Candidates */
             candidates: components["schemas"]["TranslateCandidate"][];
         };
@@ -518,6 +567,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TranslateTextResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    interpret_input_translate_interpret_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InterpretInputRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterpretInputResponse"];
                 };
             };
             /** @description Validation Error */

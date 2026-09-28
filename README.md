@@ -4,8 +4,10 @@ A chat-based Spanish tutor. You talk to a locally-hosted LLM whose vocabulary
 is steered by a per-word "word bank": every word you've been exposed to has a
 mastery score that decays over time and gets reinforced (or penalized) based
 on how you interact with it - mainly whether you hover to translate it. Hover
-any word, in the agent's replies or in your own draft, to see a translation;
-hover the 🌐 at the end of a message to translate the whole thing at once.
+any word, in the agent's replies or in your own draft, to see a translation
+(both directions - hover a Spanish word for its English meaning, an English
+one for Spanish, and a cognate like "hotel" for both side by side); click the
+🌐 at the end of a message to toggle a full translation underneath it.
 
 ## Architecture
 
@@ -204,20 +206,54 @@ diagnostic for isolating future "is the model bad" reports.
 
 ## Whole-message translation
 
-Hovering the 🌐 on a message shows a translation of the whole thing (better
-word order than stitching together the per-word glosses). This used to go
-through Argos Translate (still used for single-word lookups - see
-`app/translate/service.py`), but its offline MT produced rough, sometimes
-outright wrong translations on short/informal Spanish. `POST
-/translate/text` (`app/translate/llm_translate.py`) now asks the same local
-chat model (`llama_client.chat`) to translate instead, with a system prompt
-that asks for the translation only, no commentary.
+Click the 🌐 on a message to toggle a translation row underneath its bubble
+(better word order than stitching together the per-word glosses). It's a
+toggle, not a hover popover, on purpose - an earlier hover-triggered version
+stayed open forever once the translation arrived, since "is the mouse still
+over it" and "has a translation been fetched" were conflated into one state.
+A click you control is unambiguous, and it also gives a way to lazily fetch
+a translation for a history-hydrated message, which skips the eager
+prefetch below.
 
-The LLM is slower per call than Argos was, so the frontend doesn't wait for
-a hover to ask for it: `ChatMessage.tsx` fires the request automatically as
-soon as an assistant reply is shown, in the background, so it's normally
-already cached by the time anyone hovers. Either way it never blocks the
-reply itself from rendering.
+Translation itself used to go through Argos Translate (still used for
+single-word lookups - see `app/translate/service.py`), but its offline MT
+produced rough, sometimes outright wrong translations on short/informal
+Spanish. `POST /translate/text` (`app/translate/llm_translate.py`) now asks
+the same local chat model (`llama_client.chat`) to translate instead, with a
+system prompt that asks for the translation only, no commentary. The LLM is
+slower per call than Argos was, so the frontend doesn't wait for the toggle
+to ask for it: `ChatMessage.tsx` fires the request automatically as soon as
+a message is shown, in the background, so it's normally already cached by
+the time anyone opens it. Either way it never blocks the message itself
+from rendering.
+
+**The agent's messages get one translation row (Spanish -> English).** The
+**user's own messages get two** - an English row and a Spanish row - because
+a learner's own typed text is often a mix of both languages with grammar
+mistakes in either (e.g. "Do you hablo the espanol good?"), so a single
+literal pass in one direction doesn't make sense. `POST /translate/interpret`
+(`llm_translate.interpret_user_input`) asks the LLM to infer what you meant
+across that mix and reply with a corrected line in each language; if it
+doesn't follow that format (small local models don't always), the route
+falls back to a plain `translate_text` call for whichever line is missing
+rather than showing nothing. The English row has a small pencil icon since
+that guess is exactly the part most likely to need a correction - editing it
+re-derives the Spanish row (and its audio) from your correction instead of
+the original text. Every row past the raw user input (both of the user's
+rows, plus the agent's) gets its own 🔊 button, reusing the same TTS
+pipeline as the agent's raw-message audio; the raw user input itself doesn't,
+since its grammar or spelling might be exactly what's in question.
+
+**Hovering a word in the input box** (not just the chat bubbles) gives a
+ranked list of translation candidates via `POST /translate/tag-input`, and
+clicking one replaces that word in place. Every real word gets at least one
+direction - Spanish words get an ES->EN column, English ones EN->ES - and a
+handful of common cross-language cognates (`hotel`, `animal`, `color`, ...;
+see `app/translate/cognates.py`) get both columns side by side, since a word
+like "hotel" is genuinely valid in either language and spaCy's is-this-
+Spanish flag can only pick one. That cognate list is small and curated, not
+a real bilingual dictionary lookup - it covers the common, unambiguous cases
+rather than attempting exhaustive detection.
 
 ## Text-to-speech
 

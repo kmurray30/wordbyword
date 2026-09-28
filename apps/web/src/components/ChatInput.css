@@ -39,10 +39,16 @@
   background: transparent;
 }
 
-.chat-input__flagged {
+.chat-input__hoverable {
   position: relative;
   pointer-events: auto;
   cursor: pointer;
+}
+
+/* Additive: words that don't look Spanish also get a dashed underline as a
+ * "this might not translate as-is" cue. Plain Spanish/cognate words are
+ * still hoverable via .chat-input__hoverable alone, just without it. */
+.chat-input__flagged {
   border-bottom: 2px dashed #f2a65a;
 }
 

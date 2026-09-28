@@ -40,3 +40,63 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> str:
         return llama_chat(messages, logit_bias={}).strip()
     except ModelServerUnavailableError as exc:
         raise TranslationUnavailableError(str(exc)) from exc
+
+
+def _parse_labeled_lines(reply: str, native_name: str, target_name: str) -> tuple[str, str]:
+    native_text = ""
+    target_text = ""
+    for line in reply.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        if lower.startswith(f"{native_name.lower()}:"):
+            native_text = line.split(":", 1)[1].strip()
+        elif lower.startswith(f"{target_name.lower()}:"):
+            target_text = line.split(":", 1)[1].strip()
+    if not native_text and not target_text:
+        # The model didn't follow the requested "Label: text" format - use
+        # the whole reply as the native-language line and let the caller
+        # derive the target line separately rather than returning nothing.
+        native_text = reply.strip()
+    return native_text, target_text
+
+
+def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
+    """Given raw learner input that may mix native_lang and target_lang, and
+    may have grammar/spelling mistakes in either, return (corrected_native_
+    text, target_language_translation) - the model infers intent across both
+    languages rather than doing a literal per-word pass. Always returns a
+    non-empty target translation for non-empty input: if the model doesn't
+    follow the requested two-line format, falls back to a plain
+    translate_text call for the target line."""
+    if not text.strip():
+        return "", ""
+
+    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
+    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"A language learner is typing in a mix of {native_name} and "
+                f"{target_name}, possibly with grammar or spelling mistakes in "
+                f"either language. Figure out what they meant to say, then "
+                f"reply with EXACTLY two lines and nothing else:\n"
+                f"{native_name}: <a natural, grammatically correct {native_name} "
+                f"sentence with the same meaning>\n"
+                f"{target_name}: <a natural, grammatically correct {target_name} "
+                f"sentence with the same meaning>"
+            ),
+        },
+        {"role": "user", "content": text},
+    ]
+    try:
+        reply = llama_chat(messages, logit_bias={})
+    except ModelServerUnavailableError as exc:
+        raise TranslationUnavailableError(str(exc)) from exc
+
+    native_text, target_text = _parse_labeled_lines(reply, native_name, target_name)
+    if not target_text:
+        target_text = translate_text(native_text, native_lang, target_lang)
+    return native_text, target_text

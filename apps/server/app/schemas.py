@@ -61,8 +61,22 @@ class TranslateTextResponse(BaseModel):
     translation: str
 
 
+class InterpretInputRequest(BaseModel):
+    text: str
+
+
+class InterpretInputResponse(BaseModel):
+    native: str
+    target: str
+
+
 class TagInputRequest(BaseModel):
     text: str
+
+
+class TranslationColumn(BaseModel):
+    language: str  # the language these candidates translate INTO ("en" or "es")
+    candidates: list[TranslateCandidate]
 
 
 class InputTokenAnnotation(BaseModel):
@@ -71,7 +85,9 @@ class InputTokenAnnotation(BaseModel):
     is_spanish: bool
     start: int
     end: int
-    candidates: list[TranslateCandidate] = []
+    # Usually one column (the direction implied by is_spanish); two when the
+    # word is a known cross-language cognate (see app/translate/cognates.py).
+    columns: list[TranslationColumn] = []
 
 
 class TagInputResponse(BaseModel):

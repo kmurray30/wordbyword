@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { InputTokenAnnotation } from "../api/client";
 import { TranslatePopover } from "./TranslatePopover";
+import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import "./ChatInput.css";
 
 const TAG_DEBOUNCE_MS = 350;
@@ -13,7 +14,11 @@ interface Segment {
 }
 
 function buildSegments(text: string, tokens: InputTokenAnnotation[]): Segment[] {
-  const hot = tokens.filter((t) => !t.is_spanish).sort((a, b) => a.start - b.start);
+  // Any word with at least one translation column is hoverable - that's
+  // every real word now, not just ones flagged as non-Spanish (see
+  // /translate/tag-input: a Spanish word gets an ES->EN column, an English
+  // one gets EN->ES, a cognate like "hotel" gets both).
+  const hot = tokens.filter((t) => t.columns.length > 0).sort((a, b) => a.start - b.start);
   const segments: Segment[] = [];
   let cursor = 0;
   for (const t of hot) {
@@ -30,6 +35,7 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
   const [tags, setTags] = useState<InputTokenAnnotation[]>([]);
   const [openTokenKey, setOpenTokenKey] = useState<string | null>(null);
   const [draftTranslation, setDraftTranslation] = useState<string | null>(null);
+  const [showDraftTranslation, setShowDraftTranslation] = useState(false);
 
   useEffect(() => {
     if (!value.trim()) return;
@@ -96,14 +102,19 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
             seg.token ? (
               <span
                 key={i}
-                className="chat-input__flagged"
+                // Non-Spanish words keep the dashed underline (a visual
+                // "this doesn't look like Spanish" cue); Spanish/cognate
+                // words are still hoverable for a translation, just without
+                // the underline, since flagging every ordinary Spanish word
+                // as if it were wrong would be misleading.
+                className={`chat-input__hoverable${!seg.token.is_spanish ? " chat-input__flagged" : ""}`}
                 onMouseEnter={() => setOpenTokenKey(`${seg.token!.start}-${seg.token!.end}`)}
                 onMouseLeave={() => setOpenTokenKey(null)}
               >
                 {seg.text}
                 {openTokenKey === `${seg.token.start}-${seg.token.end}` && (
-                  <TranslatePopover
-                    candidates={seg.token.candidates}
+                  <WordCandidatesPopover
+                    columns={seg.token.columns}
                     onSelect={(translation) => handleReplace(seg.token!, translation)}
                   />
                 )}
@@ -126,9 +137,18 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
           }}
         />
       </div>
-      <span className="chat-input__translate-all" onMouseEnter={handleTranslateDraft}>
+      <span
+        className="chat-input__translate-all"
+        onMouseEnter={() => {
+          setShowDraftTranslation(true);
+          handleTranslateDraft();
+        }}
+        onMouseLeave={() => setShowDraftTranslation(false)}
+      >
         🌐
-        {draftTranslation !== null && <TranslatePopover candidates={[{ translation: draftTranslation }]} />}
+        {showDraftTranslation && draftTranslation !== null && (
+          <TranslatePopover candidates={[{ translation: draftTranslation }]} />
+        )}
       </span>
       <button type="button" onClick={handleSend} disabled={!value.trim()}>
         Send
