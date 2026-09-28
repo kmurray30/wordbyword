@@ -13,6 +13,15 @@ on:
       label:
         description: "Label to prefix log lines with (e.g. weighting-off)"
         default: "run"
+  # workflow_dispatch needs the workflow file discovered on the default
+  # branch first, which this repo doesn't use - push (scoped to this
+  # workflow's own files) is how runs actually get kicked off, same as
+  # e2e-check.yml.
+  push:
+    branches: ["claude/language-learning-chat-app-krn12w"]
+    paths:
+      - ".github/workflows/chat-sample.yml"
+      - ".github/scripts/chat-sample.mjs"
 
 jobs:
   sample:
