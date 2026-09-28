@@ -11,6 +11,7 @@ not block the UI on it.
 """
 
 from app.chat.llama_client import ModelServerUnavailableError, chat as llama_chat
+from app.translate.lemmatizer import analyze
 
 _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 
@@ -62,6 +63,17 @@ def _parse_labeled_lines(reply: str, native_name: str, target_name: str) -> tupl
     return native_text, target_text
 
 
+def _looks_spanish(text: str) -> bool:
+    """Rough majority-vote check reusing the same Spanish/English classifier
+    the word bank already relies on (app/translate/lemmatizer.py) - used to
+    catch the case where the model labeled its two lines correctly but put
+    the wrong language's content under one of them."""
+    words = [t for t in analyze(text) if t.surface.isalpha() and len(t.surface) > 1]
+    if not words:
+        return False
+    return sum(1 for t in words if t.is_spanish) > len(words) / 2
+
+
 def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
     """Given raw learner input that may mix native_lang and target_lang, and
     may have grammar/spelling mistakes in either, return (corrected_native_
@@ -104,6 +116,23 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
         raise TranslationUnavailableError(str(exc)) from exc
 
     native_text, target_text = _parse_labeled_lines(reply, native_name, target_name)
-    if not target_text:
+
+    # A small model can label its two lines correctly but swap which
+    # language's content goes under which label - observed live: the
+    # "English" row came back showing Spanish text. Catch that rather than
+    # trust the labels blindly, when we know target_lang is Spanish (the
+    # only case this app actually exercises - the classifier is Spanish-
+    # specific, see _looks_spanish).
+    if native_text and target_text and target_lang == "es" and native_lang == "en":
+        if _looks_spanish(native_text) and not _looks_spanish(target_text):
+            native_text, target_text = target_text, native_text
+
+    # _parse_labeled_lines already guarantees native_text is non-empty
+    # unless the model's reply itself was blank (native_text falls back to
+    # the whole raw reply when no labels matched at all) - so only one of
+    # these two branches can actually fire for non-empty input.
+    if not target_text and native_text:
         target_text = translate_text(native_text, native_lang, target_lang)
+    elif not native_text and target_text:
+        native_text = translate_text(target_text, target_lang, native_lang)
     return native_text, target_text

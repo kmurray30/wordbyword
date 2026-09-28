@@ -84,16 +84,30 @@ async function listVoices(language: string): Promise<TTSVoicesResponse> {
 }
 
 async function speak(body: TTSRequest): Promise<Blob> {
-  const response = await fetch(`${BASE_URL}/tts/speak`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`/tts/speak failed (${response.status}): ${detail}`);
+  // Observed live: DeepInfra itself hung for the backend's full timeout on
+  // every request during a rough patch, leaving the speaker button stuck
+  // on its loading spinner with no feedback. A plain fetch() has no
+  // built-in ceiling - abort client-side a bit past the backend's own
+  // 15s timeout so this call always settles into a real error the UI can
+  // show, rather than spinning indefinitely if something between the
+  // browser and the backend hangs too.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const response = await fetch(`${BASE_URL}/tts/speak`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`/tts/speak failed (${response.status}): ${detail}`);
+    }
+    return await response.blob();
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return response.blob();
 }
 
 export const api = {

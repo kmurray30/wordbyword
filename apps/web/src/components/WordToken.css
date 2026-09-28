@@ -2,6 +2,11 @@
   position: relative;
   cursor: help;
   border-bottom: 1px dotted rgba(255, 255, 255, 0.4);
+  /* Vertical-only padding: enlarges the hover hit area toward the popover
+     (which opens directly below) without disturbing horizontal text flow/
+     word spacing. */
+  padding: 3px 0;
+  margin: -3px 0;
 }
 
 .word-token--new {

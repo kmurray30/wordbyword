@@ -34,11 +34,15 @@ def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | None = N
     }
 
     try:
+        # Normal calls come back in well under 1s (measured live); 15s is
+        # already generous. Observed live: DeepInfra itself hung for the
+        # old 30s ceiling on every request during a rough patch, doubling
+        # how long a stuck TTS button stayed stuck before finally erroring.
         response = httpx.post(
             DEEPINFRA_TTS_URL,
             json=payload,
             headers={"Authorization": f"Bearer {DEEPINFRA_API_TOKEN}"},
-            timeout=30.0,
+            timeout=15.0,
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:

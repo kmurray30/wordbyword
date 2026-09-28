@@ -3,10 +3,17 @@
   z-index: 20;
   /* Opens upward, not downward: the chat input sits at the bottom of the
      page, so a popover anchored to the word's bottom edge (the usual
-     top: 100%) renders off the bottom of the viewport. */
+     top: 100%) renders off the bottom of the viewport. Centered under the
+     word rather than left-aligned, so it doesn't skew far to one side for
+     a short word next to a wide (dual-column) popover. */
   bottom: 100%;
-  left: 0;
-  margin-bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  /* No margin - see TranslatePopover.css for why a functional gap here
+     causes the popover to vanish right as you try to move into it. The
+     visual gap is padding-bottom instead, which stays part of the box's
+     hit area. */
+  margin-bottom: 0;
   display: flex;
   min-width: 160px;
   max-width: 340px;
@@ -14,7 +21,7 @@
   color: #f2f2f2;
   border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  padding: 6px;
+  padding: 6px 6px 10px;
   font-size: 0.85rem;
   line-height: 1.3;
 }

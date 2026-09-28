@@ -2,15 +2,22 @@
   position: absolute;
   z-index: 20;
   top: 100%;
-  left: 0;
-  margin-top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  /* No margin: a functional gap here means the pointer crosses empty
+     space between the word and the popover, which fires mouseleave on the
+     word (the popover is a DOM child, so hovering it directly wouldn't -
+     but the gap in between belongs to neither). The visual gap comes from
+     padding-top instead, which is still part of this box's hit area, so
+     moving from the word straight into the popover has no dead zone. */
+  margin-top: 0;
   min-width: 160px;
   max-width: 280px;
   background: #1f2430;
   color: #f2f2f2;
   border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  padding: 6px;
+  padding: 10px 6px 6px;
   font-size: 0.85rem;
   line-height: 1.3;
 }

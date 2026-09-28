@@ -86,19 +86,15 @@
   cursor: default;
 }
 
-/* Overrides the generic .chat-input button styling above - this one's a
- * plain icon button (translate-and-replace-draft), not a filled pill. */
-.chat-input button.chat-input__translate-all {
-  padding: 0;
-  padding-bottom: 10px;
-  background: none;
-  color: inherit;
-  font-weight: normal;
-  font-size: 1.1em;
+.chat-input__translate-all {
+  position: relative;
+  cursor: pointer;
   opacity: 0.6;
+  padding-bottom: 10px;
+  font-size: 1.1em;
 }
 
-.chat-input button.chat-input__translate-all:hover:not(:disabled) {
+.chat-input__translate-all:hover {
   opacity: 1;
 }
 

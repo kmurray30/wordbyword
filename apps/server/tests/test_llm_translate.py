@@ -70,3 +70,28 @@ def test_interpret_user_input_wraps_model_server_error():
     with patch("app.translate.llm_translate.llama_chat", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError, match="down"):
             interpret_user_input("hola", "en", "es")
+
+
+def test_interpret_user_input_swaps_mislabeled_content():
+    # Observed live: the model labeled its two lines correctly but put the
+    # wrong language's content under each one - the "English" row came back
+    # showing Spanish text (and vice versa).
+    reply = "English: ¿Hablas bien español?\nSpanish: Do you speak Spanish well?"
+    with patch("app.translate.llm_translate.llama_chat", return_value=reply):
+        native, target = interpret_user_input("Do you hablo the espanol good?", "en", "es")
+
+    assert native == "Do you speak Spanish well?"
+    assert target == "¿Hablas bien español?"
+
+
+def test_interpret_user_input_backfills_missing_native_line():
+    # The model produced only the target-language line.
+    with patch(
+        "app.translate.llm_translate.llama_chat",
+        side_effect=["Spanish: ¿Hablas bien español?", "Do you speak Spanish well?"],
+    ) as mock_chat:
+        native, target = interpret_user_input("Do you hablo the espanol good?", "en", "es")
+
+    assert native == "Do you speak Spanish well?"
+    assert target == "¿Hablas bien español?"
+    assert mock_chat.call_count == 2
