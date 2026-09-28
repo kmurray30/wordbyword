@@ -1,0 +1,30 @@
+name: Chat quality sample (deployed Railway app)
+
+# Manual-only tool for comparing reply quality across config changes (e.g.
+# WORD_WEIGHTING_ENABLED on vs off) - sends several distinct conversational
+# turns and prints every reply. No browser/TTS checks, unlike e2e-check.yml;
+# this is purely about eyeballing chat output, run on demand.
+on:
+  workflow_dispatch:
+    inputs:
+      backend_url:
+        description: "Backend base URL"
+        default: "https://server-production-f688.up.railway.app"
+      label:
+        description: "Label to prefix log lines with (e.g. weighting-off)"
+        default: "run"
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BACKEND_URL: ${{ github.event.inputs.backend_url || 'https://server-production-f688.up.railway.app' }}
+      SAMPLE_LABEL: ${{ github.event.inputs.label || 'run' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Sample chat replies
+        run: node .github/scripts/chat-sample.mjs
