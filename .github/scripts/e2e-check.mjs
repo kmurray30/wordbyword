@@ -262,12 +262,11 @@ async function checkBrowserEndToEnd() {
       fail("no speaker button (.audio-button) found on the assistant message");
     }
 
-    // Translation rows: click the 🌐 toggle on the assistant message and
-    // confirm a translation row actually appears (not just that the button
-    // is clickable) - this is a click toggle now, not a hover popover that
-    // used to stay open forever once fetched.
-    const assistantToggle = page.locator(".chat-message--assistant .chat-message__translate-toggle").first();
-    await assistantToggle.click();
+    // Translation rows: hovering the message previews the translation (no
+    // click needed); moving the mouse away hides it again unless pinned;
+    // clicking the toggle pins it open even after the mouse leaves.
+    const assistantColumn = page.locator(".chat-message--assistant .chat-message__column").first();
+    await assistantColumn.hover();
     await page.waitForSelector(".chat-message--assistant .translation-row--assistant", { timeout: 15_000 });
     const assistantRowText = await page
       .locator(".chat-message--assistant .translation-row--assistant .translation-row__text")
@@ -275,13 +274,25 @@ async function checkBrowserEndToEnd() {
     if (!assistantRowText.trim()) {
       fail("assistant translation row appeared but has no text");
     }
-    console.log(`  OK - assistant translation row: ${JSON.stringify(assistantRowText)}`);
-    await assistantToggle.click();
-    const stillOpen = await page.locator(".chat-message--assistant .translation-row--assistant").count();
-    if (stillOpen !== 0) {
-      fail("assistant translation row still present after toggling it closed");
+    console.log(`  OK - assistant translation row previews on hover: ${JSON.stringify(assistantRowText)}`);
+
+    await page.mouse.move(0, 0);
+    await page.waitForTimeout(200);
+    const stillOpenAfterUnhover = await page.locator(".chat-message--assistant .translation-row--assistant").count();
+    if (stillOpenAfterUnhover !== 0) {
+      fail("assistant translation row still present after moving the mouse away (not pinned)");
     }
-    console.log("  OK - toggle closes the translation row (doesn't just persist)");
+    console.log("  OK - moving the mouse away hides the row (doesn't just persist)");
+
+    const assistantToggle = page.locator(".chat-message--assistant .chat-message__translate-toggle").first();
+    await assistantToggle.click();
+    await page.mouse.move(0, 0);
+    await page.waitForTimeout(200);
+    const pinnedOpen = await page.locator(".chat-message--assistant .translation-row--assistant").count();
+    if (pinnedOpen === 0) {
+      fail("assistant translation row not pinned open after clicking the toggle, then moving the mouse away");
+    }
+    console.log("  OK - clicking the toggle pins the translation row open");
 
     // Same for the user's own message, which should get TWO rows (EN + ES)
     // plus an edit affordance on the EN one.
@@ -294,15 +305,15 @@ async function checkBrowserEndToEnd() {
       console.log(`  (debug) all .chat-message class lists: ${JSON.stringify(allMessages)}`);
       await page.screenshot({ path: "e2e-debug-no-user-message.png" });
     }
-    const userToggle = page.locator(".chat-message--user .chat-message__translate-toggle").first();
-    await userToggle.click();
+    const userColumn = page.locator(".chat-message--user .chat-message__column").first();
+    await userColumn.hover();
     await page.waitForSelector(".chat-message--user .translation-row--user-native", { timeout: 15_000 });
     await page.waitForSelector(".chat-message--user .translation-row--user-target", { timeout: 15_000 });
     const editButton = page.locator(".chat-message--user .translation-row--user-native .translation-row__edit");
     if ((await editButton.count()) === 0) {
       fail("user's EN translation row has no edit button");
     }
-    console.log("  OK - user message shows EN + ES translation rows with an edit button on EN");
+    console.log("  OK - hovering the user message previews EN + ES translation rows with an edit button on EN");
 
     // Hovering a word in the input box should show translation candidates -
     // "hotel" is a known cognate (app/translate/cognates.py), so it should

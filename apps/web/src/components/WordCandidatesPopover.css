@@ -64,6 +64,10 @@
 
 .word-candidates-popover button {
   all: unset;
+  /* `all: unset` resets box-sizing back to its content-box default too -
+     without border-box here, `width: 100%` + `padding` below add up to
+     wider than the container, pushing the button's right edge past it. */
+  box-sizing: border-box;
   display: block;
   width: 100%;
   cursor: pointer;

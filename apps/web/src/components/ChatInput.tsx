@@ -165,6 +165,7 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
         {showDraftPreview && draftTranslation !== null && (
           <TranslatePopover
             candidates={[{ translation: draftTranslation }]}
+            direction="up"
             onSelect={(translation) => {
               handleValueChange(translation);
               setShowDraftPreview(false);

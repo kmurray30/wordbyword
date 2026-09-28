@@ -10,14 +10,27 @@ fetch this in the background after already showing the untranslated text,
 not block the UI on it.
 """
 
+import re
+
 from app.chat.llama_client import ModelServerUnavailableError, chat as llama_chat
 from app.translate.lemmatizer import analyze
 
 _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 
+# Qwen3 is heavily trained on Chinese data and, on a bad roll, can emit CJK
+# tokens instead of the requested Spanish/English - observed live: a
+# translation click inserted Chinese characters into the input. Neither
+# language this app handles uses these scripts, so any hit here means the
+# reply is garbage, not a real translation.
+_UNEXPECTED_SCRIPT_RE = re.compile(r"[一-鿿぀-ヿ가-힯]")
+
 
 class TranslationUnavailableError(RuntimeError):
     pass
+
+
+def _looks_garbled(text: str) -> bool:
+    return bool(_UNEXPECTED_SCRIPT_RE.search(text))
 
 
 def translate_text(text: str, source_lang: str, target_lang: str) -> str:
@@ -37,10 +50,17 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> str:
         },
         {"role": "user", "content": text},
     ]
-    try:
-        return llama_chat(messages, logit_bias={}).strip()
-    except ModelServerUnavailableError as exc:
-        raise TranslationUnavailableError(str(exc)) from exc
+    # One retry for a garbled (wrong-script) reply - cheap insurance against
+    # an occasional bad sample, not a real error worth surfacing to the user.
+    last_result = ""
+    for _attempt in range(2):
+        try:
+            last_result = llama_chat(messages, logit_bias={}).strip()
+        except ModelServerUnavailableError as exc:
+            raise TranslationUnavailableError(str(exc)) from exc
+        if not _looks_garbled(last_result):
+            return last_result
+    raise TranslationUnavailableError(f"Model returned a garbled reply: {last_result!r}")
 
 
 def _parse_labeled_lines(reply: str, native_name: str, target_name: str) -> tuple[str, str]:
@@ -110,10 +130,22 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
         },
         {"role": "user", "content": text},
     ]
-    try:
-        reply = llama_chat(messages, logit_bias={})
-    except ModelServerUnavailableError as exc:
-        raise TranslationUnavailableError(str(exc)) from exc
+    reply = ""
+    for _attempt in range(2):
+        try:
+            reply = llama_chat(messages, logit_bias={})
+        except ModelServerUnavailableError as exc:
+            raise TranslationUnavailableError(str(exc)) from exc
+        if not _looks_garbled(reply):
+            break
+    else:
+        # Both attempts came back garbled - fall back to translate_text
+        # directly on the raw input rather than trying to parse garbage.
+        # translate_text has its own retry, so this is a genuinely
+        # independent second chance, not just repeating the same failure.
+        target_text = translate_text(text, native_lang, target_lang)
+        native_text = translate_text(text, target_lang, native_lang) if _looks_spanish(text) else text
+        return native_text, target_text
 
     native_text, target_text = _parse_labeled_lines(reply, native_name, target_name)
 

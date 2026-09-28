@@ -8,13 +8,18 @@ export interface PopoverCandidate {
 interface TranslatePopoverProps {
   candidates: PopoverCandidate[];
   onSelect?: (translation: string) => void;
+  // "down" (default) suits a word inside a chat bubble, which has room
+  // below it. "up" is for anything pinned near the bottom of the page
+  // (the input box's draft-translate button) - opening downward there
+  // would render off the bottom of the viewport.
+  direction?: "down" | "up";
 }
 
-export function TranslatePopover({ candidates, onSelect }: TranslatePopoverProps) {
+export function TranslatePopover({ candidates, onSelect, direction = "down" }: TranslatePopoverProps) {
   if (candidates.length === 0) return null;
 
   return (
-    <div className="translate-popover" role="tooltip">
+    <div className={`translate-popover translate-popover--${direction}`} role="tooltip">
       <ul>
         {candidates.map((c, i) => (
           <li key={i}>

@@ -61,6 +61,12 @@
   opacity: 1;
 }
 
+.chat-message__typo {
+  text-decoration: underline wavy #ff5c5c;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
 .chat-message__translations {
   display: flex;
   flex-direction: column;

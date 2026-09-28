@@ -95,3 +95,38 @@ def test_interpret_user_input_backfills_missing_native_line():
     assert native == "Do you speak Spanish well?"
     assert target == "¿Hablas bien español?"
     assert mock_chat.call_count == 2
+
+
+def test_translate_text_retries_once_on_garbled_reply():
+    # Qwen3 is heavily trained on Chinese data and can occasionally emit CJK
+    # tokens instead of the requested language - observed live: a click
+    # inserted Chinese characters into the input box.
+    with patch(
+        "app.translate.llm_translate.llama_chat",
+        side_effect=["你好世界", "Hello"],
+    ) as mock_chat:
+        assert translate_text("Hola", "es", "en") == "Hello"
+    assert mock_chat.call_count == 2
+
+
+def test_translate_text_raises_if_still_garbled_after_retry():
+    with patch("app.translate.llm_translate.llama_chat", return_value="你好世界"):
+        with pytest.raises(TranslationUnavailableError, match="garbled"):
+            translate_text("Hola", "es", "en")
+
+
+def test_interpret_user_input_falls_back_to_translate_text_on_garbled_reply():
+    # Both interpret attempts come back garbled - falls back to a plain
+    # translate_text call on the raw input rather than parsing garbage.
+    # The raw input reads as majority-English, so native_text is used as-is
+    # (no further translate_text call needed for it) and only the target
+    # (Spanish) line needs a real translation call.
+    with patch(
+        "app.translate.llm_translate.llama_chat",
+        side_effect=["你好世界", "你好世界", "¿Hablas bien español?"],
+    ) as mock_chat:
+        native, target = interpret_user_input("Do you hablo the espanol good?", "en", "es")
+
+    assert native == "Do you hablo the espanol good?"
+    assert target == "¿Hablas bien español?"
+    assert mock_chat.call_count == 3

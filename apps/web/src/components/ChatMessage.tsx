@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { TokenAnnotation } from "../api/client";
 import { joinTokens } from "../lib/spacing";
+import { diffRawWords, pickDiffReference, tokenizeSegments } from "../lib/wordDiff";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
 import "./ChatMessage.css";
+
+const TRANSLATION_FAILED = "(translation failed)";
 
 export interface DisplayMessage {
   id: number;
@@ -28,11 +31,18 @@ const RESOLUTION_DELAY_MS = 6000;
 export function ChatMessage({ message, voice }: { message: DisplayMessage; voice?: string }) {
   const resolvedLemmas = useRef<Set<string>>(new Set());
 
-  // Toggle, not hover: a hover-triggered popover that stays open forever
-  // once fetched (the old behavior) is confusing - a click you control is
-  // clearer, and it also gives history-hydrated messages an obvious way to
-  // fetch a translation lazily since they skip the eager prefetch below.
-  const [showTranslation, setShowTranslation] = useState(false);
+  // Hovering the message previews its translation (fetched eagerly below,
+  // so it's normally instant); the toggle button also pins it open on
+  // click, for touch/keyboard users and anyone who wants to read it without
+  // holding the hover (e.g. to use the edit pencil or an audio button).
+  // The translation rows live in normal document flow directly under the
+  // bubble - not an absolutely-positioned popover - so there's no gap for
+  // the pointer to cross between them; hover can be driven safely off the
+  // whole column without the old "vanishes before you can reach it" bug
+  // that hover-based popovers elsewhere in the app had to work around.
+  const [isHovering, setIsHovering] = useState(false);
+  const [isPinned, setIsPinned] = useState(false);
+  const showTranslation = isHovering || isPinned;
 
   // Assistant: single ES->EN translation row.
   const [assistantTranslation, setAssistantTranslation] = useState<string | null>(null);
@@ -88,8 +98,8 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
         setUserTarget(res.target);
       })
       .catch(() => {
-        setUserNative("(translation failed)");
-        setUserTarget("(translation failed)");
+        setUserNative(TRANSLATION_FAILED);
+        setUserTarget(TRANSLATION_FAILED);
       })
       .finally(() => setUserInterpreting(false));
   };
@@ -105,12 +115,19 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message.id]);
 
-  const handleToggleTranslation = () => {
-    const next = !showTranslation;
-    setShowTranslation(next);
-    if (!next) return;
+  const fetchTranslation = () => {
     if (message.role === "assistant") fetchAssistantTranslation();
     else fetchUserInterpretation();
+  };
+
+  const handleMouseEnter = () => {
+    setIsHovering(true);
+    fetchTranslation();
+  };
+
+  const handleTogglePin = () => {
+    setIsPinned((pinned) => !pinned);
+    fetchTranslation();
   };
 
   // The learner corrected the guessed English restatement - re-derive the
@@ -127,29 +144,79 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
       .finally(() => setUserTargetRetranslating(false));
   };
 
-  const spaced = message.tokens ? joinTokens(message.tokens.map((t) => t.surface)) : null;
+  // Only assistant replies get per-token annotations from the backend -
+  // history rows for a user message come back with tokens: [] (truthy as
+  // an array, so this has to check length, not just presence) and should
+  // fall through to plain/diffed text below.
+  const hasTokens = !!message.tokens && message.tokens.length > 0;
+  const spaced = hasTokens ? joinTokens(message.tokens!.map((t) => t.surface)) : null;
+
+  // Underlines words in the raw bubble that don't appear in either
+  // corrected version - a lightweight "this looked off" cue, not a full
+  // spell checker. Skipped until both translations are in (or if either
+  // failed), and for accent-only differences (see wordDiff.ts).
+  const userTypoSegments = useMemo(() => {
+    if (message.role !== "user") return null;
+    if (userNative === null || userTarget === null) return null;
+    if (userNative === TRANSLATION_FAILED || userTarget === TRANSLATION_FAILED) return null;
+
+    const rawSegments = tokenizeSegments(message.text);
+    const rawWords = rawSegments.filter((s) => s.isWord).map((s) => s.text);
+    if (rawWords.length === 0) return null;
+
+    const nativeWords = tokenizeSegments(userNative)
+      .filter((s) => s.isWord)
+      .map((s) => s.text);
+    const targetWords = tokenizeSegments(userTarget)
+      .filter((s) => s.isWord)
+      .map((s) => s.text);
+    const reference = pickDiffReference(rawWords, nativeWords, targetWords);
+    const matched = diffRawWords(rawWords, reference);
+
+    let wordIndex = 0;
+    return rawSegments.map((seg) => {
+      if (!seg.isWord) return { text: seg.text, flagged: false };
+      const flagged = !matched[wordIndex];
+      wordIndex++;
+      return { text: seg.text, flagged };
+    });
+  }, [message.role, message.text, userNative, userTarget]);
 
   return (
     <div className={`chat-message chat-message--${message.role}`}>
-      <div className="chat-message__column">
+      <div
+        className="chat-message__column"
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={() => setIsHovering(false)}
+      >
         <div className="chat-message__bubble">
-          {message.tokens && spaced ? (
-            message.tokens.map((tok, i) => (
+          {hasTokens && spaced ? (
+            message.tokens!.map((tok, i) => (
               <span key={i}>
                 {spaced[i].spaceBefore && " "}
                 <WordToken surface={tok.surface} gloss={tok.gloss} isNew={tok.is_new} onHover={() => handleHover(tok.lemma)} />
               </span>
             ))
+          ) : userTypoSegments ? (
+            userTypoSegments.map((seg, i) =>
+              seg.flagged ? (
+                <span key={i} className="chat-message__typo" title="Looks different from the corrected version">
+                  {seg.text}
+                </span>
+              ) : (
+                <span key={i}>{seg.text}</span>
+              ),
+            )
           ) : (
             message.text
           )}
           <button
             type="button"
-            className={`chat-message__translate-toggle${showTranslation ? " chat-message__translate-toggle--active" : ""}`}
-            onClick={handleToggleTranslation}
-            aria-label="Show translation"
-            aria-pressed={showTranslation}
-            title="Show translation"
+            className={`chat-message__translate-toggle${isPinned ? " chat-message__translate-toggle--active" : ""}`}
+            onClick={handleTogglePin}
+            aria-label="Pin translation open"
+            aria-pressed={isPinned}
+            title="Hover to preview - click to keep it open"
           >
             🌐
           </button>
