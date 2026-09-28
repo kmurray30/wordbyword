@@ -12,6 +12,8 @@ messages array automatically, so we don't have to hand-format prompts for
 Qwen3 ourselves.
 """
 
+import time
+
 import httpx
 
 from app.config import MAX_REPLY_TOKENS, MODEL_SERVER_BASE_URL
@@ -19,6 +21,14 @@ from app.config import MAX_REPLY_TOKENS, MODEL_SERVER_BASE_URL
 
 class ModelServerUnavailableError(RuntimeError):
     pass
+
+
+# model-server runs with Railway's Serverless mode (sleeps after ~5-10min
+# idle, wakes on the next request) - a 502/503 or connection failure right
+# after a quiet period is that documented wake-up window, not a real outage,
+# so it's worth a couple of short retries before giving up.
+_MAX_ATTEMPTS = 3
+_RETRY_DELAY_S = 3.0
 
 
 def chat(
@@ -53,24 +63,36 @@ def chat(
         "max_tokens": max_tokens if max_tokens is not None else MAX_REPLY_TOKENS,
     }
 
-    try:
-        response = httpx.post(
-            f"{MODEL_SERVER_BASE_URL}/v1/chat/completions",
-            json=payload,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-    except httpx.TimeoutException as exc:
-        raise ModelServerUnavailableError(
-            f"Model server at {MODEL_SERVER_BASE_URL} didn't respond within {timeout}s. "
-            "It may be under-resourced (check LLAMA_ARG_THREADS isn't oversubscribed "
-            "relative to the container's actual CPU allocation) rather than down."
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise ModelServerUnavailableError(
-            f"Could not reach the model server at {MODEL_SERVER_BASE_URL}. "
-            "Make sure llama-server is running (see README)."
-        ) from exc
+    response = None
+    for attempt in range(_MAX_ATTEMPTS):
+        if attempt > 0:
+            time.sleep(_RETRY_DELAY_S)
+        try:
+            response = httpx.post(
+                f"{MODEL_SERVER_BASE_URL}/v1/chat/completions",
+                json=payload,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            break
+        except httpx.TimeoutException as exc:
+            raise ModelServerUnavailableError(
+                f"Model server at {MODEL_SERVER_BASE_URL} didn't respond within {timeout}s. "
+                "It may be under-resourced (check LLAMA_ARG_THREADS isn't oversubscribed "
+                "relative to the container's actual CPU allocation) rather than down."
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in (502, 503) or attempt == _MAX_ATTEMPTS - 1:
+                raise ModelServerUnavailableError(
+                    f"Could not reach the model server at {MODEL_SERVER_BASE_URL}. "
+                    "Make sure llama-server is running (see README)."
+                ) from exc
+        except httpx.HTTPError as exc:
+            if attempt == _MAX_ATTEMPTS - 1:
+                raise ModelServerUnavailableError(
+                    f"Could not reach the model server at {MODEL_SERVER_BASE_URL}. "
+                    "Make sure llama-server is running (see README)."
+                ) from exc
 
     data = response.json()
     choices = data.get("choices") or []

@@ -41,8 +41,35 @@ type TTSRequest =
 type TTSVoicesResponse =
   paths["/tts/voices"]["get"]["responses"][200]["content"]["application/json"];
 
+// The backend runs with Railway's Serverless mode (sleeps after ~5-10min
+// idle, wakes on the next request) - the documented signature of that
+// wake-up window is a 502/503, or the request failing to connect at all,
+// on the very first request after a quiet spell, not a real outage. Worth
+// one short retry before treating it as a real failure - chatHistory and
+// listVoices in particular fire automatically on page load, so without
+// this, opening the app after it's been idle a while would show a broken
+// error instead of just loading a beat slower.
+async function fetchWithColdStartRetry(input: string, init?: RequestInit): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch(input, init);
+      if ((response.status === 502 || response.status === 503) && attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        continue;
+      }
+      return response;
+    } catch (err) {
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function post<Req, Res>(path: string, body: Req): Promise<Res> {
-  const response = await fetch(`${BASE_URL}${path}`, {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -55,7 +82,7 @@ async function post<Req, Res>(path: string, body: Req): Promise<Res> {
 }
 
 async function chatHistory(sessionId: string): Promise<ChatHistoryResponse> {
-  const response = await fetch(`${BASE_URL}/chat/history?session_id=${encodeURIComponent(sessionId)}`);
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/chat/history?session_id=${encodeURIComponent(sessionId)}`);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`/chat/history failed (${response.status}): ${detail}`);
@@ -64,7 +91,7 @@ async function chatHistory(sessionId: string): Promise<ChatHistoryResponse> {
 }
 
 async function clearChatHistory(sessionId: string): Promise<ClearHistoryResponse> {
-  const response = await fetch(`${BASE_URL}/chat/history/clear?session_id=${encodeURIComponent(sessionId)}`, {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/chat/history/clear?session_id=${encodeURIComponent(sessionId)}`, {
     method: "POST",
   });
   if (!response.ok) {
@@ -75,7 +102,7 @@ async function clearChatHistory(sessionId: string): Promise<ClearHistoryResponse
 }
 
 async function listVoices(language: string): Promise<TTSVoicesResponse> {
-  const response = await fetch(`${BASE_URL}/tts/voices?language=${encodeURIComponent(language)}`);
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/tts/voices?language=${encodeURIComponent(language)}`);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`/tts/voices failed (${response.status}): ${detail}`);
@@ -94,7 +121,7 @@ async function speak(body: TTSRequest): Promise<Blob> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 20_000);
   try {
-    const response = await fetch(`${BASE_URL}/tts/speak`, {
+    const response = await fetchWithColdStartRetry(`${BASE_URL}/tts/speak`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
