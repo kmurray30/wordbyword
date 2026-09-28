@@ -38,13 +38,15 @@ DEEPINFRA_TTS_MODEL = os.environ.get("DEEPINFRA_TTS_MODEL", "hexgrad/Kokoro-82M"
 DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "")
 
 # Word-bank / RL weighting tuning knobs.
-# Kept modest (was 2/6): forcing many words into one short reply via
-# logit_bias tends to produce ungrammatical output rather than a natural
-# sentence on a small local model - fewer, gentler nudges per turn holds up
-# better than more aggressive ones. Left conservative after the 0.6B->1.7B
-# upgrade too; revisit if the bigger model handles more forcing gracefully.
-NEW_WORDS_PER_TURN = 1
-REINFORCE_WORDS_PER_TURN = 3
+# Lowered further (was 1/3) after an A/B test against WORD_WEIGHTING_ENABLED
+# =false: with weighting on, replies twice echoed the question back before
+# (barely) answering it - the same failure mode we upgraded 0.6B->1.7B to
+# fix in the first place - while weighting-off replies answered directly.
+# Forcing 4 words into a short reply every turn was likely still too much
+# for a 1.7B model to do while also staying on-topic. See also
+# logit_bias.py's bias magnitudes, lowered alongside this.
+NEW_WORDS_PER_TURN = 0
+REINFORCE_WORDS_PER_TURN = 1
 DEFAULT_REVIEW_INTERVAL_DAYS = 1.0
 MIN_REVIEW_INTERVAL_DAYS = 0.25
 MAX_REVIEW_INTERVAL_DAYS = 60.0

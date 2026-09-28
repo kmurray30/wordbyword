@@ -31,6 +31,13 @@ def chat(messages: list[dict[str, str]], logit_bias: dict[int, float], timeout: 
         "messages": messages,
         "stream": False,
         "logit_bias": {str(token_id): bias for token_id, bias in logit_bias.items()},
+        # Qwen3's chat template enables its <think>...</think> reasoning mode
+        # by default. Observed live: some replies came back completely empty
+        # - the model spent its whole turn "thinking" and never emitted any
+        # text after the closing think tag. Turning it off gets a direct
+        # answer in the content field every time, and this app has no use
+        # for a visible reasoning trace anyway.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
 
     try:

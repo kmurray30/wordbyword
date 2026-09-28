@@ -23,12 +23,15 @@ from functools import lru_cache
 
 from app.config import TOKENIZER_NAME
 
-# Lowered from 1.5/5.0/2.5: at the old magnitudes (+5.0 is roughly a 150x
-# relative boost to that token's odds) a 0.6B model would often force the
-# word in wherever, grammatical or not, rather than working it in naturally.
-MIN_REINFORCE_BIAS = 1.0
-MAX_REINFORCE_BIAS = 3.0
-NEW_WORD_BIAS = 1.5
+# Lowered from 1.5/5.0/2.5, then again from 1.0/3.0/1.5: an A/B test against
+# WORD_WEIGHTING_ENABLED=false showed even the 1.0-3.0 range was strong
+# enough to make the 1.7B model echo the question back before answering it,
+# twice out of six sampled replies. Paired with REINFORCE_WORDS_PER_TURN=1 /
+# NEW_WORDS_PER_TURN=0 in config.py - a single, gently-nudged word per turn
+# instead of forcing several at once.
+MIN_REINFORCE_BIAS = 0.5
+MAX_REINFORCE_BIAS = 1.0
+NEW_WORD_BIAS = 0.5
 
 
 @lru_cache(maxsize=1)
