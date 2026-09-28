@@ -1,11 +1,12 @@
 // On-demand end-to-end check against the deployed Railway services. Runs on
 // GitHub Actions (not in the dev sandbox, which can't reach *.up.railway.app
 // at all - its egress policy blocks that domain outright). Six stages, in an
-// order that deliberately checks the backend's own LLM/translation logic
-// (stages 1-2) BEFORE anything that depends on DeepInfra, a third-party TTS
+// order that deliberately runs everything that depends only on this app's
+// own code BEFORE anything that depends on DeepInfra, a third-party TTS
 // provider that's had real, repeated slow/down patches unrelated to this
-// app's own code (stages 3-4) - so a DeepInfra outage fails loudly on its
-// own stage instead of masking whether the actual application logic works:
+// app's own code (stages 5-6, and the TTS-dependent tail end of stage 4) -
+// so a DeepInfra outage fails loudly on its own stage instead of masking
+// whether the actual application logic works:
 //  1. Hit the backend's /chat/turn directly - isolates "is the LLM path
 //     actually working" from any frontend issue.
 //  2. Send an English message to /chat/turn, and a fixed Spanish phrase to
@@ -16,25 +17,27 @@
 //     few known slang words (bro/sup/partner) - regression coverage for a
 //     real bug where Argos's word-level fallback echoed unknown words back
 //     unchanged instead of translating them.
-//  3. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
+//  3. Confirm GET /chat/history reflects what stages 1/2 just sent, and
+//     that POST /chat/history/clear actually empties it.
+//  4. If those pass, drive the real site with Playwright end to end: send a
+//     message, hover a word gloss, toggle both messages' translation rows
+//     open and closed, confirm the user message gets two rows (EN+ES),
+//     hover a cognate word in the input box for its dual-column candidates,
+//     drag-select a multi-word phrase in the input (starting the drag ON a
+//     hoverable word, not just in a gap between them) and confirm it shows
+//     one phrase translation (in whichever direction the selected words'
+//     majority language calls for) rather than a leftover single-word
+//     popover - all of that before touching TTS at all, same reasoning as
+//     stages 1-2 before 5-6 - then play the assistant message's audio,
+//     switch the voice picker and confirm that request carries the chosen
+//     voice, then reload and clear the chat.
+//  5. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
 //     actually working" (right model/voice, valid token) from the frontend.
-//  4. Hit /tts/voices and /tts/speak for each Spanish voice directly -
+//  6. Hit /tts/voices and /tts/speak for each Spanish voice directly -
 //     confirms every voice the picker offers is a real, working DeepInfra
 //     voice id, not just the default.
-//  5. Confirm GET /chat/history reflects what stages 1/2 just sent, and
-//     that POST /chat/history/clear actually empties it.
-//  6. If those pass, drive the real site with Playwright end to end: send a
-//     message, hover a word gloss, play its audio, toggle both messages'
-//     translation rows open and closed, confirm the user message gets two
-//     rows (EN+ES), hover a cognate word in the input box for its
-//     dual-column candidates, drag-select a multi-word phrase in the input
-//     (starting the drag ON a hoverable word, not just in a gap between
-//     them) and confirm it shows one phrase translation rather than a
-//     leftover single-word popover, switch the voice picker and confirm
-//     that request carries the chosen voice, then reload and clear the
-//     chat.
 //
-// Stages 1-5 all use one throwaway session id (see TEST_SESSION_ID) so this
+// Stages 1-3 all use one throwaway session id (see TEST_SESSION_ID) so this
 // script's own chat traffic never lands in - or pollutes - anyone real's
 // conversation history, and gets explicitly cleared at the end regardless.
 import { chromium } from "playwright";
@@ -130,13 +133,13 @@ async function speakDirect(voice) {
 }
 
 async function checkTTSDirect() {
-  console.log(`[3/6] Sending a direct /tts/speak request (up to ${TTS_TIMEOUT_MS / 1000}s) ...`);
+  console.log(`[5/6] Sending a direct /tts/speak request (up to ${TTS_TIMEOUT_MS / 1000}s) ...`);
   const { elapsed, contentType, bytes } = await speakDirect(undefined);
   console.log(`  OK in ${elapsed}ms - ${contentType}, ${bytes} bytes`);
 }
 
 async function checkVoicesDirect() {
-  console.log(`[4/6] Checking /tts/voices?language=es and every Spanish voice ...`);
+  console.log(`[6/6] Checking /tts/voices?language=es and every Spanish voice ...`);
   const res = await fetch(`${BACKEND_URL}/tts/voices?language=es`);
   if (!res.ok) fail(`/tts/voices?language=es returned ${res.status}`);
   const data = await res.json();
@@ -211,7 +214,7 @@ async function checkEnglishInputAndTranslation() {
 }
 
 async function checkHistoryAndClear() {
-  console.log(`[5/6] Checking GET /chat/history reflects this session's turns ...`);
+  console.log(`[3/6] Checking GET /chat/history reflects this session's turns ...`);
   const historyRes = await fetch(`${BACKEND_URL}/chat/history?session_id=${encodeURIComponent(TEST_SESSION_ID)}`);
   if (!historyRes.ok) fail(`/chat/history returned ${historyRes.status}: ${await historyRes.text()}`);
   const historyData = await historyRes.json();
@@ -222,7 +225,7 @@ async function checkHistoryAndClear() {
   }
   console.log(`  OK - ${historyData.messages.length} messages recorded for this session`);
 
-  console.log(`[5/6] Clearing this session's history via POST /chat/history/clear ...`);
+  console.log(`[3/6] Clearing this session's history via POST /chat/history/clear ...`);
   const clearRes = await fetch(`${BACKEND_URL}/chat/history/clear?session_id=${encodeURIComponent(TEST_SESSION_ID)}`, {
     method: "POST",
   });
@@ -241,7 +244,7 @@ async function checkHistoryAndClear() {
 }
 
 async function checkBrowserEndToEnd() {
-  console.log(`[6/6] Driving ${FRONTEND_URL} with Playwright ...`);
+  console.log(`[4/6] Driving ${FRONTEND_URL} with Playwright ...`);
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 900, height: 800 } });
   const consoleErrors = [];
@@ -280,44 +283,16 @@ async function checkBrowserEndToEnd() {
       console.log("  (no trackable word tokens in this reply - skipping hover check)");
     }
 
-    // Click the speaker button and confirm the browser's own /tts/speak
-    // request (not just our direct fetch above) actually succeeds and the
-    // UI doesn't end up in its error state. Checked via response status +
-    // headers (reliable) rather than response.body() - buffering the full
-    // body through CDP after the page has already consumed it as a Blob is
-    // flaky and isn't needed: the direct backend check above already proved
-    // real audio bytes come back for identical text.
     // Translation rows are collapsed by default, so at this point the only
-    // .audio-button in the assistant bubble is the raw-message one.
+    // .audio-button in the assistant bubble is the raw-message one. Captured
+    // here (used to click it further down, and again for the voice-picker
+    // check) - the actual click happens later, after the non-TTS checks
+    // below, so a DeepInfra outage (this session has seen several) fails on
+    // its own dedicated step instead of blocking unrelated translation/UI
+    // checks that don't touch TTS at all - same reasoning as reordering the
+    // direct backend checks earlier in this file.
     const speakButton = page.locator(".chat-message--assistant .audio-button").first();
-    if ((await speakButton.count()) > 0) {
-      const responsePromise = page.waitForResponse(
-        (res) => res.url().includes("/tts/speak") && res.request().method() === "POST",
-        { timeout: TTS_TIMEOUT_MS }
-      );
-      await speakButton.click();
-      const ttsResponse = await responsePromise;
-      if (!ttsResponse.ok()) {
-        const body = await ttsResponse.text();
-        fail(`browser /tts/speak request returned ${ttsResponse.status()}: ${body}`);
-      }
-      const contentType = ttsResponse.headers()["content-type"] ?? "";
-      const contentLength = Number(ttsResponse.headers()["content-length"] ?? "0");
-      if (!contentType.includes("audio")) {
-        fail(`browser /tts/speak response content-type was ${JSON.stringify(contentType)}, not audio`);
-      }
-      if (contentLength < 1000) {
-        fail(`browser /tts/speak response content-length was only ${contentLength} bytes`);
-      }
-      // Give the page a moment to finish turning the response into a Blob
-      // and updating the button state, then confirm it didn't land on error.
-      await page.waitForTimeout(500);
-      const speakClass = (await speakButton.getAttribute("class")) ?? "";
-      if (speakClass.includes("audio-button--error")) {
-        fail("speaker button ended up in its error state after clicking");
-      }
-      console.log(`  OK - speaker button fetched ${contentType}, ${contentLength} bytes`);
-    } else {
+    if ((await speakButton.count()) === 0) {
       fail("no speaker button (.audio-button) found on the assistant message");
     }
 
@@ -492,6 +467,40 @@ async function checkBrowserEndToEnd() {
     }
     await textarea.fill("");
 
+    // Click the speaker button and confirm the browser's own /tts/speak
+    // request (not just our direct fetch earlier) actually succeeds and the
+    // UI doesn't end up in its error state. Checked via response status +
+    // headers (reliable) rather than response.body() - buffering the full
+    // body through CDP after the page has already consumed it as a Blob is
+    // flaky and isn't needed: the direct backend check earlier already
+    // proved real audio bytes come back for identical text.
+    const responsePromise = page.waitForResponse(
+      (res) => res.url().includes("/tts/speak") && res.request().method() === "POST",
+      { timeout: TTS_TIMEOUT_MS }
+    );
+    await speakButton.click();
+    const ttsResponse = await responsePromise;
+    if (!ttsResponse.ok()) {
+      const body = await ttsResponse.text();
+      fail(`browser /tts/speak request returned ${ttsResponse.status()}: ${body}`);
+    }
+    const contentType = ttsResponse.headers()["content-type"] ?? "";
+    const contentLength = Number(ttsResponse.headers()["content-length"] ?? "0");
+    if (!contentType.includes("audio")) {
+      fail(`browser /tts/speak response content-type was ${JSON.stringify(contentType)}, not audio`);
+    }
+    if (contentLength < 1000) {
+      fail(`browser /tts/speak response content-length was only ${contentLength} bytes`);
+    }
+    // Give the page a moment to finish turning the response into a Blob and
+    // updating the button state, then confirm it didn't land on error.
+    await page.waitForTimeout(500);
+    const speakClass = (await speakButton.getAttribute("class")) ?? "";
+    if (speakClass.includes("audio-button--error")) {
+      fail("speaker button ended up in its error state after clicking");
+    }
+    console.log(`  OK - speaker button fetched ${contentType}, ${contentLength} bytes`);
+
     // Switch the voice picker to a non-default voice and confirm the next
     // speak request actually carries that voice - not just that the
     // dropdown renders.
@@ -554,8 +563,8 @@ async function checkBrowserEndToEnd() {
 
 await checkBackendDirect();
 await checkEnglishInputAndTranslation();
-await checkTTSDirect();
-await checkVoicesDirect();
 await checkHistoryAndClear();
 await checkBrowserEndToEnd();
+await checkTTSDirect();
+await checkVoicesDirect();
 console.log("ALL CHECKS PASSED");
