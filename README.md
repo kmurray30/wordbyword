@@ -266,14 +266,17 @@ since its grammar or spelling might be exactly what's in question.
 
 **Hovering a word in the input box** (not just the chat bubbles) gives a
 ranked list of translation candidates via `POST /translate/tag-input`, and
-clicking one replaces that word in place. Every real word gets at least one
-direction - Spanish words get an ES->EN column, English ones EN->ES - and a
-handful of common cross-language cognates (`hotel`, `animal`, `color`, ...;
-see `app/translate/cognates.py`) get both columns side by side, since a word
-like "hotel" is genuinely valid in either language and spaCy's is-this-
-Spanish flag can only pick one. That cognate list is small and curated, not
-a real bilingual dictionary lookup - it covers the common, unambiguous cases
-rather than attempting exhaustive detection.
+clicking one replaces that word in place. Every real word is checked
+independently against both languages' dictionaries
+(`app/translate/word_validity.py`, backed by `pyspellchecker`'s bundled
+offline word-frequency dictionaries), not classified into a single
+Spanish-or-English bucket: a word valid Spanish gets an unclickable EN gloss
+column (it's already correct - there's nothing to replace), a word valid
+English gets a clickable ES translation column (swaps it in place), and a
+word valid in *both* - like "once" (Spanish for "eleven", also an English
+word) or "hotel" - gets both columns side by side, independently. A word
+neither dictionary recognizes (a typo, a name, slang) falls back to a single
+best-guess column from spaCy's morphology.
 
 ## Text-to-speech
 

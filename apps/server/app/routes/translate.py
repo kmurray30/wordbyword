@@ -15,9 +15,9 @@ from app.schemas import (
     TranslationColumn,
 )
 from app.translate import llm_translate
-from app.translate.cognates import COMMON_ES_EN_COGNATES
 from app.translate.lemmatizer import analyze
 from app.translate.service import word_candidates
+from app.translate.word_validity import is_valid_english_word, is_valid_spanish_word
 
 router = APIRouter(prefix="/translate", tags=["translate"])
 
@@ -61,37 +61,53 @@ def interpret_input(req: InterpretInputRequest) -> InterpretInputResponse:
 
 @router.post("/tag-input", response_model=TagInputResponse)
 def tag_input(req: TagInputRequest) -> TagInputResponse:
-    """Every real word gets at least one translation column, in whichever
-    direction spaCy's is_spanish flag implies; a word in COMMON_ES_EN_COGNATES
-    gets both directions, since it's a real word in either language and the
-    flag can only pick one."""
+    """The learner is assumed to be writing Spanish by default: every real
+    word is checked independently against both languages' dictionaries
+    (word_validity), not classified into a single Spanish-or-English bucket.
+    A word already valid Spanish gets an unclickable EN gloss (it's correct
+    as typed, nothing to replace); a word valid English gets a clickable ES
+    translation (swaps it in place); a word valid in both - e.g. "once",
+    Spanish for "eleven" and also an English word - gets both, independently.
+    A word in neither dictionary (typo, name, slang) falls back to the
+    morphological is_spanish guess for a single best-effort column."""
     tokens = analyze(req.text)
     out: list[InputTokenAnnotation] = []
     for tok in tokens:
         is_word = tok.surface.isalpha() and len(tok.surface) > 1
-        is_cognate = is_word and tok.surface.lower() in COMMON_ES_EN_COGNATES
-
         columns: list[TranslationColumn] = []
-        if is_word and (tok.is_spanish or is_cognate):
-            columns.append(
-                TranslationColumn(
-                    language=NATIVE_LANGUAGE,
-                    candidates=_word_candidates(tok.lemma, TARGET_LANGUAGE, NATIVE_LANGUAGE),
+        spanish_valid = False
+
+        if is_word:
+            spanish_valid = is_valid_spanish_word(tok.surface)
+            english_valid = is_valid_english_word(tok.surface)
+            if not spanish_valid and not english_valid:
+                # Neither dictionary recognizes it - fall back to the
+                # morphological guess rather than showing nothing.
+                spanish_valid = tok.is_spanish
+                english_valid = not tok.is_spanish
+
+            if spanish_valid:
+                columns.append(
+                    TranslationColumn(
+                        language=NATIVE_LANGUAGE,
+                        clickable=False,
+                        candidates=_word_candidates(tok.lemma, TARGET_LANGUAGE, NATIVE_LANGUAGE),
+                    )
                 )
-            )
-        if is_word and (not tok.is_spanish or is_cognate):
-            columns.append(
-                TranslationColumn(
-                    language=TARGET_LANGUAGE,
-                    candidates=_word_candidates(tok.surface.lower(), NATIVE_LANGUAGE, TARGET_LANGUAGE),
+            if english_valid:
+                columns.append(
+                    TranslationColumn(
+                        language=TARGET_LANGUAGE,
+                        clickable=True,
+                        candidates=_word_candidates(tok.surface.lower(), NATIVE_LANGUAGE, TARGET_LANGUAGE),
+                    )
                 )
-            )
 
         out.append(
             InputTokenAnnotation(
                 surface=tok.surface,
                 lemma=tok.lemma,
-                is_spanish=tok.is_spanish,
+                is_spanish=is_word and spanish_valid,
                 start=tok.start,
                 end=tok.end,
                 columns=columns,

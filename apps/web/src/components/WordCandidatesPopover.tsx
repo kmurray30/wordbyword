@@ -8,6 +8,10 @@ export interface WordCandidate {
 export interface WordCandidateColumn {
   language: string; // "en" | "es"
   candidates: WordCandidate[];
+  // False for a column just showing what a word already means in Spanish
+  // (nothing to replace); true for a column offering a Spanish translation
+  // to swap in for a word read as English.
+  clickable: boolean;
 }
 
 interface WordCandidatesPopoverProps {
@@ -17,10 +21,10 @@ interface WordCandidatesPopoverProps {
 
 const LANGUAGE_LABEL: Record<string, string> = { en: "English", es: "Español" };
 
-// Like TranslatePopover, but for hovering a word in the chat input: usually
-// one column (the direction implied by whether the word looks Spanish or
-// English), two side by side for a known cross-language cognate (e.g.
-// "hotel") where either reading is valid.
+// Like TranslatePopover, but for hovering a word in the chat input: one
+// column per language the word is independently valid in - e.g. "once" is
+// Spanish for "eleven" (unclickable gloss) and also an English word
+// (clickable Spanish translation), so it gets both, side by side.
 export function WordCandidatesPopover({ columns, onSelect }: WordCandidatesPopoverProps) {
   const visible = columns.filter((c) => c.candidates.length > 0);
   if (visible.length === 0) return null;
@@ -36,10 +40,17 @@ export function WordCandidatesPopover({ columns, onSelect }: WordCandidatesPopov
           <ul>
             {col.candidates.map((c, i) => (
               <li key={i}>
-                <button type="button" onClick={() => onSelect(c.translation)}>
-                  <span className="translation">{c.translation || "…"}</span>
-                  {c.description && <span className="description">{c.description}</span>}
-                </button>
+                {col.clickable ? (
+                  <button type="button" onClick={() => onSelect(c.translation)}>
+                    <span className="translation">{c.translation || "…"}</span>
+                    {c.description && <span className="description">{c.description}</span>}
+                  </button>
+                ) : (
+                  <div className="word-candidates-popover__static">
+                    <span className="translation">{c.translation || "…"}</span>
+                    {c.description && <span className="description">{c.description}</span>}
+                  </div>
+                )}
               </li>
             ))}
           </ul>

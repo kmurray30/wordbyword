@@ -17,7 +17,7 @@ def list_voices(language: str = "es") -> TTSVoicesResponse:
 
 
 @router.post("/speak")
-def speak(req: TTSRequest) -> Response:
+async def speak(req: TTSRequest) -> Response:
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text must not be empty")
 
@@ -28,7 +28,7 @@ def speak(req: TTSRequest) -> Response:
         )
 
     try:
-        audio = synthesize(req.text, language=req.language, voice=req.voice)
+        audio = await synthesize(req.text, language=req.language, voice=req.voice)
     except TTSUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

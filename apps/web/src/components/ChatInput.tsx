@@ -85,20 +85,18 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
 
   // Hovering the globe fetches and previews the translation (without
   // touching the draft); clicking the preview's suggestion applies it -
-  // same interaction pattern as the word-candidate popovers.
+  // same interaction pattern as the word-candidate popovers. Always targets
+  // Spanish, regardless of what's typed so far - interpretInput handles a
+  // draft that's already partly or fully Spanish (or a mix, or has typos)
+  // and returns a single natural Spanish line for it, rather than us having
+  // to guess a source language first.
   const fetchDraftTranslation = () => {
     if (draftTranslateState === "loading" || draftTranslation !== null || !value.trim()) return;
-    const spanishCount = effectiveTags.filter((t) => t.is_spanish).length;
-    const mostlySpanish = spanishCount >= effectiveTags.length / 2;
     setDraftTranslateState("loading");
     api
-      .translateText({
-        text: value,
-        source_lang: mostlySpanish ? "es" : "en",
-        target_lang: mostlySpanish ? "en" : "es",
-      })
+      .interpretInput({ text: value })
       .then((res) => {
-        setDraftTranslation(res.translation);
+        setDraftTranslation(res.target);
         setDraftTranslateState("idle");
       })
       .catch(() => setDraftTranslateState("error"));

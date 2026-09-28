@@ -79,6 +79,14 @@
   background: rgba(255, 255, 255, 0.1);
 }
 
+.word-candidates-popover__static {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 2px 4px;
+  cursor: default;
+}
+
 .word-candidates-popover .translation {
   display: block;
   font-weight: 600;

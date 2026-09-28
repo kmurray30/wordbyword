@@ -17,7 +17,7 @@ class TTSUnavailableError(RuntimeError):
     pass
 
 
-def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | None = None) -> bytes:
+async def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | None = None) -> bytes:
     if not DEEPINFRA_API_TOKEN:
         raise TTSUnavailableError("DEEPINFRA_API_TOKEN is not configured on the server")
 
@@ -38,12 +38,15 @@ def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | None = N
         # already generous. Observed live: DeepInfra itself hung for the
         # old 30s ceiling on every request during a rough patch, doubling
         # how long a stuck TTS button stayed stuck before finally erroring.
-        response = httpx.post(
-            DEEPINFRA_TTS_URL,
-            json=payload,
-            headers={"Authorization": f"Bearer {DEEPINFRA_API_TOKEN}"},
-            timeout=15.0,
-        )
+        # async so a slow DeepInfra call blocks only this request, not a
+        # thread another endpoint (e.g. /chat/turn's own multi-second
+        # llama-server call) needs from FastAPI's shared sync threadpool.
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                DEEPINFRA_TTS_URL,
+                json=payload,
+                headers={"Authorization": f"Bearer {DEEPINFRA_API_TOKEN}"},
+            )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise TTSUnavailableError(

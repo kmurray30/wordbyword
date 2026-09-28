@@ -124,10 +124,15 @@ export interface paths {
         put?: never;
         /**
          * Tag Input
-         * @description Every real word gets at least one translation column, in whichever
-         *     direction spaCy's is_spanish flag implies; a word in COMMON_ES_EN_COGNATES
-         *     gets both directions, since it's a real word in either language and the
-         *     flag can only pick one.
+         * @description The learner is assumed to be writing Spanish by default: every real
+         *     word is checked independently against both languages' dictionaries
+         *     (word_validity), not classified into a single Spanish-or-English bucket.
+         *     A word already valid Spanish gets an unclickable EN gloss (it's correct
+         *     as typed, nothing to replace); a word valid English gets a clickable ES
+         *     translation (swaps it in place); a word valid in both - e.g. "once",
+         *     Spanish for "eleven" and also an English word - gets both, independently.
+         *     A word in neither dictionary (typo, name, slang) falls back to the
+         *     morphological is_spanish guess for a single best-effort column.
          */
         post: operations["tag_input_translate_tag_input_post"];
         delete?: never;
@@ -396,6 +401,11 @@ export interface components {
             language: string;
             /** Candidates */
             candidates: components["schemas"]["TranslateCandidate"][];
+            /**
+             * Clickable
+             * @default true
+             */
+            clickable: boolean;
         };
         /** ValidationError */
         ValidationError: {

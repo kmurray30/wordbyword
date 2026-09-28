@@ -77,6 +77,11 @@ class TagInputRequest(BaseModel):
 class TranslationColumn(BaseModel):
     language: str  # the language these candidates translate INTO ("en" or "es")
     candidates: list[TranslateCandidate]
+    # False for a column showing what a word the learner typed already means
+    # in Spanish - there's nothing to replace, it's already correct. True for
+    # a column offering a Spanish translation to swap in for a word read as
+    # English.
+    clickable: bool = True
 
 
 class InputTokenAnnotation(BaseModel):
@@ -85,8 +90,11 @@ class InputTokenAnnotation(BaseModel):
     is_spanish: bool
     start: int
     end: int
-    # Usually one column (the direction implied by is_spanish); two when the
-    # word is a known cross-language cognate (see app/translate/cognates.py).
+    # One column per language the word is independently a valid word in (an
+    # unclickable Spanish-meaning gloss, a clickable English->Spanish
+    # translation, or both for a word valid in both, e.g. "once" - Spanish
+    # for "eleven" and English "on one occasion"); a word valid in neither
+    # dictionary falls back to a single best-guess column.
     columns: list[TranslationColumn] = []
 
 

@@ -87,7 +87,14 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
     token_rows: list[MessageToken] = []
 
     for position, tok in enumerate(tokens):
-        if not tok.is_spanish:
+        # tok.is_spanish is a heuristic built for the learner's own possibly-
+        # English-mixed input (see lemmatizer.py); it's gated on a small
+        # ~300-word frequency list, so applying it here to the agent's own
+        # reply - which is always Spanish - silently dropped the gloss (and
+        # word-bank tracking) for any real Spanish word outside that list,
+        # e.g. "tormenta". Every alphabetic token in the agent's reply is
+        # Spanish by construction; only punctuation has nothing to gloss.
+        if not tok.surface.isalpha():
             annotations.append(TokenAnnotation(surface=tok.surface, lemma=tok.lemma, pos=tok.pos, gloss="", is_new=False))
             continue
 

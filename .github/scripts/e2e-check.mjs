@@ -211,11 +211,15 @@ async function checkBrowserEndToEnd() {
     }
     console.log(`  OK - assistant replied: ${JSON.stringify(replyText)}`);
 
-    // Hover a word token and confirm the translation popover appears.
+    // Hover a word token and confirm the translation popover appears. It's
+    // rendered into a portal at document.body (see WordToken.tsx - escapes
+    // the scrolling chat feed's overflow clipping and sibling-bubble
+    // stacking contexts), so it's no longer a DOM descendant of the message
+    // bubble - just check it shows up on the page at all.
     const wordToken = page.locator(".chat-message--assistant .word-token").first();
     if ((await wordToken.count()) > 0) {
       await wordToken.hover();
-      await page.waitForSelector(".chat-message--assistant .translate-popover", { timeout: 8_000 });
+      await page.waitForSelector(".word-token__popover-anchor .translate-popover", { timeout: 8_000 });
       console.log("  OK - hover translation popover works");
     } else {
       console.log("  (no trackable word tokens in this reply - skipping hover check)");
@@ -316,11 +320,12 @@ async function checkBrowserEndToEnd() {
     console.log("  OK - hovering the user message previews EN + ES translation rows with an edit button on EN");
 
     // Hovering a word in the input box should show translation candidates -
-    // "hotel" is a known cognate (app/translate/cognates.py), so it should
-    // get BOTH an English and a Spanish column, not just one direction.
-    // Wait for the actual /translate/tag-input response rather than a fixed
-    // delay - a cognate needs two Argos MT calls (one per direction), which
-    // can take longer than the 350ms debounce alone suggests.
+    // "hotel" is a real word in both languages (app/translate/word_validity.py
+    // checks each independently), so it should get BOTH an English and a
+    // Spanish column, not just one direction. Wait for the actual
+    // /translate/tag-input response rather than a fixed delay - a word
+    // valid in both languages needs two Argos MT calls (one per direction),
+    // which can take longer than the 350ms debounce alone suggests.
     const textarea = page.locator("textarea");
     const tagResponsePromise = page.waitForResponse(
       (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
@@ -338,6 +343,16 @@ async function checkBrowserEndToEnd() {
         fail('hovering "hotel" in the input did not show both EN and ES columns');
       }
       console.log('  OK - hovering a cognate ("hotel") in the input shows both EN and ES columns');
+
+      // The Spanish reading ("hotel" is already correct Spanish) should be
+      // a static gloss, not a button - only the English->Spanish reading
+      // should be clickable to swap in place.
+      const clickableCount = await page.locator(".word-candidates-popover button").count();
+      const staticCount = await page.locator(".word-candidates-popover__static").count();
+      if (clickableCount === 0 || staticCount === 0) {
+        fail(`expected one clickable and one static reading for "hotel", got ${clickableCount} clickable, ${staticCount} static`);
+      }
+      console.log("  OK - only the English->Spanish reading is clickable; the Spanish gloss is not");
     } else {
       fail('"hotel" in the input box was not flagged as hoverable');
     }
