@@ -3,7 +3,12 @@ from unittest.mock import patch
 import pytest
 
 from app.chat.llama_client import ModelServerUnavailableError
-from app.translate.llm_translate import TranslationUnavailableError, interpret_user_input, translate_text
+from app.translate.llm_translate import (
+    TranslationUnavailableError,
+    gloss_reply,
+    interpret_user_input,
+    translate_text,
+)
 
 
 def test_translate_text_empty_input_short_circuits():
@@ -54,15 +59,17 @@ def test_interpret_user_input_parses_labeled_lines():
 
 
 def test_interpret_user_input_falls_back_when_format_not_followed():
-    # Model ignores the "Label: text" instruction and just answers in prose.
+    # Model ignores the "Label: text" instruction and just answers in prose
+    # (but not so much longer than the input that the hallucination backstop
+    # below also kicks in - that's covered by its own test).
     with patch(
         "app.translate.llm_translate.llama_chat",
-        side_effect=["Just a plain sentence with no labels.", "Solo una oración simple."],
+        side_effect=["just some text", "un poco de texto"],
     ) as mock_chat:
         native, target = interpret_user_input("some input", "en", "es")
 
-    assert native == "Just a plain sentence with no labels."
-    assert target == "Solo una oración simple."
+    assert native == "just some text"
+    assert target == "un poco de texto"
     assert mock_chat.call_count == 2  # interpret call, then translate_text fallback
 
 
@@ -113,6 +120,114 @@ def test_translate_text_raises_if_still_garbled_after_retry():
     with patch("app.translate.llm_translate.llama_chat", return_value="你好世界"):
         with pytest.raises(TranslationUnavailableError, match="garbled"):
             translate_text("Hola", "es", "en")
+
+
+def test_interpret_user_input_falls_back_on_hallucinated_reply():
+    # Observed live: "hello sir" -> "Hello, sir. I am here to assist you."
+    # The model answered the greeting instead of just correcting it, despite
+    # the prompt's explicit instruction not to - falls back to a plain
+    # translate_text pass, which has no conversational framing to overreach
+    # with.
+    reply = "English: Hello, sir. I am here to assist you.\nSpanish: Hola, señor. Estoy aquí para ayudarle."
+    with patch(
+        "app.translate.llm_translate.llama_chat",
+        side_effect=[reply, "Hola, señor."],
+    ) as mock_chat:
+        native, target = interpret_user_input("hello sir", "en", "es")
+
+    assert native == "hello sir"
+    assert target == "Hola, señor."
+    assert mock_chat.call_count == 2  # interpret call, then the translate_text fallback
+
+
+def test_interpret_user_input_prompt_warns_against_answering():
+    with patch("app.translate.llm_translate.llama_chat", return_value="English: hi\nSpanish: hola") as mock_chat:
+        interpret_user_input("hi", "en", "es")
+
+    (messages,), _ = mock_chat.call_args
+    prompt = messages[0]["content"]
+    assert "hola bro" in prompt.lower()
+    assert "not having a" in prompt.lower() or "not have a" in prompt.lower()
+
+
+def test_gloss_reply_empty_input_short_circuits():
+    with patch("app.translate.llm_translate.llama_chat") as mock_chat:
+        assert gloss_reply("   ", "es", "en") == ("", {})
+    mock_chat.assert_not_called()
+
+
+def test_gloss_reply_parses_translation_and_word_map():
+    reply = (
+        '{"translation": "The bank is closed.", "words": {'
+        '"banco": {"gloss": "bank", "note": "financial institution, not a bench"}, '
+        '"cerrado": {"gloss": "closed", "note": ""}}}'
+    )
+    with patch("app.translate.llm_translate.llama_chat", return_value=reply) as mock_chat:
+        translation, words = gloss_reply("El banco está cerrado.", "es", "en")
+
+    assert translation == "The bank is closed."
+    assert words == {
+        "banco": ("bank", "financial institution, not a bench"),
+        "cerrado": ("closed", ""),
+    }
+    (messages,), kwargs = mock_chat.call_args
+    assert kwargs["logit_bias"] == {}
+    assert kwargs["max_tokens"] > 300  # bigger budget than a plain translation
+    assert messages[-1] == {"role": "user", "content": "El banco está cerrado."}
+
+
+def test_gloss_reply_tolerates_plain_string_word_values():
+    # The {"gloss": ..., "note": ...} wrapper is the requested shape, but a
+    # small model can drop it for a word with nothing to note - still a
+    # usable gloss, just without a description.
+    reply = '{"translation": "Hello", "words": {"hola": "hello"}}'
+    with patch("app.translate.llm_translate.llama_chat", return_value=reply):
+        translation, words = gloss_reply("Hola", "es", "en")
+
+    assert translation == "Hello"
+    assert words == {"hola": ("hello", "")}
+
+
+def test_gloss_reply_strips_surrounding_prose_and_code_fences():
+    reply = (
+        'Sure, here you go:\n```json\n{"translation": "Hello", '
+        '"words": {"hola": {"gloss": "hello", "note": ""}}}\n```'
+    )
+    with patch("app.translate.llm_translate.llama_chat", return_value=reply):
+        translation, words = gloss_reply("Hola", "es", "en")
+
+    assert translation == "Hello"
+    assert words == {"hola": ("hello", "")}
+
+
+def test_gloss_reply_retries_once_on_unparseable_reply():
+    with patch(
+        "app.translate.llm_translate.llama_chat",
+        side_effect=["not json at all", '{"translation": "Hi", "words": {"hola": {"gloss": "hi", "note": ""}}}'],
+    ) as mock_chat:
+        translation, words = gloss_reply("Hola", "es", "en")
+
+    assert translation == "Hi"
+    assert words == {"hola": ("hi", "")}
+    assert mock_chat.call_count == 2
+
+
+def test_gloss_reply_raises_after_exhausting_retries():
+    with patch("app.translate.llm_translate.llama_chat", return_value="not json at all"):
+        with pytest.raises(TranslationUnavailableError):
+            gloss_reply("Hola", "es", "en")
+
+
+def test_gloss_reply_raises_on_garbled_reply():
+    with patch("app.translate.llm_translate.llama_chat", return_value="你好世界"):
+        with pytest.raises(TranslationUnavailableError):
+            gloss_reply("Hola", "es", "en")
+
+
+def test_gloss_reply_wraps_model_server_error():
+    with patch("app.translate.llm_translate.llama_chat", side_effect=ModelServerUnavailableError("down")):
+        with pytest.raises(TranslationUnavailableError, match="down"):
+            gloss_reply("Hola", "es", "en")
 
 
 def test_interpret_user_input_falls_back_to_translate_text_on_garbled_reply():

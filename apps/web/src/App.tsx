@@ -90,7 +90,7 @@ function App() {
       .then((res) => {
         setMessages((prev) => [
           ...prev,
-          { id: res.message_id, role: "assistant", text: res.text, tokens: res.tokens },
+          { id: res.message_id, role: "assistant", text: res.text, tokens: res.tokens, translation: res.translation },
         ]);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))

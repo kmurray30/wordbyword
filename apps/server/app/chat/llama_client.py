@@ -21,11 +21,20 @@ class ModelServerUnavailableError(RuntimeError):
     pass
 
 
-def chat(messages: list[dict[str, str]], logit_bias: dict[int, float], timeout: float = 120.0) -> str:
+def chat(
+    messages: list[dict[str, str]],
+    logit_bias: dict[int, float],
+    timeout: float = 120.0,
+    max_tokens: int | None = None,
+) -> str:
     """Calls llama-server's OpenAI-compatible /v1/chat/completions endpoint
     with a single, non-streamed request, applying `logit_bias` (token id ->
     bias value) so specific word-bank words are genuinely more likely to be
-    sampled, not just suggested in the prompt text."""
+    sampled, not just suggested in the prompt text. `max_tokens` defaults to
+    MAX_REPLY_TOKENS (see its comment in config.py); a caller whose task is
+    structurally larger than a short conversational reply - e.g. JSON
+    covering a whole sentence's worth of per-word glosses - can ask for
+    more room so it isn't truncated mid-object."""
 
     payload = {
         "messages": messages,
@@ -41,7 +50,7 @@ def chat(messages: list[dict[str, str]], logit_bias: dict[int, float], timeout: 
         # See MAX_REPLY_TOKENS' comment in config.py - bounds a generation
         # that never hits a stop token instead of letting it run until the
         # model server's context window is exhausted.
-        "max_tokens": MAX_REPLY_TOKENS,
+        "max_tokens": max_tokens if max_tokens is not None else MAX_REPLY_TOKENS,
     }
 
     try:

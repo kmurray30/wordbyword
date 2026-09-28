@@ -16,6 +16,7 @@ from app.schemas import (
     ClearHistoryResponse,
     TokenAnnotation,
 )
+from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
 from app.translate.service import gloss
 from app.wordbank import store
@@ -81,6 +82,20 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
 
     session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
 
+    # One LLM call glosses every word in the reply using its meaning IN
+    # CONTEXT, and returns the whole-sentence translation from that exact
+    # same pass - one consistent source for both, instead of a dictionary/MT
+    # per-word lookup (gloss(), below) that has no sentence context and can
+    # land on a different sense of an ambiguous word than a separately-
+    # fetched translation would. Falls back to the old per-word mechanism
+    # for anything it didn't cover (a failed call, or a word it missed)
+    # rather than let a translation hiccup break the whole turn.
+    try:
+        translation, word_map = llm_translate.gloss_reply(reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE)
+    except llm_translate.TranslationUnavailableError:
+        translation, word_map = "", {}
+    empty_gloss = ("", "")
+
     new_lemma_set = set(new_lemmas)
     tokens = analyze(reply_text)
     annotations: list[TokenAnnotation] = []
@@ -98,12 +113,16 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
             annotations.append(TokenAnnotation(surface=tok.surface, lemma=tok.lemma, pos=tok.pos, gloss="", is_new=False))
             continue
 
-        word_gloss = gloss(tok.lemma, TARGET_LANGUAGE, NATIVE_LANGUAGE)
+        llm_gloss, llm_note = word_map.get(tok.surface.lower()) or word_map.get(tok.lemma.lower()) or empty_gloss
+        word_gloss = llm_gloss or gloss(tok.lemma, TARGET_LANGUAGE, NATIVE_LANGUAGE)
+        word_note = llm_note if llm_gloss else ""
         entry = store.record_exposure(session, tok.lemma, pos=tok.pos, translation=word_gloss)
         is_new = tok.lemma in new_lemma_set or entry.exposure_count == 1
 
         annotations.append(
-            TokenAnnotation(surface=tok.surface, lemma=tok.lemma, pos=tok.pos, gloss=word_gloss, is_new=is_new)
+            TokenAnnotation(
+                surface=tok.surface, lemma=tok.lemma, pos=tok.pos, gloss=word_gloss, is_new=is_new, note=word_note
+            )
         )
         token_rows.append(
             MessageToken(
@@ -121,4 +140,4 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
     session.commit()
     session.refresh(assistant_message)
 
-    return ChatTurnResponse(message_id=assistant_message.id, text=reply_text, tokens=annotations)
+    return ChatTurnResponse(message_id=assistant_message.id, text=reply_text, tokens=annotations, translation=translation)

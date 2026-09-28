@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { InputTokenAnnotation } from "../api/client";
 import { TranslatePopover } from "./TranslatePopover";
@@ -31,6 +31,7 @@ function buildSegments(text: string, tokens: InputTokenAnnotation[]): Segment[] 
 }
 
 export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [value, setValue] = useState("");
   const [tags, setTags] = useState<InputTokenAnnotation[]>([]);
   const [openTokenKey, setOpenTokenKey] = useState<string | null>(null);
@@ -66,6 +67,27 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
     const next = value.slice(0, token.start) + translation + value.slice(token.end);
     handleValueChange(next);
     setOpenTokenKey(null);
+  };
+
+  // The highlight overlay's hoverable spans need pointer-events to catch
+  // hover for the popover, which as a side effect blocks clicks from
+  // reaching the real textarea underneath - you couldn't click into the
+  // text near a hoverable word to place your cursor there. Redirect the
+  // click ourselves: focus the textarea and place its caret at roughly the
+  // clicked position within the word (proportional to where in the span's
+  // width the click landed), so it still feels like clicking straight
+  // through. Clicks inside the popover itself (picking a candidate) are
+  // left alone.
+  const handleWordMouseDown = (e: React.MouseEvent<HTMLSpanElement>, token: InputTokenAnnotation) => {
+    if ((e.target as HTMLElement).closest(".word-candidates-popover")) return;
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const fraction = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0;
+    const pos = Math.round(token.start + Math.min(1, Math.max(0, fraction)) * (token.end - token.start));
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(pos, pos);
   };
 
   const handleSend = () => {
@@ -120,6 +142,7 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
                 className={`chat-input__hoverable${!seg.token.is_spanish ? " chat-input__flagged" : ""}`}
                 onMouseEnter={() => setOpenTokenKey(`${seg.token!.start}-${seg.token!.end}`)}
                 onMouseLeave={() => setOpenTokenKey(null)}
+                onMouseDown={(e) => handleWordMouseDown(e, seg.token!)}
               >
                 {seg.text}
                 {openTokenKey === `${seg.token.start}-${seg.token.end}` && (
@@ -135,6 +158,7 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
           )}
         </div>
         <textarea
+          ref={textareaRef}
           className="chat-input__textarea"
           value={value}
           placeholder="Escribe en español... (English words you drop in get underlined)"

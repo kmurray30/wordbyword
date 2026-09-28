@@ -6,11 +6,12 @@ import "./WordToken.css";
 interface WordTokenProps {
   surface: string;
   gloss: string;
+  note?: string;
   isNew: boolean;
   onHover?: () => void;
 }
 
-export function WordToken({ surface, gloss, isNew, onHover }: WordTokenProps) {
+export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenProps) {
   const [hovering, setHovering] = useState(false);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
@@ -60,7 +61,7 @@ export function WordToken({ surface, gloss, isNew, onHover }: WordTokenProps) {
         coords &&
         createPortal(
           <div className="word-token__popover-anchor" style={{ top: coords.top, left: coords.left }}>
-            <TranslatePopover candidates={[{ translation: gloss }]} />
+            <TranslatePopover candidates={[{ translation: gloss, description: note || undefined }]} />
           </div>,
           document.body,
         )}

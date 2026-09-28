@@ -1,3 +1,4 @@
+import { CandidateCycler } from "./CandidateCycler";
 import "./TranslatePopover.css";
 
 export interface PopoverCandidate {
@@ -20,23 +21,7 @@ export function TranslatePopover({ candidates, onSelect, direction = "down" }: T
 
   return (
     <div className={`translate-popover translate-popover--${direction}`} role="tooltip">
-      <ul>
-        {candidates.map((c, i) => (
-          <li key={i}>
-            {onSelect ? (
-              <button type="button" onClick={() => onSelect(c.translation)}>
-                <span className="translation">{c.translation || "…"}</span>
-                {c.description && <span className="description">{c.description}</span>}
-              </button>
-            ) : (
-              <>
-                <span className="translation">{c.translation || "…"}</span>
-                {c.description && <span className="description">{c.description}</span>}
-              </>
-            )}
-          </li>
-        ))}
-      </ul>
+      <CandidateCycler candidates={candidates} clickable={!!onSelect} onSelect={onSelect} />
     </div>
   );
 }

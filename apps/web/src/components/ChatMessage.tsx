@@ -15,6 +15,13 @@ export interface DisplayMessage {
   role: "user" | "assistant";
   text: string;
   tokens?: TokenAnnotation[];
+  // For a fresh assistant message, the whole-sentence translation from the
+  // exact same LLM call that produced tokens[].gloss (see /chat/turn and
+  // app.translate.llm_translate.gloss_reply) - guaranteed to agree with
+  // those glosses on word sense, unlike fetching translateText separately.
+  // Empty/absent for a history-hydrated message (not persisted) or if that
+  // call failed; either falls back to fetching it the old way on demand.
+  translation?: string;
   // True for messages hydrated from GET /chat/history on page load, as
   // opposed to ones just generated this session. Passive-exposure credit
   // and the eager translate-on-mount fetch already happened for real the
@@ -79,6 +86,10 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
 
   const fetchAssistantTranslation = () => {
     if (assistantTranslation !== null || assistantTranslating) return;
+    if (message.translation) {
+      setAssistantTranslation(message.translation);
+      return;
+    }
     setAssistantTranslating(true);
     api
       .translateText({ text: message.text, source_lang: "es", target_lang: "en" })
@@ -179,7 +190,13 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
             message.tokens!.map((tok, i) => (
               <span key={i}>
                 {spaced[i].spaceBefore && " "}
-                <WordToken surface={tok.surface} gloss={tok.gloss} isNew={tok.is_new} onHover={() => handleHover(tok.lemma)} />
+                <WordToken
+                  surface={tok.surface}
+                  gloss={tok.gloss}
+                  note={tok.note}
+                  isNew={tok.is_new}
+                  onHover={() => handleHover(tok.lemma)}
+                />
               </span>
             ))
           ) : userTypoSegments ? (

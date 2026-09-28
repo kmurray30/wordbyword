@@ -7,6 +7,12 @@ class TokenAnnotation(BaseModel):
     pos: str
     gloss: str
     is_new: bool
+    # From the same LLM call as ChatTurnResponse.translation - a short note
+    # on why this word's sense applies here, when it could otherwise be
+    # confused with a different one. Empty for punctuation, when the LLM
+    # call failed (gloss then falls back to the older dictionary/MT lookup,
+    # which has no such note), or when the word didn't need one.
+    note: str = ""
 
 
 class ChatTurnRequest(BaseModel):
@@ -18,6 +24,12 @@ class ChatTurnResponse(BaseModel):
     message_id: int
     text: str
     tokens: list[TokenAnnotation]
+    # From the same LLM call that produced `tokens`' per-word glosses (see
+    # app.translate.llm_translate.gloss_reply) - guaranteed to agree with
+    # them on word sense, unlike a translation fetched separately. Empty
+    # string if that call failed (rare; the per-word glosses themselves
+    # still fall back to the older dictionary/MT lookup in that case).
+    translation: str = ""
 
 
 class ChatHistoryMessage(BaseModel):

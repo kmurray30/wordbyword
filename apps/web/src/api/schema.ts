@@ -247,6 +247,11 @@ export interface components {
             text: string;
             /** Tokens */
             tokens: components["schemas"]["TokenAnnotation"][];
+            /**
+             * Translation
+             * @default
+             */
+            translation: string;
         };
         /** ClearHistoryResponse */
         ClearHistoryResponse: {
@@ -345,6 +350,11 @@ export interface components {
             gloss: string;
             /** Is New */
             is_new: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /** TranslateCandidate */
         TranslateCandidate: {

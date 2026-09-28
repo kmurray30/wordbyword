@@ -341,8 +341,8 @@ async function checkBrowserEndToEnd() {
       // The Spanish reading ("hotel" is already correct Spanish) should be
       // a static gloss, not a button - only the English->Spanish reading
       // should be clickable to swap in place.
-      const clickableCount = await page.locator(".word-candidates-popover button").count();
-      const staticCount = await page.locator(".word-candidates-popover__static").count();
+      const clickableCount = await page.locator(".candidate-cycler__main:not(.candidate-cycler__main--static)").count();
+      const staticCount = await page.locator(".candidate-cycler__main--static").count();
       if (clickableCount === 0 || staticCount === 0) {
         fail(`expected one clickable and one static reading for "hotel", got ${clickableCount} clickable, ${staticCount} static`);
       }
