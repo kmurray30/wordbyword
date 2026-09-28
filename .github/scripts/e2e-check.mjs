@@ -15,9 +15,13 @@
 //     not the old Argos error string.
 //  5. Confirm GET /chat/history reflects what stages 1/4 just sent, and
 //     that POST /chat/history/clear actually empties it.
-//  6. If those pass, drive the real site with Playwright end to end,
-//     including switching the voice picker, confirming that request
-//     actually carries the chosen voice, and clicking "Clear chat".
+//  6. If those pass, drive the real site with Playwright end to end: send a
+//     message, hover a word gloss, play its audio, toggle both messages'
+//     translation rows open and closed, confirm the user message gets two
+//     rows (EN+ES) with an edit button on EN, hover a cognate word in the
+//     input box for its dual-column candidates, switch the voice picker
+//     and confirm that request carries the chosen voice, then reload and
+//     clear the chat.
 //
 // Stages 1-5 all use one throwaway session id (see TEST_SESSION_ID) so this
 // script's own chat traffic never lands in - or pollutes - anyone real's
@@ -224,7 +228,9 @@ async function checkBrowserEndToEnd() {
     // body through CDP after the page has already consumed it as a Blob is
     // flaky and isn't needed: the direct backend check above already proved
     // real audio bytes come back for identical text.
-    const speakButton = page.locator(".chat-message--assistant .chat-message__speak").first();
+    // Translation rows are collapsed by default, so at this point the only
+    // .audio-button in the assistant bubble is the raw-message one.
+    const speakButton = page.locator(".chat-message--assistant .audio-button").first();
     if ((await speakButton.count()) > 0) {
       const responsePromise = page.waitForResponse(
         (res) => res.url().includes("/tts/speak") && res.request().method() === "POST",
@@ -248,13 +254,66 @@ async function checkBrowserEndToEnd() {
       // and updating the button state, then confirm it didn't land on error.
       await page.waitForTimeout(500);
       const speakClass = (await speakButton.getAttribute("class")) ?? "";
-      if (speakClass.includes("chat-message__speak--error")) {
+      if (speakClass.includes("audio-button--error")) {
         fail("speaker button ended up in its error state after clicking");
       }
       console.log(`  OK - speaker button fetched ${contentType}, ${contentLength} bytes`);
     } else {
-      fail("no speaker button (.chat-message__speak) found on the assistant message");
+      fail("no speaker button (.audio-button) found on the assistant message");
     }
+
+    // Translation rows: click the 🌐 toggle on the assistant message and
+    // confirm a translation row actually appears (not just that the button
+    // is clickable) - this is a click toggle now, not a hover popover that
+    // used to stay open forever once fetched.
+    const assistantToggle = page.locator(".chat-message--assistant .chat-message__translate-toggle").first();
+    await assistantToggle.click();
+    await page.waitForSelector(".chat-message--assistant .translation-row--assistant", { timeout: 15_000 });
+    const assistantRowText = await page
+      .locator(".chat-message--assistant .translation-row--assistant .translation-row__text")
+      .innerText();
+    if (!assistantRowText.trim()) {
+      fail("assistant translation row appeared but has no text");
+    }
+    console.log(`  OK - assistant translation row: ${JSON.stringify(assistantRowText)}`);
+    await assistantToggle.click();
+    const stillOpen = await page.locator(".chat-message--assistant .translation-row--assistant").count();
+    if (stillOpen !== 0) {
+      fail("assistant translation row still present after toggling it closed");
+    }
+    console.log("  OK - toggle closes the translation row (doesn't just persist)");
+
+    // Same for the user's own message, which should get TWO rows (EN + ES)
+    // plus an edit affordance on the EN one.
+    const userToggle = page.locator(".chat-message--user .chat-message__translate-toggle").first();
+    await userToggle.click();
+    await page.waitForSelector(".chat-message--user .translation-row--user-native", { timeout: 15_000 });
+    await page.waitForSelector(".chat-message--user .translation-row--user-target", { timeout: 15_000 });
+    const editButton = page.locator(".chat-message--user .translation-row--user-native .translation-row__edit");
+    if ((await editButton.count()) === 0) {
+      fail("user's EN translation row has no edit button");
+    }
+    console.log("  OK - user message shows EN + ES translation rows with an edit button on EN");
+
+    // Hovering a word in the input box should show translation candidates -
+    // "hotel" is a known cognate (app/translate/cognates.py), so it should
+    // get BOTH an English and a Spanish column, not just one direction.
+    const textarea = page.locator("textarea");
+    await textarea.fill("hotel");
+    await page.waitForTimeout(600); // tag-input is debounced 350ms
+    const hoverableWord = page.locator(".chat-input__hoverable").first();
+    if ((await hoverableWord.count()) > 0) {
+      await hoverableWord.hover();
+      await page.waitForSelector(".word-candidates-popover", { timeout: 8_000 });
+      const isDual = (await page.locator(".word-candidates-popover--dual").count()) > 0;
+      if (!isDual) {
+        fail('hovering "hotel" in the input did not show both EN and ES columns');
+      }
+      console.log('  OK - hovering a cognate ("hotel") in the input shows both EN and ES columns');
+    } else {
+      fail('"hotel" in the input box was not flagged as hoverable');
+    }
+    await textarea.fill("");
 
     // Switch the voice picker to a non-default voice and confirm the next
     // speak request actually carries that voice - not just that the
