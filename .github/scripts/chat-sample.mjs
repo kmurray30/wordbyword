@@ -5,7 +5,7 @@
 // checks in e2e-check.mjs - this only cares about reply quality, and the
 // Playwright drive-the-page step is slow and has an unrelated flake.
 const BACKEND_URL = process.env.BACKEND_URL || "https://server-production-f688.up.railway.app";
-const LABEL = process.env.SAMPLE_LABEL || "gentle-steering";
+const LABEL = process.env.SAMPLE_LABEL || "gentle-steering-v2-prompt";
 const sessionId = `sample-${LABEL}-${crypto.randomUUID()}`;
 
 const messages = [
