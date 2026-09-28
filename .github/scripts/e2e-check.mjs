@@ -460,6 +460,33 @@ async function checkBrowserEndToEnd() {
         fail("a single-word popover was still showing alongside the phrase popover after a drag-select");
       }
       console.log("  OK - selecting a phrase shows a phrase translation popover, not a leftover single-word one");
+
+      // The selected phrase ("gusta mucho el gato negro") is all Spanish,
+      // so this should translate it INTO English (majority-vote over the
+      // selection's per-word is_spanish flags), not treat it as a draft to
+      // correct into Spanish.
+      await page.waitForFunction(
+        () => {
+          const el = document.querySelector(".chat-input__phrase-popover-anchor .candidate-cycler__text");
+          return !!el && !el.textContent.includes("…");
+        },
+        { timeout: 8_000 },
+      );
+      const phraseHeading = await page
+        .locator(".chat-input__phrase-popover-anchor .word-candidates-popover__heading")
+        .first()
+        .innerText();
+      const phraseTranslationText = await page
+        .locator(".chat-input__phrase-popover-anchor .candidate-cycler__text")
+        .first()
+        .innerText();
+      if (phraseHeading !== "English") {
+        fail(`expected the phrase popover for an all-Spanish selection to read "English", got ${JSON.stringify(phraseHeading)}`);
+      }
+      if (!phraseTranslationText.toLowerCase().includes("cat")) {
+        fail(`expected the Spanish->English phrase translation to mention "cat", got ${JSON.stringify(phraseTranslationText)}`);
+      }
+      console.log(`  OK - highlighting an all-Spanish phrase translated it to English: ${JSON.stringify(phraseTranslationText)}`);
     } else {
       fail('could not find "gusta"/"negro" as hoverable words to test drag-selection');
     }

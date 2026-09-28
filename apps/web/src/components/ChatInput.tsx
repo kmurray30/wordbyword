@@ -47,6 +47,13 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
   const [phraseSelection, setPhraseSelection] = useState<{ text: string; start: number; end: number } | null>(null);
   const [phraseTranslation, setPhraseTranslation] = useState<string | null>(null);
   const [phraseState, setPhraseState] = useState<"idle" | "loading" | "error">("idle");
+  // Which way the phrase popover translates: "es" (candidates ARE Spanish -
+  // a mostly-English/mixed selection, corrected and translated INTO
+  // Spanish, clickable to swap in) or "en" (candidates ARE English - a
+  // mostly-Spanish selection, translated INTO English, just a gloss).
+  // Mirrors the per-word popover's two column types, decided per-selection
+  // below from the majority language of the words it covers.
+  const [phraseDirection, setPhraseDirection] = useState<"es" | "en">("es");
   const [phraseCoords, setPhraseCoords] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
@@ -112,13 +119,29 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
       setPhraseState("idle");
       return;
     }
+    // Majority-vote the language of the real words the selection covers
+    // (same per-word is_spanish flags /translate/tag-input already
+    // computed) to decide which way to translate: a mostly-Spanish
+    // selection goes to English, a mostly-English (or mixed/typo-ridden)
+    // one goes to Spanish, same as the per-word popover's two directions.
+    const overlapping = effectiveTags.filter(
+      (t) => t.columns.length > 0 && t.end > phraseSelection.start && t.start < phraseSelection.end,
+    );
+    const spanishCount = overlapping.filter((t) => t.is_spanish).length;
+    const isSpanishPhrase = overlapping.length > 0 && spanishCount * 2 > overlapping.length;
+    setPhraseDirection(isSpanishPhrase ? "en" : "es");
+
     setPhraseState("loading");
     setPhraseTranslation(null);
     const handle = setTimeout(() => {
-      api
-        .interpretInput({ text: phraseSelection.text })
-        .then((res) => {
-          setPhraseTranslation(res.target);
+      const translation = isSpanishPhrase
+        ? api
+            .translateText({ text: phraseSelection.text, source_lang: "es", target_lang: "en" })
+            .then((res) => res.translation)
+        : api.interpretInput({ text: phraseSelection.text }).then((res) => res.target);
+      translation
+        .then((text) => {
+          setPhraseTranslation(text);
           setPhraseState("idle");
         })
         .catch(() => setPhraseState("error"));
@@ -269,7 +292,6 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
                     leave this open at the same time as the phrase popover below. */}
                 {openTokenKey === `${seg.token.start}-${seg.token.end}` && !phraseSelection && (
                   <WordCandidatesPopover
-                    word={seg.token.surface}
                     columns={seg.token.columns}
                     onSelect={(translation) => handleReplace(seg.token!, translation)}
                   />
@@ -329,11 +351,14 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
         createPortal(
           <div className="chat-input__phrase-popover-anchor" style={{ top: phraseCoords.top, left: phraseCoords.left }}>
             <WordCandidatesPopover
-              word={phraseSelection.text}
               columns={[
                 {
-                  language: "es",
-                  clickable: true,
+                  language: phraseDirection,
+                  // Clickable only in the "es" direction (swap the Spanish
+                  // translation into the draft) - the "en" direction is
+                  // just a gloss of a phrase you already wrote in Spanish,
+                  // same as the per-word popover's non-clickable EN column.
+                  clickable: phraseDirection === "es",
                   candidates: [
                     phraseState === "loading"
                       ? { translation: "…" }
