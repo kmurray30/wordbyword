@@ -129,7 +129,10 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
 
   // Positions the phrase popover near the end of the selection, using the
   // same segment spans rendered for word-hover - finds whichever one the
-  // selection's end offset falls in and anchors there.
+  // selection's end offset falls in and anchors there. Anchored at the
+  // span's top edge, centered horizontally, because the popover itself
+  // (WordCandidatesPopover, the same widget word-hover uses) always opens
+  // upward - see WordCandidatesPopover.css for why.
   useEffect(() => {
     if (!phraseSelection || !highlightRef.current) {
       setPhraseCoords(null);
@@ -146,7 +149,7 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
         break;
       }
     }
-    setPhraseCoords(anchorRect ? { top: anchorRect.bottom, left: anchorRect.right } : null);
+    setPhraseCoords(anchorRect ? { top: anchorRect.top, left: anchorRect.left + anchorRect.width / 2 } : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phraseSelection?.start, phraseSelection?.end, segments.length]);
 
@@ -325,14 +328,20 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
         phraseCoords &&
         createPortal(
           <div className="chat-input__phrase-popover-anchor" style={{ top: phraseCoords.top, left: phraseCoords.left }}>
-            <TranslatePopover
-              sourceWord={phraseSelection.text}
-              candidates={[
-                phraseState === "loading"
-                  ? { translation: "…" }
-                  : phraseState === "error"
-                    ? { translation: "(translation failed)" }
-                    : { translation: phraseTranslation ?? "…" },
+            <WordCandidatesPopover
+              word={phraseSelection.text}
+              columns={[
+                {
+                  language: "es",
+                  clickable: true,
+                  candidates: [
+                    phraseState === "loading"
+                      ? { translation: "…" }
+                      : phraseState === "error"
+                        ? { translation: "(translation failed)" }
+                        : { translation: phraseTranslation ?? "…" },
+                  ],
+                },
               ]}
               onSelect={(translation) => {
                 const next = value.slice(0, phraseSelection.start) + translation + value.slice(phraseSelection.end);

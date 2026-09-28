@@ -443,13 +443,19 @@ async function checkBrowserEndToEnd() {
       }
       console.log(`  OK - drag-selecting from a hoverable word selected ${JSON.stringify(selection.text)}`);
 
-      // Same zero-size-anchor pattern as the word-token popover above: the
-      // anchor div itself is deliberately 0x0 (its only child is
-      // position:absolute, so it never contributes to the anchor's own
-      // box), so wait for the actual rendered popover content, not the
-      // anchor element.
-      await page.waitForSelector(".chat-input__phrase-popover-anchor .translate-popover", { timeout: 8_000 });
-      const stillShowingWordPopover = (await page.locator(".word-candidates-popover").count()) > 0;
+      // The phrase popover reuses the exact same widget as single-word
+      // hover (WordCandidatesPopover), just portaled to a fixed anchor
+      // instead of nested inline - so it renders the same
+      // .word-candidates-popover element. Same zero-size-anchor pattern as
+      // the word-token popover above: the anchor div itself is
+      // deliberately 0x0 (its only child is position:absolute, so it never
+      // contributes to the anchor's own box), so wait for the actual
+      // rendered popover content, not the anchor element.
+      await page.waitForSelector(".chat-input__phrase-popover-anchor .word-candidates-popover", { timeout: 8_000 });
+      // Scoped to a *nested* instance (inside a hoverable word span) so this
+      // only catches a genuine leftover single-word popover, not the phrase
+      // popover itself - both render the same .word-candidates-popover class.
+      const stillShowingWordPopover = (await page.locator(".chat-input__hoverable .word-candidates-popover").count()) > 0;
       if (stillShowingWordPopover) {
         fail("a single-word popover was still showing alongside the phrase popover after a drag-select");
       }

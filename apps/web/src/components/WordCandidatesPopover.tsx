@@ -23,7 +23,13 @@ interface WordCandidatesPopoverProps {
 
 // "es" column (candidates ARE Spanish) -> translating English into Spanish.
 // "en" column (candidates ARE English) -> translating Spanish into English.
-const DIRECTION_LABEL: Record<string, string> = { es: "English → Spanish", en: "Spanish → English" };
+// The "es" heading is deliberately just "Spanish", not "English -> Spanish":
+// the word being translated is already right there as the hovered word, so
+// spelling out its language again is redundant. "en" keeps the full
+// "Spanish -> English" label and its "sourceWord -> translation" body (see
+// the sourceWord prop below) because that direction has no other visual cue
+// pointing back at the original Spanish word.
+const DIRECTION_LABEL: Record<string, string> = { es: "Spanish", en: "Spanish → English" };
 
 // Like TranslatePopover, but for hovering a word in the chat input: one
 // row per language the word is independently valid in - e.g. "once" is
@@ -43,7 +49,12 @@ export function WordCandidatesPopover({ word, columns, onSelect }: WordCandidate
       {visible.map((col) => (
         <div className="word-candidates-popover__column" key={col.language}>
           <div className="word-candidates-popover__heading">{DIRECTION_LABEL[col.language] ?? col.language}</div>
-          <CandidateCycler candidates={col.candidates} clickable={col.clickable} onSelect={onSelect} sourceWord={word} />
+          <CandidateCycler
+            candidates={col.candidates}
+            clickable={col.clickable}
+            onSelect={onSelect}
+            sourceWord={col.language === "en" ? word : undefined}
+          />
         </div>
       ))}
     </div>
