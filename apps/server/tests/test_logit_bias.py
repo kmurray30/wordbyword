@@ -6,6 +6,7 @@ from app.chat.logit_bias import (
     NEW_WORD_BIAS,
     _first_token_id,
     build_logit_bias,
+    warm_up,
 )
 
 
@@ -62,3 +63,12 @@ def test_build_logit_bias_dedupes_shared_first_token_by_taking_max():
 def test_build_logit_bias_empty_input():
     with patch("app.chat.logit_bias._tokenizer", return_value=FakeTokenizer()):
         assert build_logit_bias([], [], {}) == {}
+
+
+def test_warm_up_loads_the_tokenizer():
+    # Loading eagerly at startup, rather than lazily on the first request,
+    # is what sidesteps the intermittent import race observed live - just
+    # confirms warm_up() actually forces the (cached) load to happen.
+    with patch("app.chat.logit_bias._tokenizer") as mocked:
+        warm_up()
+    mocked.assert_called_once()

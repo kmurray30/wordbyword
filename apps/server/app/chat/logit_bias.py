@@ -41,6 +41,19 @@ def _tokenizer():
     return AutoTokenizer.from_pretrained(TOKENIZER_NAME)
 
 
+def warm_up() -> None:
+    """Forces the tokenizer to load once, synchronously, at application
+    startup rather than lazily on the first /chat/turn request. Observed
+    live: an intermittent 500 ("ImportError: cannot import name
+    'AutoTokenizer' from 'transformers'") on an early request - transformers'
+    lazy-module loading isn't guaranteed safe against the first load racing
+    concurrent request handling. Loading it once before any traffic arrives
+    sidesteps that regardless of the exact mechanism, and as a side effect
+    means the first real chat turn after a cold start doesn't also pay the
+    tokenizer's own load latency inline."""
+    _tokenizer()
+
+
 @lru_cache(maxsize=4096)
 def _first_token_id(surface_form: str) -> int | None:
     """Token id of the first token produced for this surface form. A leading

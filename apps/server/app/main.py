@@ -3,6 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.chat.logit_bias import warm_up as warm_up_tokenizer
 from app.db import init_db
 from app.routes import chat, events, translate, tts
 
@@ -27,6 +28,7 @@ app.include_router(tts.router)
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    warm_up_tokenizer()
 
 
 @app.get("/health")
