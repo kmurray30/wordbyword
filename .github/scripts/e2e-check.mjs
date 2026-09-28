@@ -33,7 +33,13 @@ import { chromium } from "playwright";
 const BACKEND_URL = process.env.BACKEND_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const CHAT_TIMEOUT_MS = 100_000;
-const TTS_TIMEOUT_MS = 30_000;
+// DeepInfra (the TTS provider) has observed live, more than once, going
+// through slow patches where even a short phrase's synthesis takes well
+// past 15-20s - not a code regression, just third-party latency variance.
+// 30s was tight enough that it turned a slow-but-working response into a
+// hard failure and burned several CI cycles on the exact same non-issue;
+// wider margin here, not a claim that this is fast.
+const TTS_TIMEOUT_MS = 60_000;
 const TEST_SESSION_ID = `e2e-${crypto.randomUUID()}`;
 
 function fail(message) {
