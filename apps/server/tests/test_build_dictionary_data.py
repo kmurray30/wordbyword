@@ -1,4 +1,5 @@
 from scripts.build_dictionary_data import (
+    _augment_en_to_es_from_es_glosses,
     _format_description,
     _process_english_line,
     _process_spanish_line,
@@ -115,3 +116,35 @@ def test_process_english_line_keeps_self_translation_when_it_is_the_only_candida
     out = {}
     _process_english_line(line, {"hotel"}, out)
     assert out["hotel"] == [{"translation": "hotel", "description": "a place offering lodging"}]
+
+
+def test_augment_recovers_word_missing_from_translation_tables():
+    # "bro" has no "es" entry in its own translation table (Wiktionary's
+    # crowd-sourced tables are often incomplete for slang), but "tío" is
+    # independently defined on the ES side with "bro" as its English gloss -
+    # the augmentation should recover that reverse relationship.
+    es_to_en = {"tío": [{"translation": "bro", "description": "(informal) close male friend"}]}
+    en_to_es: dict = {}
+    _augment_en_to_es_from_es_glosses(es_to_en, en_to_es, en_freq=set())
+    assert en_to_es["bro"] == [{"translation": "tío", "description": "(informal) close male friend"}]
+
+
+def test_augment_skips_multiword_glosses():
+    es_to_en = {"banco": [{"translation": "bank (financial institution)", "description": ""}]}
+    en_to_es: dict = {}
+    _augment_en_to_es_from_es_glosses(es_to_en, en_to_es, en_freq=set())
+    assert en_to_es == {}
+
+
+def test_augment_skips_uncommon_non_informal_gloss():
+    es_to_en = {"esotérico": [{"translation": "esoteric", "description": ""}]}
+    en_to_es: dict = {}
+    _augment_en_to_es_from_es_glosses(es_to_en, en_to_es, en_freq=set())
+    assert en_to_es == {}
+
+
+def test_augment_does_not_duplicate_existing_translations_table_entry():
+    es_to_en = {"pareja": [{"translation": "partner", "description": ""}]}
+    en_to_es = {"partner": [{"translation": "pareja", "description": "a person one is romantically involved with"}]}
+    _augment_en_to_es_from_es_glosses(es_to_en, en_to_es, en_freq={"partner"})
+    assert en_to_es["partner"] == [{"translation": "pareja", "description": "a person one is romantically involved with"}]

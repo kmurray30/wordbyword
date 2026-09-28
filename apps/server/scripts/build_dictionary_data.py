@@ -59,6 +59,12 @@ MAX_TRANSLATION_LEN = 60
 
 _WORD_RE = re.compile(r"^[a-zA-ZñÑáéíóúüÁÉÍÓÚÜ]+$")
 
+# TEMPORARY: dumps the raw kaikki.org entry for these words to the build log
+# so a live deploy's build log can show exactly what Wiktionary has for them
+# (translation tables, tags) - remove once bro/sup/partner coverage is
+# confirmed working end to end.
+_DEBUG_WORDS = {"bro", "sup", "partner"}
+
 
 def _short(text: str, limit: int) -> str:
     text = text.strip()
@@ -98,6 +104,8 @@ def _process_spanish_line(line: str, es_freq: set[str], out: dict[str, list[dict
     if entry.get("lang_code") != "es":
         return
     word = entry.get("word", "")
+    if word.lower() in _DEBUG_WORDS:
+        print(f"DEBUG raw Spanish entry for {word!r}: {line[:3000]}", file=sys.stderr)
     if not _WORD_RE.match(word):
         return
     lemma = word.lower()
@@ -138,6 +146,8 @@ def _process_english_line(line: str, en_freq: set[str], out: dict[str, list[dict
     if entry.get("lang_code") != "en":
         return
     word = entry.get("word", "")
+    if word.lower() in _DEBUG_WORDS:
+        print(f"DEBUG raw English entry for {word!r}: {line[:3000]}", file=sys.stderr)
     if not _WORD_RE.match(word):
         return
     es_translations = [t for t in (entry.get("translations") or []) if t.get("code") == "es" and t.get("word")]
@@ -171,6 +181,35 @@ def _process_english_line(line: str, en_freq: set[str], out: dict[str, list[dict
         example = _first_example(matched) if matched else ""
         candidates.append({"translation": es_word, "description": _format_description(tags, gloss=gloss, example=example)})
         seen.add(es_word.lower())
+
+
+def _augment_en_to_es_from_es_glosses(
+    es_to_en: dict[str, list[dict[str, str]]], en_to_es: dict[str, list[dict[str, str]]], en_freq: set[str]
+) -> None:
+    """Wiktionary's per-word translation tables (what _process_english_line
+    reads) are crowd-sourced and often incomplete for informal words -
+    "bro" may have no "es" entry there at all even though a Spanish word is
+    independently defined (on the ES side) with "bro" as its English gloss.
+    Mine that reverse relationship from the ES dataset we already
+    downloaded - no second pass over the wire, and it only adds candidates,
+    never removes any from the translations-table pass above."""
+    for es_word, candidates in es_to_en.items():
+        for cand in candidates:
+            gloss = cand["translation"].lower().strip()
+            if not re.match(r"^[a-z]+$", gloss):
+                continue  # only single bare words - "bank (financial institution)" stays out
+            # _format_description() only ever prepends a "(...)" prefix from
+            # a REGISTER_TAGS-filtered tag list, so this is exactly "did any
+            # register tag apply to this sense" without re-parsing which one.
+            is_informal = cand["description"].startswith("(")
+            if gloss not in en_freq and not is_informal:
+                continue
+            out_list = en_to_es.setdefault(gloss, [])
+            if len(out_list) >= MAX_CANDIDATES_PER_WORD:
+                continue
+            if any(c["translation"].lower() == es_word for c in out_list):
+                continue
+            out_list.append({"translation": es_word, "description": cand["description"] or gloss})
 
 
 def _load_frequency_lists() -> tuple[set[str], set[str]]:
@@ -209,6 +248,11 @@ def main() -> None:
 
     es_to_en = _build_direction("es->en", SPANISH_URL, es_freq, _process_spanish_line)
     en_to_es = _build_direction("en->es", ENGLISH_URL, en_freq, _process_english_line)
+
+    before = len(en_to_es)
+    _augment_en_to_es_from_es_glosses(es_to_en, en_to_es, en_freq)
+    print(f"  en->es: reverse-index augmentation added {len(en_to_es) - before} more headwords "
+          f"(now {len(en_to_es)})")
 
     with OUT_PATH.open("w", encoding="utf-8") as f:
         json.dump({"es_to_en": es_to_en, "en_to_es": en_to_es}, f, ensure_ascii=False, separators=(",", ":"))
