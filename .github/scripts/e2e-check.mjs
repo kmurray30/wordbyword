@@ -285,6 +285,15 @@ async function checkBrowserEndToEnd() {
 
     // Same for the user's own message, which should get TWO rows (EN + ES)
     // plus an edit affordance on the EN one.
+    const userMessageCount = await page.locator(".chat-message--user").count();
+    console.log(`  (debug) .chat-message--user count: ${userMessageCount}`);
+    if (userMessageCount === 0) {
+      const allMessages = await page.locator(".chat-message").evaluateAll((els) =>
+        els.map((el) => el.className)
+      );
+      console.log(`  (debug) all .chat-message class lists: ${JSON.stringify(allMessages)}`);
+      await page.screenshot({ path: "e2e-debug-no-user-message.png" });
+    }
     const userToggle = page.locator(".chat-message--user .chat-message__translate-toggle").first();
     await userToggle.click();
     await page.waitForSelector(".chat-message--user .translation-row--user-native", { timeout: 15_000 });
