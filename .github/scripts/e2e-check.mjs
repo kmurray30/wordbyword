@@ -307,9 +307,17 @@ async function checkBrowserEndToEnd() {
     // Hovering a word in the input box should show translation candidates -
     // "hotel" is a known cognate (app/translate/cognates.py), so it should
     // get BOTH an English and a Spanish column, not just one direction.
+    // Wait for the actual /translate/tag-input response rather than a fixed
+    // delay - a cognate needs two Argos MT calls (one per direction), which
+    // can take longer than the 350ms debounce alone suggests.
     const textarea = page.locator("textarea");
+    const tagResponsePromise = page.waitForResponse(
+      (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
+      { timeout: 10_000 }
+    );
     await textarea.fill("hotel");
-    await page.waitForTimeout(600); // tag-input is debounced 350ms
+    await tagResponsePromise;
+    await page.waitForTimeout(150); // let React apply the response to state/DOM
     const hoverableWord = page.locator(".chat-input__hoverable").first();
     if ((await hoverableWord.count()) > 0) {
       await hoverableWord.hover();
