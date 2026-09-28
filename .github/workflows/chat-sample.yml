@@ -16,7 +16,9 @@ on:
   # workflow_dispatch needs the workflow file discovered on the default
   # branch first, which this repo doesn't use - push (scoped to this
   # workflow's own files) is how runs actually get kicked off, same as
-  # e2e-check.yml.
+  # e2e-check.yml. Note: a push to this branch rebuilds all 3 Railway
+  # services, so a run triggered immediately after a push can race a
+  # model-server restart - check its deploy settled first.
   push:
     branches: ["claude/language-learning-chat-app-krn12w"]
     paths:

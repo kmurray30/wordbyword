@@ -18,15 +18,25 @@ const messages = [
 ];
 
 async function chatTurn(message) {
-  const res = await fetch(`${BACKEND_URL}/chat/turn`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, session_id: sessionId }),
-  });
-  if (!res.ok) {
-    throw new Error(`chat/turn failed (${res.status}): ${await res.text()}`);
+  // A push to this branch rebuilds all 3 Railway services, including
+  // model-server (~20-50s to reload weights) - retry through its 503
+  // window instead of racing it with a manually-timed delay.
+  const maxAttempts = 12;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(`${BACKEND_URL}/chat/turn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, session_id: sessionId }),
+    });
+    if (res.ok) return res.json();
+    const body = await res.text();
+    if (res.status === 503 && attempt < maxAttempts) {
+      console.log(`  (model server not ready yet, attempt ${attempt}/${maxAttempts}, retrying in 10s)`);
+      await new Promise((r) => setTimeout(r, 10_000));
+      continue;
+    }
+    throw new Error(`chat/turn failed (${res.status}): ${body}`);
   }
-  return res.json();
 }
 
 async function main() {
