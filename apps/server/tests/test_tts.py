@@ -88,9 +88,50 @@ def test_synthesize_wraps_http_status_error():
 
     fake_response = Mock()
     fake_response.raise_for_status = Mock(side_effect=error)
-    client_patch, _ = _mock_async_client(fake_response)
+    client_patch, client = _mock_async_client(fake_response)
 
     with patch("app.tts.deepinfra_client.DEEPINFRA_API_TOKEN", "fake-token"):
         with client_patch:
             with pytest.raises(TTSUnavailableError, match="invalid voice"):
                 asyncio.run(synthesize("hola"))
+
+    # A real API error (not a transport failure) shouldn't be retried.
+    assert client.post.call_count == 1
+
+
+def test_synthesize_retries_once_on_timeout_then_succeeds():
+    # Observed live twice: DeepInfra occasionally stalls past the per-
+    # attempt timeout - a second attempt on a fresh connection often just
+    # works.
+    fake_response = Mock(content=b"fake-mp3-bytes")
+    fake_response.raise_for_status = Mock()
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=[httpx.ReadTimeout("timed out"), fake_response])
+    context_manager = MagicMock()
+    context_manager.__aenter__ = AsyncMock(return_value=client)
+    context_manager.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.tts.deepinfra_client.DEEPINFRA_API_TOKEN", "fake-token"):
+        with patch("httpx.AsyncClient", return_value=context_manager):
+            result = asyncio.run(synthesize("hola"))
+
+    assert result == b"fake-mp3-bytes"
+    assert client.post.call_count == 2
+
+
+def test_synthesize_raises_with_detail_after_exhausting_retries():
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=httpx.ReadTimeout("timed out"))
+    context_manager = MagicMock()
+    context_manager.__aenter__ = AsyncMock(return_value=client)
+    context_manager.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.tts.deepinfra_client.DEEPINFRA_API_TOKEN", "fake-token"):
+        with patch("httpx.AsyncClient", return_value=context_manager):
+            # repr(exc), not str(exc) - httpx's timeout exceptions often
+            # stringify to "", which previously produced a blank-looking
+            # error message with no clue what actually failed.
+            with pytest.raises(TTSUnavailableError, match="ReadTimeout"):
+                asyncio.run(synthesize("hola"))
+
+    assert client.post.call_count == 2

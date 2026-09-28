@@ -5,12 +5,16 @@ our own self-hosted llama-server): DeepInfra is a hosted API, keyed by its
 own bearer token, so it gets its own client and its own failure mode.
 """
 
+import logging
+
 import httpx
 
 from app.config import DEEPINFRA_API_TOKEN, DEEPINFRA_TTS_MODEL, DEEPINFRA_TTS_VOICE, TARGET_LANGUAGE
 from app.tts.kokoro_voices import voice_for_language
 
 DEEPINFRA_TTS_URL = "https://api.deepinfra.com/v1/audio/speech"
+
+logger = logging.getLogger(__name__)
 
 
 class TTSUnavailableError(RuntimeError):
@@ -32,27 +36,35 @@ async def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | No
         "voice": voice,
         "response_format": "mp3",
     }
+    headers = {"Authorization": f"Bearer {DEEPINFRA_API_TOKEN}"}
 
-    try:
-        # Normal calls come back in well under 1s (measured live); 15s is
-        # already generous. Observed live: DeepInfra itself hung for the
-        # old 30s ceiling on every request during a rough patch, doubling
-        # how long a stuck TTS button stayed stuck before finally erroring.
-        # async so a slow DeepInfra call blocks only this request, not a
-        # thread another endpoint (e.g. /chat/turn's own multi-second
-        # llama-server call) needs from FastAPI's shared sync threadpool.
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
-                DEEPINFRA_TTS_URL,
-                json=payload,
-                headers={"Authorization": f"Bearer {DEEPINFRA_API_TOKEN}"},
+    # Normal calls come back in well under 1s (measured live); 15s per
+    # attempt is already generous. Observed live, twice now: DeepInfra
+    # itself occasionally stalls past that ceiling during a rough patch -
+    # one retry on a fresh connection, since a transport-level stall often
+    # clears on a new attempt. Not retried on HTTPStatusError, which means
+    # DeepInfra actually answered (auth/quota/bad request) - a repeat
+    # attempt wouldn't change that.
+    last_error: httpx.HTTPError | None = None
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(DEEPINFRA_TTS_URL, json=payload, headers=headers)
+            response.raise_for_status()
+            return response.content
+        except httpx.HTTPStatusError as exc:
+            raise TTSUnavailableError(
+                f"DeepInfra TTS request failed ({exc.response.status_code}): {exc.response.text}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            last_error = exc
+            logger.warning(
+                "TTS attempt %d/2 failed reaching DeepInfra (%s: %s)", attempt + 1, type(exc).__name__, exc
             )
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise TTSUnavailableError(
-            f"DeepInfra TTS request failed ({exc.response.status_code}): {exc.response.text}"
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise TTSUnavailableError(f"Could not reach DeepInfra's TTS API: {exc}") from exc
 
-    return response.content
+    # repr, not str - httpx's own timeout/connection exceptions frequently
+    # stringify to "" with no detail, which previously surfaced to the user
+    # as an unhelpfully blank error message ("Could not reach ... API: ").
+    raise TTSUnavailableError(
+        f"Could not reach DeepInfra's TTS API after 2 attempts: {last_error!r}"
+    ) from last_error

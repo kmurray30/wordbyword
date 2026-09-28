@@ -18,10 +18,9 @@
 //  6. If those pass, drive the real site with Playwright end to end: send a
 //     message, hover a word gloss, play its audio, toggle both messages'
 //     translation rows open and closed, confirm the user message gets two
-//     rows (EN+ES) with an edit button on EN, hover a cognate word in the
-//     input box for its dual-column candidates, switch the voice picker
-//     and confirm that request carries the chosen voice, then reload and
-//     clear the chat.
+//     rows (EN+ES), hover a cognate word in the input box for its
+//     dual-column candidates, switch the voice picker and confirm that
+//     request carries the chosen voice, then reload and clear the chat.
 //
 // Stages 1-5 all use one throwaway session id (see TEST_SESSION_ID) so this
 // script's own chat traffic never lands in - or pollutes - anyone real's
@@ -298,8 +297,7 @@ async function checkBrowserEndToEnd() {
     }
     console.log("  OK - clicking the toggle pins the translation row open");
 
-    // Same for the user's own message, which should get TWO rows (EN + ES)
-    // plus an edit affordance on the EN one.
+    // Same for the user's own message, which should get TWO rows (EN + ES).
     const userMessageCount = await page.locator(".chat-message--user").count();
     console.log(`  (debug) .chat-message--user count: ${userMessageCount}`);
     if (userMessageCount === 0) {
@@ -313,11 +311,7 @@ async function checkBrowserEndToEnd() {
     await userColumn.hover();
     await page.waitForSelector(".chat-message--user .translation-row--user-native", { timeout: 15_000 });
     await page.waitForSelector(".chat-message--user .translation-row--user-target", { timeout: 15_000 });
-    const editButton = page.locator(".chat-message--user .translation-row--user-native .translation-row__edit");
-    if ((await editButton.count()) === 0) {
-      fail("user's EN translation row has no edit button");
-    }
-    console.log("  OK - hovering the user message previews EN + ES translation rows with an edit button on EN");
+    console.log("  OK - hovering the user message previews EN + ES translation rows");
 
     // Hovering a word in the input box should show translation candidates -
     // "hotel" is a real word in both languages (app/translate/word_validity.py

@@ -34,7 +34,7 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
   // Hovering the message previews its translation (fetched eagerly below,
   // so it's normally instant); the toggle button also pins it open on
   // click, for touch/keyboard users and anyone who wants to read it without
-  // holding the hover (e.g. to use the edit pencil or an audio button).
+  // holding the hover (e.g. to use an audio button).
   // The translation rows live in normal document flow directly under the
   // bubble - not an absolutely-positioned popover - so there's no gap for
   // the pointer to cross between them; hover can be driven safely off the
@@ -54,7 +54,6 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
   const [userNative, setUserNative] = useState<string | null>(null);
   const [userTarget, setUserTarget] = useState<string | null>(null);
   const [userInterpreting, setUserInterpreting] = useState(false);
-  const [userTargetRetranslating, setUserTargetRetranslating] = useState(false);
 
   useEffect(() => {
     if (message.role !== "assistant" || !message.tokens || message.fromHistory) return;
@@ -128,20 +127,6 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
   const handleTogglePin = () => {
     setIsPinned((pinned) => !pinned);
     fetchTranslation();
-  };
-
-  // The learner corrected the guessed English restatement - re-derive the
-  // Spanish row from that corrected text rather than the original (possibly
-  // mixed-language/misspelled) input, so a fixed English side also fixes
-  // the Spanish side and its audio.
-  const handleEditNative = (newNative: string) => {
-    setUserNative(newNative);
-    setUserTargetRetranslating(true);
-    api
-      .translateText({ text: newNative, source_lang: "en", target_lang: "es" })
-      .then((res) => setUserTarget(res.translation))
-      .catch(() => setUserTarget("(translation failed)"))
-      .finally(() => setUserTargetRetranslating(false));
   };
 
   // Only assistant replies get per-token annotations from the backend -
@@ -242,14 +227,12 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
                   text={userNative}
                   loading={userInterpreting}
                   language="en"
-                  editable
-                  onSave={handleEditNative}
                 />
                 <TranslationRow
                   variant="user-target"
                   label="ES"
                   text={userTarget}
-                  loading={userInterpreting || userTargetRetranslating}
+                  loading={userInterpreting}
                   language="es"
                   voice={voice}
                 />

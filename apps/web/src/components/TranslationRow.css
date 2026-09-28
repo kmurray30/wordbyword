@@ -33,31 +33,6 @@
   font-style: italic;
 }
 
-.translation-row__input {
-  flex: 1 1 auto;
-  min-width: 0;
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 6px;
-  color: inherit;
-  padding: 2px 6px;
-  font: inherit;
-}
-
-.translation-row__edit {
-  flex: none;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-  opacity: 0.55;
-  font-size: 0.95em;
-}
-
-.translation-row__edit:hover {
-  opacity: 1;
-}
-
 /* Each variant gets its own color so the three kinds of row (agent's
    translation vs. the user's two) are distinguishable at a glance, and
    distinct from the chat bubbles themselves. */
