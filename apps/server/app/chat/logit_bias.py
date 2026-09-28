@@ -50,8 +50,18 @@ def warm_up() -> None:
     concurrent request handling. Loading it once before any traffic arrives
     sidesteps that regardless of the exact mechanism, and as a side effect
     means the first real chat turn after a cold start doesn't also pay the
-    tokenizer's own load latency inline."""
-    _tokenizer()
+    tokenizer's own load latency inline.
+
+    Deliberately swallows any failure (e.g. no network reachable to
+    Hugging Face - true of local dev in a network-locked sandbox, and a
+    real possibility in production too) rather than raising: this is a
+    best-effort optimization, not a hard requirement - the whole app
+    failing to start because of it would be a far worse outcome than
+    falling back to the original lazy load on first real use."""
+    try:
+        _tokenizer()
+    except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
+        print(f"WARNING: tokenizer warm-up failed ({exc}); will retry lazily on first /chat/turn")
 
 
 @lru_cache(maxsize=4096)

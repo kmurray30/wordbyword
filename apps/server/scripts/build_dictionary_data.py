@@ -232,12 +232,24 @@ def _augment_en_to_es_self_loanwords(
     headword that's also common/informal English, offer it back as a
     legitimate EN->ES candidate, carrying the ES entry's own description
     so it reads as "yes, this is valid, informal Spanish" rather than a
-    bare unexplained echo."""
+    bare unexplained echo.
+
+    Same spelling alone isn't enough, though - Spanish "once" means
+    "eleven", nothing to do with English "once" ("on one occasion"); it's a
+    coincidental homograph across unrelated languages, not a loanword, and
+    treating every same-spelled word as one produced exactly this bug
+    live. A genuine loanword's own Wiktionary gloss typically echoes the
+    word itself (as "bro"'s does: "bro (a male comrade or friend)"); a
+    false friend's gloss doesn't (Spanish "once" glosses as just
+    "eleven") - require that as evidence before trusting the spelling
+    match."""
     for es_word, candidates in es_to_en.items():
         lemma = es_word.lower()
         if not (_WORD_RE.match(es_word) and re.match(r"^[a-z]+$", lemma)):
             continue
         if lemma not in en_freq or not candidates:
+            continue
+        if not any(lemma in c["translation"].lower() for c in candidates):
             continue
         out_list = en_to_es.setdefault(lemma, [])
         if len(out_list) >= MAX_CANDIDATES_PER_WORD or any(c["translation"].lower() == lemma for c in out_list):

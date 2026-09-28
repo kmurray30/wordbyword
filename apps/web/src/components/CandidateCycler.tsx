@@ -10,14 +10,20 @@ interface CandidateCyclerProps {
   candidates: Candidate[];
   clickable: boolean;
   onSelect?: (translation: string) => void;
+  // The word being glossed, shown as "sourceWord → translation" instead of
+  // just the bare translation - updates as the user cycles, so it always
+  // reads as a complete "X means Y" statement, not just "Y" on its own.
+  sourceWord?: string;
 }
 
-// One translation candidate at a time - word and its short sense
-// description inline on a single line, with a single "next" button to step
-// through alternates (e.g. "tener" -> "to have" / "to be (years old)").
-// Only shows the button once there's more than one candidate to step
-// through; wraps back to the first after the last.
-export function CandidateCycler({ candidates, clickable, onSelect }: CandidateCyclerProps) {
+// One translation candidate at a time - source word, its translation, and a
+// short sense description all inline on one compact line, with a small
+// "N/M" indicator and a single "next" button (stacked above one another,
+// off to the side) to step through alternates (e.g. "tener" -> "to have" /
+// "to be (years old)"). Both only show once there's more than one
+// candidate to step through; cycling wraps back to the first after the
+// last.
+export function CandidateCycler({ candidates, clickable, onSelect, sourceWord }: CandidateCyclerProps) {
   const [index, setIndex] = useState(0);
   if (candidates.length === 0) return null;
 
@@ -32,6 +38,8 @@ export function CandidateCycler({ candidates, clickable, onSelect }: CandidateCy
 
   const body = (
     <span className="candidate-cycler__text">
+      {sourceWord && <span className="source">{sourceWord}</span>}
+      {sourceWord && <span className="arrow"> → </span>}
       <span className="translation">{current.translation || "…"}</span>
       {current.description && <span className="description">{current.description}</span>}
     </span>
@@ -47,9 +55,14 @@ export function CandidateCycler({ candidates, clickable, onSelect }: CandidateCy
         <div className="candidate-cycler__main candidate-cycler__main--static">{body}</div>
       )}
       {hasMultiple && (
-        <button type="button" className="candidate-cycler__next" aria-label="Next option" onClick={next}>
-          ↻
-        </button>
+        <div className="candidate-cycler__control">
+          <span className="candidate-cycler__count">
+            {clamped + 1}/{candidates.length}
+          </span>
+          <button type="button" className="candidate-cycler__next" aria-label="Next option" onClick={next}>
+            ↻
+          </button>
+        </div>
       )}
     </div>
   );

@@ -1,10 +1,13 @@
-"""Small curated EN->ES dictionary for common informal English words and
-greetings that Wiktionary's crowd-sourced translation tables don't reliably
-cover - Wiktionary's data is thorough for formal vocabulary but thin for
-slang (its own translation tables can be entirely empty for a word, or
-carry only one weak candidate where several better ones exist). Checked
-before the bundled Wiktionary dataset, same spirit as dictionary.py's
-ES->EN override for common words worth hand-tuning."""
+"""Small curated EN->ES dictionary for common English words that
+Wiktionary's crowd-sourced translation tables don't reliably cover - most
+often informal slang/greetings (its translation tables can be entirely
+empty for a word, or carry only one weak candidate where several better
+ones exist), but also grammar words its tables tend to skip (e.g. "a") and
+false-friend homographs the automated pipeline has no way to catch on its
+own (Spanish "once" means "eleven" - nothing to do with English "once",
+"on one occasion" - same spelling, unrelated word, not a translation).
+Checked before the bundled Wiktionary dataset, same spirit as
+dictionary.py's ES->EN override for common words worth hand-tuning."""
 
 from functools import lru_cache
 
@@ -21,6 +24,13 @@ DICTIONARY_EN_ES: dict[str, list[dict[str, str]]] = {
         {"translation": "tío", "description": "informal for \"dude\"/\"guy\", mainly used in Spain"},
         {"translation": "hermano", "description": "literally \"brother\", used affectionately for a close friend"},
         {"translation": "compa", "description": "informal, short for \"compañero\" (\"buddy\")"},
+    ],
+    "a": [
+        {"translation": "un", "description": "indefinite article, before a masculine noun"},
+        {"translation": "una", "description": "indefinite article, before a feminine noun"},
+    ],
+    "once": [
+        {"translation": "una vez", "description": "\"one time\" - not the number eleven (Spanish \"once\" is a different, unrelated word)"},
     ],
 }
 

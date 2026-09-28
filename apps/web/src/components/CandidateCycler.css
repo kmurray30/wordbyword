@@ -1,6 +1,6 @@
 .candidate-cycler {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 4px;
 }
 
@@ -23,13 +23,22 @@
   background: rgba(255, 255, 255, 0.1);
 }
 
-/* Translation and description read as one line ("bro - (slang) close male
-   friend") instead of stacked blocks - far more compact vertically, and the
-   popover's own width (see WordCandidatesPopover.css/TranslatePopover.css)
-   is generous enough that this rarely needs to wrap either. */
+/* Source word, translation and description all read as one line ("bro →
+   bro - (slang) close male friend") instead of stacked blocks - compact,
+   and the popover's own width (see WordCandidatesPopover.css/
+   TranslatePopover.css) is generous enough that this rarely needs to
+   wrap. */
 .candidate-cycler__text {
   display: block;
   white-space: normal;
+}
+
+.candidate-cycler .source {
+  opacity: 0.7;
+}
+
+.candidate-cycler .arrow {
+  opacity: 0.5;
 }
 
 .candidate-cycler .translation {
@@ -45,16 +54,32 @@
   content: " \2013 ";
 }
 
+/* Count and next-button stacked vertically, off to the side - compact,
+   and keeps the cycling control visually distinct from the translation
+   text itself. */
+.candidate-cycler__control {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.candidate-cycler__count {
+  font-size: 0.6rem;
+  opacity: 0.5;
+  line-height: 1.4;
+}
+
 .candidate-cycler__next {
   all: unset;
   box-sizing: border-box;
-  flex: none;
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 0px 4px;
   border-radius: 4px;
   opacity: 0.6;
-  font-size: 0.95rem;
-  line-height: 1;
+  font-size: 0.78rem;
+  line-height: 1.3;
 }
 
 .candidate-cycler__next:hover {

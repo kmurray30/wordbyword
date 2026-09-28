@@ -72,3 +72,13 @@ def test_warm_up_loads_the_tokenizer():
     with patch("app.chat.logit_bias._tokenizer") as mocked:
         warm_up()
     mocked.assert_called_once()
+
+
+def test_warm_up_swallows_failure_instead_of_crashing_startup():
+    # E.g. no network reachable to Hugging Face - true of local dev in a
+    # network-locked sandbox, and a real possibility in production too.
+    # This is a best-effort optimization; the whole app failing to start
+    # over it would be a far worse outcome than falling back to the
+    # original lazy load on first real use.
+    with patch("app.chat.logit_bias._tokenizer", side_effect=OSError("no network")):
+        warm_up()  # must not raise

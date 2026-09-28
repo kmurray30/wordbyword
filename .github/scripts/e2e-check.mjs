@@ -27,8 +27,12 @@
 //     message, hover a word gloss, play its audio, toggle both messages'
 //     translation rows open and closed, confirm the user message gets two
 //     rows (EN+ES), hover a cognate word in the input box for its
-//     dual-column candidates, switch the voice picker and confirm that
-//     request carries the chosen voice, then reload and clear the chat.
+//     dual-column candidates, drag-select a multi-word phrase in the input
+//     (starting the drag ON a hoverable word, not just in a gap between
+//     them) and confirm it shows one phrase translation rather than a
+//     leftover single-word popover, switch the voice picker and confirm
+//     that request carries the chosen voice, then reload and clear the
+//     chat.
 //
 // Stages 1-5 all use one throwaway session id (see TEST_SESSION_ID) so this
 // script's own chat traffic never lands in - or pollutes - anyone real's
@@ -401,6 +405,52 @@ async function checkBrowserEndToEnd() {
       console.log("  OK - only the English->Spanish reading is clickable; the Spanish gloss is not");
     } else {
       fail('"hotel" in the input box was not flagged as hoverable');
+    }
+    await textarea.fill("");
+
+    // Highlighting (selecting) a run of text in the input should show a
+    // phrase-level translation, not just the single word under the
+    // pointer - and dragging the selection FROM a hoverable word has to
+    // actually work: the hover overlay's spans intercept mousedown for
+    // hover-popover purposes, which (before this was fixed) silently
+    // swallowed the drag and never produced a real <textarea> selection at
+    // all when it started on a word (i.e. almost always).
+    const phraseTagResponsePromise = page.waitForResponse(
+      (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
+      { timeout: 10_000 }
+    );
+    await textarea.fill("me gusta mucho el gato negro");
+    await phraseTagResponsePromise;
+    await page.waitForTimeout(150);
+    const dragStartWord = page.locator(".chat-input__hoverable", { hasText: "gusta" }).first();
+    const dragEndWord = page.locator(".chat-input__hoverable", { hasText: "negro" }).first();
+    if ((await dragStartWord.count()) > 0 && (await dragEndWord.count()) > 0) {
+      const startBox = await dragStartWord.boundingBox();
+      const endBox = await dragEndWord.boundingBox();
+      await page.mouse.move(startBox.x + 2, startBox.y + startBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(endBox.x + endBox.width - 2, endBox.y + endBox.height / 2, { steps: 10 });
+      await page.mouse.up();
+      await page.waitForTimeout(150);
+
+      const selection = await textarea.evaluate((el) => ({
+        start: el.selectionStart,
+        end: el.selectionEnd,
+        text: el.value.slice(el.selectionStart, el.selectionEnd),
+      }));
+      if (selection.start === selection.end) {
+        fail("dragging from a hoverable word in the input produced no text selection at all");
+      }
+      console.log(`  OK - drag-selecting from a hoverable word selected ${JSON.stringify(selection.text)}`);
+
+      await page.waitForSelector(".chat-input__phrase-popover-anchor", { timeout: 8_000 });
+      const stillShowingWordPopover = (await page.locator(".word-candidates-popover").count()) > 0;
+      if (stillShowingWordPopover) {
+        fail("a single-word popover was still showing alongside the phrase popover after a drag-select");
+      }
+      console.log("  OK - selecting a phrase shows a phrase translation popover, not a leftover single-word one");
+    } else {
+      fail('could not find "gusta"/"negro" as hoverable words to test drag-selection');
     }
     await textarea.fill("");
 

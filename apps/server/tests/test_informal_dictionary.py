@@ -21,3 +21,14 @@ def test_lookup_is_case_and_accent_insensitive():
 
 def test_lookup_miss_returns_empty_list():
     assert lookup("hello") == []
+
+
+def test_a_offers_both_gendered_articles():
+    translations = [c["translation"] for c in lookup("a")]
+    assert "un" in translations
+    assert "una" in translations
+
+
+def test_once_translates_to_one_time_not_the_number():
+    candidates = lookup("once")
+    assert candidates[0]["translation"] == "una vez"

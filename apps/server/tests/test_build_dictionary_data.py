@@ -216,3 +216,16 @@ def test_process_spanish_line_merges_accented_and_unaccented_headwords():
     translations = [c["translation"] for c in out["como"]]
     assert "like / as" in translations
     assert "how" in translations
+
+
+def test_augment_self_loanwords_excludes_false_friend_homographs():
+    # Real bug, caught live: Spanish "once" means "eleven" - nothing to do
+    # with English "once" ("on one occasion") - a coincidental homograph
+    # across unrelated languages, not a loanword. Distinguished from a
+    # genuine loanword (whose gloss echoes the word itself, e.g. "bro"
+    # glossed as "bro (a male comrade...)") by requiring the gloss to
+    # actually reference the word.
+    es_to_en = {"once": [{"translation": "eleven", "description": ""}]}
+    en_to_es: dict = {}
+    _augment_en_to_es_self_loanwords(es_to_en, en_to_es, en_freq={"once"})
+    assert en_to_es == {}

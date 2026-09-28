@@ -61,7 +61,7 @@ export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenPro
         coords &&
         createPortal(
           <div className="word-token__popover-anchor" style={{ top: coords.top, left: coords.left }}>
-            <TranslatePopover candidates={[{ translation: gloss, description: note || undefined }]} />
+            <TranslatePopover candidates={[{ translation: gloss, description: note || undefined }]} sourceWord={surface} />
           </div>,
           document.body,
         )}

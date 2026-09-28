@@ -14,14 +14,17 @@ interface TranslatePopoverProps {
   // (the input box's draft-translate button) - opening downward there
   // would render off the bottom of the viewport.
   direction?: "down" | "up";
+  // The word being glossed, shown as "sourceWord → translation" instead of
+  // just the bare translation.
+  sourceWord?: string;
 }
 
-export function TranslatePopover({ candidates, onSelect, direction = "down" }: TranslatePopoverProps) {
+export function TranslatePopover({ candidates, onSelect, direction = "down", sourceWord }: TranslatePopoverProps) {
   if (candidates.length === 0) return null;
 
   return (
     <div className={`translate-popover translate-popover--${direction}`} role="tooltip">
-      <CandidateCycler candidates={candidates} clickable={!!onSelect} onSelect={onSelect} />
+      <CandidateCycler candidates={candidates} clickable={!!onSelect} onSelect={onSelect} sourceWord={sourceWord} />
     </div>
   );
 }
