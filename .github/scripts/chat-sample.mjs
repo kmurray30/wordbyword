@@ -18,10 +18,15 @@ const messages = [
 ];
 
 async function chatTurn(message) {
-  // A push to this branch rebuilds all 3 Railway services, including
-  // model-server (~20-50s to reload weights) - retry through its 503
-  // window instead of racing it with a manually-timed delay.
-  const maxAttempts = 12;
+  // A push to this branch rebuilds all 3 Railway services. Either
+  // model-server can be mid-reload (our own app returns a clean 503 in
+  // that case) or the `server` container itself can still be restarting,
+  // in which case Railway's edge returns a 502 "Application failed to
+  // respond" instead - seen live: a run failed on its very first request
+  // because `server`'s own redeploy hadn't finished yet. Retry through any
+  // 5xx rather than just 503, since both are "not ready yet", not real
+  // application errors.
+  const maxAttempts = 18;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const res = await fetch(`${BACKEND_URL}/chat/turn`, {
       method: "POST",
@@ -30,8 +35,8 @@ async function chatTurn(message) {
     });
     if (res.ok) return res.json();
     const body = await res.text();
-    if (res.status === 503 && attempt < maxAttempts) {
-      console.log(`  (model server not ready yet, attempt ${attempt}/${maxAttempts}, retrying in 10s)`);
+    if (res.status >= 500 && attempt < maxAttempts) {
+      console.log(`  (backend not ready yet, status ${res.status}, attempt ${attempt}/${maxAttempts}, retrying in 10s)`);
       await new Promise((r) => setTimeout(r, 10_000));
       continue;
     }
