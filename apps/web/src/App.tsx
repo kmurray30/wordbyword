@@ -46,15 +46,23 @@ function App() {
     api
       .chatHistory(sessionId)
       .then((res) => {
-        setMessages(
-          res.messages.map((m) => ({
-            id: m.id,
-            role: m.role as "user" | "assistant",
-            text: m.text,
-            tokens: m.tokens,
-            fromHistory: true,
-          }))
-        );
+        const historyMessages: DisplayMessage[] = res.messages.map((m) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          text: m.text,
+          tokens: m.tokens,
+          fromHistory: true,
+        }));
+        // This fetch can resolve after the user has already sent a message
+        // (a cold-started backend makes it slow enough for that to happen) -
+        // replacing the array outright would silently erase whatever they
+        // just sent. Keep anything already in state that isn't part of the
+        // history response instead of overwriting it.
+        setMessages((prev) => {
+          const historyIds = new Set(historyMessages.map((m) => m.id));
+          const notInHistory = prev.filter((m) => !historyIds.has(m.id));
+          return [...historyMessages, ...notInHistory];
+        });
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setHistoryLoaded(true));
