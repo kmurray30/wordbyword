@@ -15,6 +15,17 @@ MODEL_SERVER_BASE_URL = os.environ.get("MODEL_SERVER_BASE_URL", "http://localhos
 # so the tokenizer used for logit_bias matches the model actually generating text.
 TOKENIZER_NAME = os.environ.get("TOKENIZER_NAME", "Qwen/Qwen3-1.7B")
 
+# Hard cap on tokens per generation (chat replies AND translation calls, both
+# go through llama_client.chat). Without this, a generation that never hits
+# a stop token runs until it exhausts the model server's context window -
+# observed live: one reply generated 4000+ tokens before llama-server killed
+# it with "Context size has been exceeded", which also broke every OTHER
+# concurrent request sharing that context (translate calls came back stuck/
+# erroring, chat turns got a spurious "could not reach the model server").
+# 300 is generous for the "short, 1-3 sentence" replies/translations this
+# app actually needs - it bounds the failure mode, not normal output.
+MAX_REPLY_TOKENS = int(os.environ.get("MAX_REPLY_TOKENS", "300"))
+
 TARGET_LANGUAGE = "es"
 NATIVE_LANGUAGE = "en"
 

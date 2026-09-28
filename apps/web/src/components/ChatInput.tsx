@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { InputTokenAnnotation } from "../api/client";
-import { TranslatePopover } from "./TranslatePopover";
 import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import "./ChatInput.css";
 
@@ -34,8 +33,7 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
   const [value, setValue] = useState("");
   const [tags, setTags] = useState<InputTokenAnnotation[]>([]);
   const [openTokenKey, setOpenTokenKey] = useState<string | null>(null);
-  const [draftTranslation, setDraftTranslation] = useState<string | null>(null);
-  const [showDraftTranslation, setShowDraftTranslation] = useState(false);
+  const [draftTranslateState, setDraftTranslateState] = useState<"idle" | "loading" | "error">("idle");
 
   useEffect(() => {
     if (!value.trim()) return;
@@ -54,7 +52,6 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
 
   const handleValueChange = (next: string) => {
     setValue(next);
-    setDraftTranslation(null);
   };
 
   const handleReplace = (token: InputTokenAnnotation, translation: string) => {
@@ -78,18 +75,24 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
     setTags([]);
   };
 
+  // Clicking (not hovering) translates and replaces the draft in place -
+  // this is a "flip my draft to the other language" action, not a preview.
   const handleTranslateDraft = () => {
-    if (draftTranslation !== null || !value.trim()) return;
+    if (draftTranslateState === "loading" || !value.trim()) return;
     const spanishCount = effectiveTags.filter((t) => t.is_spanish).length;
     const mostlySpanish = spanishCount >= effectiveTags.length / 2;
+    setDraftTranslateState("loading");
     api
       .translateText({
         text: value,
         source_lang: mostlySpanish ? "es" : "en",
         target_lang: mostlySpanish ? "en" : "es",
       })
-      .then((res) => setDraftTranslation(res.translation))
-      .catch(() => setDraftTranslation("(translation failed)"));
+      .then((res) => {
+        handleValueChange(res.translation);
+        setDraftTranslateState("idle");
+      })
+      .catch(() => setDraftTranslateState("error"));
   };
 
   const segments = buildSegments(value, effectiveTags);
@@ -137,19 +140,16 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
           }}
         />
       </div>
-      <span
-        className="chat-input__translate-all"
-        onMouseEnter={() => {
-          setShowDraftTranslation(true);
-          handleTranslateDraft();
-        }}
-        onMouseLeave={() => setShowDraftTranslation(false)}
+      <button
+        type="button"
+        className={`chat-input__translate-all chat-input__translate-all--${draftTranslateState}`}
+        onClick={handleTranslateDraft}
+        disabled={draftTranslateState === "loading" || !value.trim()}
+        aria-label="Translate and replace draft"
+        title={draftTranslateState === "error" ? "Translation failed - try again" : "Translate and replace draft"}
       >
-        🌐
-        {showDraftTranslation && draftTranslation !== null && (
-          <TranslatePopover candidates={[{ translation: draftTranslation }]} />
-        )}
-      </span>
+        {draftTranslateState === "loading" ? "⏳" : "🌐"}
+      </button>
       <button type="button" onClick={handleSend} disabled={!value.trim()}>
         Send
       </button>

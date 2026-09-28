@@ -14,7 +14,7 @@ Qwen3 ourselves.
 
 import httpx
 
-from app.config import MODEL_SERVER_BASE_URL
+from app.config import MAX_REPLY_TOKENS, MODEL_SERVER_BASE_URL
 
 
 class ModelServerUnavailableError(RuntimeError):
@@ -38,6 +38,10 @@ def chat(messages: list[dict[str, str]], logit_bias: dict[int, float], timeout: 
         # answer in the content field every time, and this app has no use
         # for a visible reasoning trace anyway.
         "chat_template_kwargs": {"enable_thinking": False},
+        # See MAX_REPLY_TOKENS' comment in config.py - bounds a generation
+        # that never hits a stop token instead of letting it run until the
+        # model server's context window is exhausted.
+        "max_tokens": MAX_REPLY_TOKENS,
     }
 
     try:

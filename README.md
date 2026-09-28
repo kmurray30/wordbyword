@@ -91,6 +91,7 @@ Environment variables (all optional, sensible defaults shown):
 |---|---|---|
 | `MODEL_SERVER_BASE_URL` | `http://localhost:8080` | where the server calls llama-server's chat API |
 | `TOKENIZER_NAME` | `Qwen/Qwen3-1.7B` | HF tokenizer used to compute `logit_bias` token ids - must match the model running in model-server |
+| `MAX_REPLY_TOKENS` | `300` | hard cap on tokens per generation (chat + translation calls alike) - see the incident note below |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
 | `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |
 | `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used to synthesize speech |
@@ -203,6 +204,25 @@ were real, on-topic, grammatically correct answers with a natural follow-up
 question, no empties, no echoing. `WORD_WEIGHTING_ENABLED` stays `true`
 permanently as the default; the toggle remains useful as a standing
 diagnostic for isolating future "is the model bad" reports.
+
+### Incident: an unbounded reply broke the whole model server
+
+Live symptoms that looked unrelated turned out to share one cause: a chat
+reply that seemed to come out of nowhere (answering a question that was
+never asked), a translation stuck forever on "Translating...", and a
+`/chat/turn` request failing with "Could not reach the model server" - all
+within the same few minutes. `model-server`'s own logs showed why: one
+generation ran to 4000+ tokens without ever hitting a stop token, until
+llama-server killed it with "Context size has been exceeded" - and since
+`n_slots` share one context, that also broke every *other* request in
+flight at the time (their tasks got killed as collateral damage, which is
+what actually produced the stuck-translating and unreachable-server
+symptoms; neither request was really stuck or the server really down).
+
+Nothing in `llama_client.chat`'s request ever bounded how long a reply
+could run - `MAX_REPLY_TOKENS` (300, `app/config.py`) fixes that. 300 is
+generous for the short replies/translations this app actually needs; it
+bounds the failure mode, not normal output.
 
 ## Whole-message translation
 

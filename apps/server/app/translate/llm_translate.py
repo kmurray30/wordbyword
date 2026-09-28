@@ -81,12 +81,19 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
             "content": (
                 f"A language learner is typing in a mix of {native_name} and "
                 f"{target_name}, possibly with grammar or spelling mistakes in "
-                f"either language. Figure out what they meant to say, then "
-                f"reply with EXACTLY two lines and nothing else:\n"
-                f"{native_name}: <a natural, grammatically correct {native_name} "
-                f"sentence with the same meaning>\n"
-                f"{target_name}: <a natural, grammatically correct {target_name} "
-                f"sentence with the same meaning>"
+                f"either language. Your ONLY job is to rewrite what they typed "
+                f"as a correct sentence in each language. You are NOT having a "
+                f"conversation with them - do not reply to them, answer them, "
+                f"or add anything they did not say. Preserve their meaning and "
+                f"length; only fix it, don't extend it. For example, if they "
+                f'type "hello sir": a BAD output replies to them ("Hello, sir. '
+                f'I am here to assist you.") - the GOOD output is just their '
+                f'own greeting, corrected ("Hello, sir.").\n\n'
+                f"Reply with EXACTLY two lines and nothing else:\n"
+                f"{native_name}: <their message, corrected to natural, "
+                f"grammatically correct {native_name} - nothing added>\n"
+                f"{target_name}: <the same corrected message in natural, "
+                f"grammatically correct {target_name} - nothing added>"
             ),
         },
         {"role": "user", "content": text},

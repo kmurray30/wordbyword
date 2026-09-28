@@ -1,9 +1,12 @@
 .word-candidates-popover {
   position: absolute;
   z-index: 20;
-  top: 100%;
+  /* Opens upward, not downward: the chat input sits at the bottom of the
+     page, so a popover anchored to the word's bottom edge (the usual
+     top: 100%) renders off the bottom of the viewport. */
+  bottom: 100%;
   left: 0;
-  margin-top: 4px;
+  margin-bottom: 4px;
   display: flex;
   min-width: 160px;
   max-width: 340px;
