@@ -443,7 +443,12 @@ async function checkBrowserEndToEnd() {
       }
       console.log(`  OK - drag-selecting from a hoverable word selected ${JSON.stringify(selection.text)}`);
 
-      await page.waitForSelector(".chat-input__phrase-popover-anchor", { timeout: 8_000 });
+      // Same zero-size-anchor pattern as the word-token popover above: the
+      // anchor div itself is deliberately 0x0 (its only child is
+      // position:absolute, so it never contributes to the anchor's own
+      // box), so wait for the actual rendered popover content, not the
+      // anchor element.
+      await page.waitForSelector(".chat-input__phrase-popover-anchor .translate-popover", { timeout: 8_000 });
       const stillShowingWordPopover = (await page.locator(".word-candidates-popover").count()) > 0;
       if (stillShowingWordPopover) {
         fail("a single-word popover was still showing alongside the phrase popover after a drag-select");
