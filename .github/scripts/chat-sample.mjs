@@ -45,6 +45,19 @@ async function chatTurn(message) {
 }
 
 async function main() {
+  // Railway does a graceful rolling deploy: the OLD container keeps serving
+  // successfully for ~110s while the new one builds, so a request fired
+  // right after this push's git-triggered redeploy starts can get a real,
+  // error-free 200 from the STALE code - no retry logic catches that,
+  // since nothing failed. Confirmed live: a run's first reply was
+  // byte-identical to the previous (pre-fix) run's. Wait out that window
+  // before sending anything for real.
+  const startupDelayMs = Number(process.env.STARTUP_DELAY_MS ?? 130_000);
+  if (startupDelayMs > 0) {
+    console.log(`[${LABEL}] waiting ${startupDelayMs}ms for the triggering deploy to roll over...`);
+    await new Promise((r) => setTimeout(r, startupDelayMs));
+  }
+
   console.log(`[${LABEL}] session ${sessionId}`);
   for (const message of messages) {
     const started = Date.now();
