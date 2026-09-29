@@ -41,6 +41,22 @@
 // script's own chat traffic never lands in - or pollutes - anyone real's
 // conversation history, and gets explicitly cleared at the end regardless.
 import { chromium } from "playwright";
+import { readFileSync } from "fs";
+
+// Temporary debug aid: prints a screenshot's bytes as base64 straight into
+// the job log, chunked into lines. The dev sandbox that drives this session
+// can read GitHub Actions job logs directly but can't reach the artifact
+// blob-storage download URL (its egress policy blocks that host), so this
+// is the one channel that actually gets pixel data back to it. Remove once
+// the visual discrepancy this is chasing is resolved.
+function dumpScreenshotAsBase64(path) {
+  const b64 = readFileSync(path).toString("base64");
+  console.log(`===SCREENSHOT_B64_START:${path}===`);
+  for (let i = 0; i < b64.length; i += 200) {
+    console.log(b64.slice(i, i + 200));
+  }
+  console.log(`===SCREENSHOT_B64_END:${path}===`);
+}
 
 const BACKEND_URL = process.env.BACKEND_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
@@ -359,8 +375,14 @@ async function checkBrowserEndToEnd() {
     const gatoWord = page.locator(".chat-input__hoverable").first();
     if ((await gatoWord.count()) > 0) {
       await gatoWord.hover();
-      await page.waitForSelector(".word-candidates-popover", { timeout: 8_000 });
-      await page.screenshot({ path: "e2e-debug-single-word-hover-popover.png" });
+      const gatoPopover = page.locator(".word-candidates-popover").first();
+      await gatoPopover.waitFor({ state: "visible", timeout: 8_000 });
+      const gatoBox = await gatoPopover.boundingBox();
+      await page.screenshot({
+        path: "e2e-debug-single-word-hover-popover.png",
+        clip: { x: Math.max(0, gatoBox.x - 10), y: Math.max(0, gatoBox.y - 10), width: gatoBox.width + 20, height: gatoBox.height + 20 },
+      });
+      dumpScreenshotAsBase64("e2e-debug-single-word-hover-popover.png");
     }
     await page.mouse.move(10, 10);
     await page.waitForTimeout(200);
@@ -401,7 +423,12 @@ async function checkBrowserEndToEnd() {
       console.log("  OK - only the English->Spanish reading is clickable; the Spanish gloss is not");
       // Debug screenshot: visually confirm the word-hover popover's actual
       // rendered appearance (not just its DOM structure via selectors).
-      await page.screenshot({ path: "e2e-debug-word-hover-popover.png" });
+      const hotelBox = await page.locator(".word-candidates-popover").first().boundingBox();
+      await page.screenshot({
+        path: "e2e-debug-word-hover-popover.png",
+        clip: { x: Math.max(0, hotelBox.x - 10), y: Math.max(0, hotelBox.y - 10), width: hotelBox.width + 20, height: hotelBox.height + 20 },
+      });
+      dumpScreenshotAsBase64("e2e-debug-word-hover-popover.png");
     } else {
       fail('"hotel" in the input box was not flagged as hoverable');
     }
@@ -488,7 +515,12 @@ async function checkBrowserEndToEnd() {
       console.log(`  OK - highlighting an all-Spanish phrase translated it to English: ${JSON.stringify(phraseTranslationText)}`);
       // Debug screenshot: visually confirm the phrase popover's actual
       // rendered appearance (not just its DOM structure via selectors).
-      await page.screenshot({ path: "e2e-debug-phrase-popover.png" });
+      const phraseBox = await page.locator(".chat-input__phrase-popover-anchor .word-candidates-popover").first().boundingBox();
+      await page.screenshot({
+        path: "e2e-debug-phrase-popover.png",
+        clip: { x: Math.max(0, phraseBox.x - 10), y: Math.max(0, phraseBox.y - 10), width: phraseBox.width + 20, height: phraseBox.height + 20 },
+      });
+      dumpScreenshotAsBase64("e2e-debug-phrase-popover.png");
     } else {
       fail('could not find "gusta"/"negro" as hoverable words to test drag-selection');
     }
