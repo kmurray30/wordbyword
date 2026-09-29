@@ -8,7 +8,10 @@
 // so a DeepInfra outage fails loudly on its own stage instead of masking
 // whether the actual application logic works:
 //  1. Hit the backend's /chat/turn directly - isolates "is the LLM path
-//     actually working" from any frontend issue.
+//     actually working" from any frontend issue - then confirm /health/llm
+//     (what the frontend's LlmGate polls on page load to hold the whole UI
+//     back until the model server is actually ready, rather than let a real
+//     interaction discover it's still cold-starting) agrees it's ready.
 //  2. Send an English message to /chat/turn, and a fixed Spanish phrase to
 //     /translate/text - prints both for a human to eyeball (semantic
 //     correctness isn't something a script can assert), but at least
@@ -19,8 +22,10 @@
 //     unchanged instead of translating them.
 //  3. Confirm GET /chat/history reflects what stages 1/2 just sent, and
 //     that POST /chat/history/clear actually empties it.
-//  4. If those pass, drive the real site with Playwright end to end: send a
-//     message, hover a word gloss, toggle both messages' translation rows
+//  4. If those pass, drive the real site with Playwright end to end: confirm
+//     the LLM-readiness gate isn't blocking the page (the model server is
+//     already known warm by this point), send a message, hover a word
+//     gloss, toggle both messages' translation rows
 //     open and closed, confirm the user message gets two rows (EN+ES),
 //     hover a cognate word in the input box for its dual-column candidates,
 //     drag-select a multi-word phrase in the input (starting the drag ON a
@@ -96,6 +101,18 @@ async function checkBackendDirect() {
   const { elapsed, text, tokenCount } = await chatTurn("Hola");
   console.log(`  OK in ${elapsed}ms - reply: ${JSON.stringify(text)}`);
   console.log(`  tokens: ${tokenCount}`);
+
+  // The chat turn above only succeeds if the model server is actually up -
+  // /health/llm should now report the same thing (it's what the frontend's
+  // LlmGate polls on page load to hold the UI back until this is true).
+  console.log(`[1/6] Checking /health/llm reports the model server ready ...`);
+  const llmHealth = await fetch(`${BACKEND_URL}/health/llm`);
+  if (!llmHealth.ok) fail(`/health/llm returned ${llmHealth.status}`);
+  const llmHealthData = await llmHealth.json();
+  if (llmHealthData.ready !== true) {
+    fail(`/health/llm reported not ready right after a successful /chat/turn: ${JSON.stringify(llmHealthData)}`);
+  }
+  console.log("  OK - /health/llm reports ready");
 }
 
 async function speakDirect(voice) {
@@ -254,6 +271,15 @@ async function checkBrowserEndToEnd() {
   try {
     await page.goto(FRONTEND_URL, { waitUntil: "load", timeout: 30_000 });
     await page.waitForSelector("text=wordbyword", { timeout: 15_000 });
+    // The model server is already confirmed warm (stage 1's /chat/turn and
+    // /health/llm checks, minutes ago by now), so LlmGate's very first poll
+    // should come back ready - this just confirms the gate doesn't get
+    // stuck open on the real deployed site even when there's nothing to
+    // wait for. `state: "hidden"` resolves immediately if the element was
+    // never in the DOM at all, not just if it disappears.
+    await page.waitForSelector(".llm-gate", { state: "hidden", timeout: 15_000 });
+    console.log("  OK - LLM gate isn't blocking the page once the model server is warm");
+    await page.waitForSelector("textarea", { timeout: 15_000 });
     await page.screenshot({ path: "e2e-1-loaded.png" });
 
     await page.fill("textarea", "Hola");

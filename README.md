@@ -110,6 +110,14 @@ npm install
 npm run dev   # http://localhost:5173
 ```
 
+The page won't render past a loading screen until the model server is
+actually up - it polls `GET /health/llm` (backend -> model-server's own
+`/health`) and holds the whole UI back until that reports ready, rather
+than let chat/translation/hover all separately break in their own
+confusing ways if you open the page before `model-server` has finished
+starting. If you see it stuck, check that `model-server` (above) is
+running.
+
 If you change the backend's API shape (new/changed routes or schemas),
 regenerate the typed client with the backend running:
 

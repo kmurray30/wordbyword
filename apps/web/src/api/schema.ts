@@ -209,6 +209,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/health/llm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Health Llm
+         * @description Whether the model server is loaded and can actually serve a chat
+         *     completion right now - distinct from /health above, which only means
+         *     this process is up. model-server runs with Railway's serverless mode
+         *     (sleeps after ~5-10min idle) and, right after a cold start, spends a
+         *     stretch loading the model's weights into memory before its own /health
+         *     reports ready - either way, a chat/translate request that lands during
+         *     that window fails with llama_client.ModelServerUnavailableError. Hitting
+         *     it here (rather than trusting a cached flag) is itself the wake-up
+         *     trigger for the sleep case - Railway wakes a serverless service on any
+         *     inbound request. The frontend is expected to poll this on page load and
+         *     hold the UI back until it reports ready, rather than let a real
+         *     interaction be the first thing to hit that failure mode.
+         */
+        get: operations["health_llm_health_llm_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -292,6 +323,11 @@ export interface components {
             native: string;
             /** Target */
             target: string;
+        };
+        /** LlmHealthResponse */
+        LlmHealthResponse: {
+            /** Ready */
+            ready: boolean;
         };
         /** RewardEventRequest */
         RewardEventRequest: {
@@ -781,6 +817,26 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    health_llm_health_llm_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmHealthResponse"];
                 };
             };
         };

@@ -110,6 +110,10 @@ class InputTokenAnnotation(BaseModel):
     columns: list[TranslationColumn] = []
 
 
+class LlmHealthResponse(BaseModel):
+    ready: bool
+
+
 class TagInputResponse(BaseModel):
     tokens: list[InputTokenAnnotation]
 

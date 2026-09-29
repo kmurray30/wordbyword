@@ -41,6 +41,9 @@ type TTSRequest =
 type TTSVoicesResponse =
   paths["/tts/voices"]["get"]["responses"][200]["content"]["application/json"];
 
+type LlmHealthResponse =
+  paths["/health/llm"]["get"]["responses"][200]["content"]["application/json"];
+
 // The backend runs with Railway's Serverless mode (sleeps after ~5-10min
 // idle, wakes on the next request) - the documented signature of that
 // wake-up window is a 502/503, or the request failing to connect at all,
@@ -137,6 +140,20 @@ async function speak(body: TTSRequest): Promise<Blob> {
   }
 }
 
+// Whether the model server can actually serve a chat completion right now -
+// polled on page load to gate the UI (see App.tsx's LlmGate) rather than
+// let the first real interaction be the one to hit a cold/sleeping model
+// server. A non-2xx response (the backend itself still waking up, same
+// Railway serverless-sleep situation) is just as much "not ready yet" as a
+// { ready: false } body, not a reason to throw and stop polling.
+async function healthLlm(): Promise<LlmHealthResponse> {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/health/llm`);
+  if (!response.ok) {
+    return { ready: false };
+  }
+  return response.json() as Promise<LlmHealthResponse>;
+}
+
 export const api = {
   chatTurn: (body: ChatTurnRequest) => post<ChatTurnRequest, ChatTurnResponse>("/chat/turn", body),
   translateWord: (body: TranslateWordRequest) =>
@@ -152,6 +169,7 @@ export const api = {
   listVoices,
   chatHistory,
   clearChatHistory,
+  healthLlm,
 };
 
 export type TokenAnnotation = ChatTurnResponse["tokens"][number];

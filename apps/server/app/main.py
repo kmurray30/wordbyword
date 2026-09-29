@@ -1,11 +1,14 @@
 import os
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.chat.logit_bias import warm_up as warm_up_tokenizer
+from app.config import MODEL_SERVER_BASE_URL
 from app.db import init_db
 from app.routes import chat, events, translate, tts
+from app.schemas import LlmHealthResponse
 
 app = FastAPI(title="wordbyword", version="0.1.0")
 
@@ -34,3 +37,24 @@ def on_startup() -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/health/llm", response_model=LlmHealthResponse)
+def health_llm() -> LlmHealthResponse:
+    """Whether the model server is loaded and can actually serve a chat
+    completion right now - distinct from /health above, which only means
+    this process is up. model-server runs with Railway's serverless mode
+    (sleeps after ~5-10min idle) and, right after a cold start, spends a
+    stretch loading the model's weights into memory before its own /health
+    reports ready - either way, a chat/translate request that lands during
+    that window fails with llama_client.ModelServerUnavailableError. Hitting
+    it here (rather than trusting a cached flag) is itself the wake-up
+    trigger for the sleep case - Railway wakes a serverless service on any
+    inbound request. The frontend is expected to poll this on page load and
+    hold the UI back until it reports ready, rather than let a real
+    interaction be the first thing to hit that failure mode."""
+    try:
+        response = httpx.get(f"{MODEL_SERVER_BASE_URL}/health", timeout=5.0)
+    except httpx.HTTPError:
+        return LlmHealthResponse(ready=False)
+    return LlmHealthResponse(ready=response.status_code == 200)
