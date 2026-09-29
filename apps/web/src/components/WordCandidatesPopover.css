@@ -27,23 +27,50 @@
   line-height: 1.3;
 }
 
-.word-candidates-popover__column {
-  min-width: 0;
-}
-
-/* Stacked, not side by side - a Spanish gloss and an English translation
-   read as two short lines one under the other more compactly than two
-   columns ever could, especially once each also carries a description. */
-.word-candidates-popover__column + .word-candidates-popover__column {
-  margin-top: 4px;
-  padding-top: 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
-}
-
 .word-candidates-popover__heading {
   font-size: 0.72rem;
   font-weight: 700;
   opacity: 0.6;
   padding: 2px 4px 4px;
+}
+
+/* A word valid in both languages gets this toggle instead of stacking both
+   readings - "Spanish | English", the active one grey-highlighted, the
+   other a plain click target to switch. */
+.word-candidates-popover__toggle {
+  display: flex;
+  align-items: center;
+  padding: 2px 4px 6px;
+}
+
+.word-candidates-popover__toggle-item {
+  display: flex;
+  align-items: center;
+}
+
+.word-candidates-popover__toggle-sep {
+  opacity: 0.3;
+  font-size: 0.72rem;
+  margin: 0 2px;
+}
+
+.word-candidates-popover__toggle-btn {
+  all: unset;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+  opacity: 0.5;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.word-candidates-popover__toggle-btn:hover {
+  opacity: 0.8;
+}
+
+.word-candidates-popover__toggle-btn--active {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.14);
+  cursor: default;
 }
 

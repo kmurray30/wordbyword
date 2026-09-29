@@ -388,21 +388,24 @@ async function checkBrowserEndToEnd() {
     if ((await hoverableWord.count()) > 0) {
       await hoverableWord.hover();
       await page.waitForSelector(".word-candidates-popover", { timeout: 8_000 });
-      const isDual = (await page.locator(".word-candidates-popover--dual").count()) > 0;
-      if (!isDual) {
-        fail('hovering "hotel" in the input did not show both EN and ES columns');
+      const toggleButtons = page.locator(".word-candidates-popover__toggle-btn");
+      const toggleLabels = await toggleButtons.allTextContents();
+      if (JSON.stringify(toggleLabels.sort()) !== JSON.stringify(["English", "Spanish"])) {
+        fail(`hovering "hotel" in the input did not show a Spanish/English toggle - got ${JSON.stringify(toggleLabels)}`);
       }
-      console.log('  OK - hovering a cognate ("hotel") in the input shows both EN and ES columns');
+      console.log('  OK - hovering a cognate ("hotel") in the input shows a Spanish | English toggle');
 
-      // The Spanish reading ("hotel" is already correct Spanish) should be
-      // a static gloss, not a button - only the English->Spanish reading
-      // should be clickable to swap in place.
-      const clickableCount = await page.locator(".candidate-cycler__main:not(.candidate-cycler__main--static)").count();
-      const staticCount = await page.locator(".candidate-cycler__main--static").count();
-      if (clickableCount === 0 || staticCount === 0) {
-        fail(`expected one clickable and one static reading for "hotel", got ${clickableCount} clickable, ${staticCount} static`);
+      // The English reading (what "hotel" means, glossed) is the default -
+      // a static gloss, not a button. Only the Spanish reading (a
+      // translation to swap in for the English word "hotel") is clickable.
+      const defaultActiveLabel = await page.locator(".word-candidates-popover__toggle-btn--active").innerText();
+      if (defaultActiveLabel !== "English") {
+        fail(`expected "English" to be the default active toggle for "hotel", got ${JSON.stringify(defaultActiveLabel)}`);
       }
-      console.log("  OK - only the English->Spanish reading is clickable; the Spanish gloss is not");
+      const isStaticByDefault = (await page.locator(".candidate-cycler__main--static").count()) > 0;
+      if (!isStaticByDefault) {
+        fail('expected the default (English) reading for "hotel" to be a static gloss, not clickable');
+      }
       // Debug screenshot: visually confirm the word-hover popover's actual
       // rendered appearance (not just its DOM structure via selectors).
       const hotelBox = await page.locator(".word-candidates-popover").first().boundingBox();
@@ -410,6 +413,16 @@ async function checkBrowserEndToEnd() {
         path: "e2e-debug-word-hover-popover.png",
         clip: { x: Math.max(0, hotelBox.x - 10), y: Math.max(0, hotelBox.y - 10), width: hotelBox.width + 20, height: hotelBox.height + 20 },
       });
+
+      // Clicking the other toggle should switch to the Spanish reading,
+      // which IS clickable (swaps "hotel" in as the Spanish translation).
+      await page.locator(".word-candidates-popover__toggle-btn", { hasText: "Spanish" }).click();
+      await page.waitForSelector(".candidate-cycler__main:not(.candidate-cycler__main--static)", { timeout: 3_000 });
+      const nowActiveLabel = await page.locator(".word-candidates-popover__toggle-btn--active").innerText();
+      if (nowActiveLabel !== "Spanish") {
+        fail(`expected clicking "Spanish" to switch the active toggle, got ${JSON.stringify(nowActiveLabel)}`);
+      }
+      console.log('  OK - toggling to "Spanish" switches to the clickable reading');
     } else {
       fail('"hotel" in the input box was not flagged as hoverable');
     }
