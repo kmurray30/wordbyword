@@ -74,7 +74,13 @@
   color: #8b93a6;
 }
 
-.chat-input button {
+/* Direct child only - the Send button. A plain descendant selector here
+   (".chat-input button") also matches the candidate-cycler buttons inside
+   the word-hover popover, which is a DOM descendant of .chat-input (unlike
+   the phrase popover, which is portaled to document.body and so never
+   matches this rule) - that leak was giving word-hover's buttons this same
+   blue/bold Send-button look instead of their own minimal styling. */
+.chat-input > button {
   padding: 10px 16px;
   border-radius: 10px;
   border: none;
@@ -84,7 +90,7 @@
   font-weight: 600;
 }
 
-.chat-input button:disabled {
+.chat-input > button:disabled {
   opacity: 0.5;
   cursor: default;
 }
