@@ -344,6 +344,28 @@ async function checkBrowserEndToEnd() {
     await page.waitForSelector(".chat-message--user .translation-row--user-target", { timeout: 15_000 });
     console.log("  OK - hovering the user message previews EN + ES translation rows");
 
+    // Debug screenshot: a plain single-candidate word hover ("gato" only has
+    // one clear sense, one column) - the closest apples-to-apples visual
+    // comparison to the phrase popover below, which is also always a single
+    // candidate. Both should render the exact same widget.
+    const textarea = page.locator("textarea");
+    const gatoTagPromise = page.waitForResponse(
+      (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
+      { timeout: 10_000 }
+    );
+    await textarea.fill("gato");
+    await gatoTagPromise;
+    await page.waitForTimeout(150);
+    const gatoWord = page.locator(".chat-input__hoverable").first();
+    if ((await gatoWord.count()) > 0) {
+      await gatoWord.hover();
+      await page.waitForSelector(".word-candidates-popover", { timeout: 8_000 });
+      await page.screenshot({ path: "e2e-debug-single-word-hover-popover.png" });
+    }
+    await page.mouse.move(10, 10);
+    await page.waitForTimeout(200);
+    await textarea.fill("");
+
     // Hovering a word in the input box should show translation candidates -
     // "hotel" is a real word in both languages (app/translate/word_validity.py
     // checks each independently), so it should get BOTH an English and a
@@ -351,7 +373,6 @@ async function checkBrowserEndToEnd() {
     // /translate/tag-input response rather than a fixed delay - a word
     // valid in both languages needs two Argos MT calls (one per direction),
     // which can take longer than the 350ms debounce alone suggests.
-    const textarea = page.locator("textarea");
     const tagResponsePromise = page.waitForResponse(
       (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
       { timeout: 10_000 }
@@ -378,6 +399,9 @@ async function checkBrowserEndToEnd() {
         fail(`expected one clickable and one static reading for "hotel", got ${clickableCount} clickable, ${staticCount} static`);
       }
       console.log("  OK - only the English->Spanish reading is clickable; the Spanish gloss is not");
+      // Debug screenshot: visually confirm the word-hover popover's actual
+      // rendered appearance (not just its DOM structure via selectors).
+      await page.screenshot({ path: "e2e-debug-word-hover-popover.png" });
     } else {
       fail('"hotel" in the input box was not flagged as hoverable');
     }
@@ -462,6 +486,9 @@ async function checkBrowserEndToEnd() {
         fail(`expected the Spanish->English phrase translation to mention "cat", got ${JSON.stringify(phraseTranslationText)}`);
       }
       console.log(`  OK - highlighting an all-Spanish phrase translated it to English: ${JSON.stringify(phraseTranslationText)}`);
+      // Debug screenshot: visually confirm the phrase popover's actual
+      // rendered appearance (not just its DOM structure via selectors).
+      await page.screenshot({ path: "e2e-debug-phrase-popover.png" });
     } else {
       fail('could not find "gusta"/"negro" as hoverable words to test drag-selection');
     }
