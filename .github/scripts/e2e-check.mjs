@@ -304,6 +304,12 @@ async function checkBrowserEndToEnd() {
       await wordToken.hover();
       await page.waitForSelector(".word-token__popover-anchor .translate-popover", { timeout: 8_000 });
       console.log("  OK - hover translation popover works");
+      // Close it before moving on - it's portaled to document.body and
+      // positioned from the word's own coordinates, which can land right
+      // over the action row below the bubble and intercept the next
+      // step's hover on the globe button otherwise.
+      await page.mouse.move(0, 0);
+      await page.waitForTimeout(100);
     } else {
       console.log("  (no trackable word tokens in this reply - skipping hover check)");
     }
