@@ -321,11 +321,13 @@ async function checkBrowserEndToEnd() {
       fail("no speaker button (.audio-button) found on the assistant message");
     }
 
-    // Translation rows: hovering the message previews the translation (no
-    // click needed); moving the mouse away hides it again unless pinned;
-    // clicking the toggle pins it open even after the mouse leaves.
-    const assistantColumn = page.locator(".chat-message--assistant .chat-message__column").first();
-    await assistantColumn.hover();
+    // Translation rows: hovering the globe button (not the whole bubble -
+    // that used to trigger it too, which meant just reading a message
+    // popped the translation open) previews the translation with no click
+    // needed; moving the mouse away hides it again unless pinned; clicking
+    // the toggle pins it open even after the mouse leaves.
+    const assistantToggle = page.locator(".chat-message--assistant .chat-message__translate-toggle").first();
+    await assistantToggle.hover();
     await page.waitForSelector(".chat-message--assistant .translation-row--assistant", { timeout: 15_000 });
     const assistantRowText = await page
       .locator(".chat-message--assistant .translation-row--assistant .translation-row__text")
@@ -343,7 +345,6 @@ async function checkBrowserEndToEnd() {
     }
     console.log("  OK - moving the mouse away hides the row (doesn't just persist)");
 
-    const assistantToggle = page.locator(".chat-message--assistant .chat-message__translate-toggle").first();
     await assistantToggle.click();
     await page.mouse.move(0, 0);
     await page.waitForTimeout(200);
@@ -363,8 +364,8 @@ async function checkBrowserEndToEnd() {
       console.log(`  (debug) all .chat-message class lists: ${JSON.stringify(allMessages)}`);
       await page.screenshot({ path: "e2e-debug-no-user-message.png" });
     }
-    const userColumn = page.locator(".chat-message--user .chat-message__column").first();
-    await userColumn.hover();
+    const userToggle = page.locator(".chat-message--user .chat-message__translate-toggle").first();
+    await userToggle.hover();
     await page.waitForSelector(".chat-message--user .translation-row--user-native", { timeout: 15_000 });
     await page.waitForSelector(".chat-message--user .translation-row--user-target", { timeout: 15_000 });
     console.log("  OK - hovering the user message previews EN + ES translation rows");
