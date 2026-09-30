@@ -42,15 +42,22 @@
   color: white;
 }
 
+.chat-message__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 0 4px;
+}
+
 .chat-message__translate-toggle {
-  margin-left: 8px;
+  margin: 0;
   padding: 0;
   border: none;
   background: none;
   cursor: pointer;
   opacity: 0.6;
   font-size: 0.85em;
-  vertical-align: middle;
 }
 
 .chat-message__translate-toggle:hover {

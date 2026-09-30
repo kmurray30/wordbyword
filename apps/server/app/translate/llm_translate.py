@@ -277,6 +277,15 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
     if native_text and target_text and target_lang == "es" and native_lang == "en":
         if _looks_spanish(native_text) and not _looks_spanish(target_text):
             native_text, target_text = target_text, native_text
+        elif not _looks_spanish(target_text):
+            # Not a swap - the model just left the "Spanish" line in
+            # English too (observed live: "sup bro. there once was a red
+            # monkey" came back with the same English text under both
+            # labels). The swap above only fixes mislabeled lines; this
+            # catches the line never being translated at all by forcing a
+            # real translation rather than surfacing English where Spanish
+            # was asked for.
+            target_text = translate_text(native_text, native_lang, target_lang)
 
     # _parse_labeled_lines already guarantees native_text is non-empty
     # unless the model's reply itself was blank (native_text falls back to

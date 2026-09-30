@@ -5,6 +5,7 @@ from scripts.build_dictionary_data import (
     _process_english_line,
     _process_spanish_line,
     _short,
+    _short_or_omit,
     _strip_accents,
 )
 
@@ -29,6 +30,29 @@ def test_short_truncates_with_ellipsis():
 def test_format_description_combines_register_tag_and_example():
     desc = _format_description({"informal", "grammar-unrelated-tag"}, example="¡Qué tal, tío!")
     assert desc == "(informal) ¡Qué tal, tío!"
+
+
+def test_short_or_omit_never_truncates():
+    assert _short_or_omit("hi", 10) == "hi"
+    # Real bug, live: a description landed on an unrelated news-corpus
+    # example sentence and was still chopped off mid-word ("...un hotel de
+    # Buenos Air..."). A cut-off description reads as broken, so this must
+    # drop the content entirely rather than truncate it with "...".
+    assert _short_or_omit("a" * 200, 100) == ""
+
+
+def test_format_description_prefers_gloss_over_example():
+    # A real dictionary gloss is a short, self-contained definition; an
+    # example is a full corpus sentence - often much longer, and sometimes
+    # about something else entirely (a news headline that happens to
+    # contain the word). Prefer the gloss when there is one.
+    desc = _format_description(set(), gloss="a place offering lodging", example="A very long unrelated sentence " * 10)
+    assert desc == "a place offering lodging"
+
+
+def test_format_description_omits_overlong_example_instead_of_truncating():
+    desc = _format_description(set(), example="x" * 200)
+    assert desc == ""
 
 
 def test_process_spanish_line_includes_common_word():

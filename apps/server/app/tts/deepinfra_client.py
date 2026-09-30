@@ -39,14 +39,16 @@ async def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | No
     headers = {"Authorization": f"Bearer {DEEPINFRA_API_TOKEN}"}
 
     # Normal calls come back in well under 1s (measured live); 15s per
-    # attempt is already generous. Observed live, twice now: DeepInfra
+    # attempt is already generous. Observed live, repeatedly: DeepInfra
     # itself occasionally stalls past that ceiling during a rough patch -
-    # one retry on a fresh connection, since a transport-level stall often
-    # clears on a new attempt. Not retried on HTTPStatusError, which means
-    # DeepInfra actually answered (auth/quota/bad request) - a repeat
-    # attempt wouldn't change that.
+    # retry on a fresh connection, since a transport-level stall often
+    # clears on a new attempt. 3 attempts, not 2 - a single retry wasn't
+    # enough to reliably ride out DeepInfra's rougher patches in practice
+    # ("doesn't always get generated"). Not retried on HTTPStatusError,
+    # which means DeepInfra actually answered (auth/quota/bad request) - a
+    # repeat attempt wouldn't change that.
     last_error: httpx.HTTPError | None = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.post(DEEPINFRA_TTS_URL, json=payload, headers=headers)
@@ -59,12 +61,12 @@ async def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | No
         except httpx.HTTPError as exc:
             last_error = exc
             logger.warning(
-                "TTS attempt %d/2 failed reaching DeepInfra (%s: %s)", attempt + 1, type(exc).__name__, exc
+                "TTS attempt %d/3 failed reaching DeepInfra (%s: %s)", attempt + 1, type(exc).__name__, exc
             )
 
     # repr, not str - httpx's own timeout/connection exceptions frequently
     # stringify to "" with no detail, which previously surfaced to the user
     # as an unhelpfully blank error message ("Could not reach ... API: ").
     raise TTSUnavailableError(
-        f"Could not reach DeepInfra's TTS API after 2 attempts: {last_error!r}"
+        f"Could not reach DeepInfra's TTS API after 3 attempts: {last_error!r}"
     ) from last_error

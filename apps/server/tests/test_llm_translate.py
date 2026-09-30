@@ -91,6 +91,28 @@ def test_interpret_user_input_swaps_mislabeled_content():
     assert target == "¿Hablas bien español?"
 
 
+def test_interpret_user_input_forces_translation_when_target_line_never_translated():
+    # Observed live: "sup bro. there once was a red monkey" came back with
+    # the same English text under BOTH the "English" and "Spanish" labels -
+    # the model just never translated it. This is different from the
+    # mislabeled-swap case above: here target_text isn't Spanish, and
+    # neither is native_text, so swapping them would just leave English
+    # under both labels either way. Must force a real translation instead.
+    reply = (
+        "English: sup bro. there once was a red monkey\n"
+        "Spanish: sup bro. there once was a red monkey"
+    )
+    with patch(
+        "app.translate.llm_translate.llama_chat",
+        side_effect=[reply, "qué tal, bro. había una vez un mono rojo"],
+    ) as mock_chat:
+        native, target = interpret_user_input("sup bro. there once was a red monkey", "en", "es")
+
+    assert native == "sup bro. there once was a red monkey"
+    assert target == "qué tal, bro. había una vez un mono rojo"
+    assert mock_chat.call_count == 2  # interpret call, then the forced translate_text call
+
+
 def test_interpret_user_input_backfills_missing_native_line():
     # The model produced only the target-language line.
     with patch(

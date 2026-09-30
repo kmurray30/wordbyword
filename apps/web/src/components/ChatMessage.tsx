@@ -180,11 +180,7 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
 
   return (
     <div className={`chat-message chat-message--${message.role}`}>
-      <div
-        className="chat-message__column"
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={() => setIsHovering(false)}
-      >
+      <div className="chat-message__column">
         <div className="chat-message__bubble">
           {hasTokens && spaced ? (
             message.tokens!.map((tok, i) => (
@@ -212,10 +208,14 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
           ) : (
             message.text
           )}
+        </div>
+        <div className="chat-message__actions">
           <button
             type="button"
             className={`chat-message__translate-toggle${isPinned ? " chat-message__translate-toggle--active" : ""}`}
             onClick={handleTogglePin}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={() => setIsHovering(false)}
             aria-label="Pin translation open"
             aria-pressed={isPinned}
             title="Hover to preview - click to keep it open"

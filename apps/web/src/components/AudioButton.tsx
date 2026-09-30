@@ -11,14 +11,16 @@ interface AudioButtonProps {
 
 // How long the button will sit on its loading spinner before giving up and
 // showing an error, regardless of what api.speak() itself does. api.speak()
-// already has its own ~20s abort, but that guarantee lives in a setTimeout
+// already has its own ~50s abort, but that guarantee lives in a setTimeout
 // too - a backgrounded/throttled tab can stall browser timers well past
 // their nominal delay (observed live: a "stuck on the hourglass" report
 // with no matching backend error, consistent with the abort simply firing
 // very late). A second, independent timer here means this button always
 // recovers into a clickable, retryable state within a bounded time even if
-// that one is delayed or something else about the fetch never settles.
-const HARD_TIMEOUT_MS = 25_000;
+// that one is delayed or something else about the fetch never settles. Kept
+// a bit above api.speak()'s own timeout so that one gets first crack at
+// producing the real error.
+const HARD_TIMEOUT_MS = 55_000;
 
 // Generalizes what used to be ChatMessage's one-off speak button so every
 // translation row (not just the agent's raw Spanish message) can play its

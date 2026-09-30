@@ -55,8 +55,14 @@ export function WordCandidatesPopover({ columns, onSelect }: WordCandidatesPopov
     );
   }
 
+  // Default to Spanish when present - "columns" is ordered by the backend's
+  // own evaluation order (Spanish-validity checked first, so the Spanish
+  // *gloss* column lands first for a Spanish-valid word), not a display
+  // preference, and defaulting to that order showed English first even for
+  // an ordinary Spanish word like "hotel".
+  const defaultLanguage = visible.some((c) => c.language === "es") ? "es" : visible[0].language;
   const activeLanguage =
-    selectedLanguage && visible.some((c) => c.language === selectedLanguage) ? selectedLanguage : visible[0].language;
+    selectedLanguage && visible.some((c) => c.language === selectedLanguage) ? selectedLanguage : defaultLanguage;
   const activeColumn = visible.find((c) => c.language === activeLanguage)!;
   const toggleLanguages = TOGGLE_ORDER.filter((lang) => visible.some((c) => c.language === lang));
 

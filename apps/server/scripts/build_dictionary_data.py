@@ -54,7 +54,7 @@ FREQUENCY_CUTOFF = 15000
 # cycle through", not an exhaustive dictionary entry.
 MAX_CANDIDATES_PER_WORD = 4
 
-MAX_DESCRIPTION_LEN = 100
+MAX_DESCRIPTION_LEN = 160
 MAX_TRANSLATION_LEN = 60
 
 _WORD_RE = re.compile(r"^[a-zA-ZñÑáéíóúüÁÉÍÓÚÜ]+$")
@@ -80,6 +80,20 @@ def _short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def _short_or_omit(text: str, limit: int) -> str:
+    """Like _short, but never cuts content off mid-sentence - a popover
+    description reads as a broken, unfinished thought when it ends with
+    "…" (observed live, worst case: a description landed on an unrelated
+    news-corpus example sentence and was still chopped off mid-word). Used
+    for description text, which is optional content candidates already
+    render fine without; unlike translation (_short, above), which always
+    needs some value, silently dropping an over-long description isn't a
+    regression - showing a complete one only some of the time is worse than
+    never a broken one."""
+    text = text.strip()
+    return text if len(text) <= limit else ""
+
+
 def _first_gloss(sense: dict) -> str:
     glosses = sense.get("glosses") or []
     return glosses[0].strip() if glosses else ""
@@ -96,8 +110,13 @@ def _first_example(sense: dict) -> str:
 def _format_description(tags: set[str], gloss: str = "", example: str = "") -> str:
     tag_list = sorted(t for t in tags if t in REGISTER_TAGS)
     prefix = f"({', '.join(tag_list)}) " if tag_list else ""
-    body = example or gloss
-    return _short(f"{prefix}{body}".strip(), MAX_DESCRIPTION_LEN) if (prefix or body) else ""
+    # A real dictionary gloss is a short, self-contained definition; an
+    # example is a full corpus sentence that's frequently much longer (and
+    # occasionally about something wildly unrelated to the word's meaning,
+    # e.g. a news headline that happens to contain it) - prefer the gloss
+    # when there is one, falling back to the example only when there isn't.
+    body = gloss or example
+    return _short_or_omit(f"{prefix}{body}".strip(), MAX_DESCRIPTION_LEN) if (prefix or body) else ""
 
 
 def _stream_lines(url: str):
@@ -255,7 +274,7 @@ def _augment_en_to_es_self_loanwords(
         if len(out_list) >= MAX_CANDIDATES_PER_WORD or any(c["translation"].lower() == lemma for c in out_list):
             continue
         best = candidates[0]
-        desc = _short(f"{best['description']} {best['translation']}".strip(), MAX_DESCRIPTION_LEN)
+        desc = _short_or_omit(f"{best['description']} {best['translation']}".strip(), MAX_DESCRIPTION_LEN)
         out_list.append({"translation": es_word, "description": desc})
 
 

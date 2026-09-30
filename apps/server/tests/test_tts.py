@@ -134,4 +134,4 @@ def test_synthesize_raises_with_detail_after_exhausting_retries():
             with pytest.raises(TTSUnavailableError, match="ReadTimeout"):
                 asyncio.run(synthesize("hola"))
 
-    assert client.post.call_count == 2
+    assert client.post.call_count == 3

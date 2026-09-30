@@ -118,11 +118,13 @@ async function speak(body: TTSRequest): Promise<Blob> {
   // every request during a rough patch, leaving the speaker button stuck
   // on its loading spinner with no feedback. A plain fetch() has no
   // built-in ceiling - abort client-side a bit past the backend's own
-  // 15s timeout so this call always settles into a real error the UI can
-  // show, rather than spinning indefinitely if something between the
-  // browser and the backend hangs too.
+  // worst case (3 attempts * 15s timeout each, see deepinfra_client.py) so
+  // this call always settles into a real error the UI can show, rather
+  // than spinning indefinitely if something between the browser and the
+  // backend hangs too, and - the actual live bug - rather than aborting
+  // before the backend's own retries had a chance to succeed.
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20_000);
+  const timeoutId = setTimeout(() => controller.abort(), 50_000);
   try {
     const response = await fetchWithColdStartRetry(`${BASE_URL}/tts/speak`, {
       method: "POST",
