@@ -44,6 +44,11 @@ type TTSVoicesResponse =
 type LlmHealthResponse =
   paths["/health/llm"]["get"]["responses"][200]["content"]["application/json"];
 
+type SettingsResponse =
+  paths["/settings"]["get"]["responses"][200]["content"]["application/json"];
+type UpdateSettingsRequest =
+  paths["/settings"]["put"]["requestBody"]["content"]["application/json"];
+
 // The backend runs with Railway's Serverless mode (sleeps after ~5-10min
 // idle, wakes on the next request) - the documented signature of that
 // wake-up window is a 502/503, or the request failing to connect at all,
@@ -156,6 +161,28 @@ async function healthLlm(): Promise<LlmHealthResponse> {
   return response.json() as Promise<LlmHealthResponse>;
 }
 
+async function getSettings(): Promise<SettingsResponse> {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/settings`);
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`/settings failed (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<SettingsResponse>;
+}
+
+async function updateSettings(body: UpdateSettingsRequest): Promise<SettingsResponse> {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`/settings failed (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<SettingsResponse>;
+}
+
 export const api = {
   chatTurn: (body: ChatTurnRequest) => post<ChatTurnRequest, ChatTurnResponse>("/chat/turn", body),
   translateWord: (body: TranslateWordRequest) =>
@@ -172,6 +199,8 @@ export const api = {
   chatHistory,
   clearChatHistory,
   healthLlm,
+  getSettings,
+  updateSettings,
 };
 
 export type TokenAnnotation = ChatTurnResponse["tokens"][number];
@@ -188,4 +217,5 @@ export type {
   RewardEventRequest,
   TTSVoicesResponse,
   ChatHistoryResponse,
+  SettingsResponse,
 };

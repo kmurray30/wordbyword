@@ -11,6 +11,23 @@ DATABASE_URL = os.environ.get("WORDBYWORD_DB_URL", f"sqlite:///{DATA_DIR / 'word
 # at the model-server service over private networking.
 MODEL_SERVER_BASE_URL = os.environ.get("MODEL_SERVER_BASE_URL", "http://localhost:8080")
 
+# Which chat backend app/chat/model_client.py routes to: "local" (the
+# self-hosted llama-server above, the default - no per-request cost, but
+# something you have to run) or "openai" (a hosted, pay-per-token API - see
+# app/chat/openai_client.py; no infra to run, but costs money per call and
+# can't support word-bank vocabulary steering, see WORD_WEIGHTING_ENABLED
+# below). This is only the BOOT default - the live value a user actually
+# gets is the UI-togglable one in app/settings_store.py (GET/PUT /settings),
+# which seeds itself from this env var the first time it's ever read.
+MODEL_PROVIDER = os.environ.get("MODEL_PROVIDER", "local").strip().lower()
+
+# Hosted chat backend (app/chat/openai_client.py), only used when the
+# active provider is "openai". Empty key means that provider is
+# unconfigured - openai_client.py raises a clear error rather than failing
+# obscurely, same pattern as DEEPINFRA_API_TOKEN below for TTS.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-6-luna")
+
 # Pinned to the specific model deployed to model-server (apps/model-server/Dockerfile)
 # so the tokenizer used for logit_bias matches the model actually generating text.
 TOKENIZER_NAME = os.environ.get("TOKENIZER_NAME", "Qwen/Qwen3-1.7B")
@@ -35,8 +52,14 @@ NATIVE_LANGUAGE = "en"
 # without losing the tuning knobs below (which stay in effect the moment
 # this is flipped back on). Word-bank tracking itself (exposure counts,
 # hover/familiarity, review scheduling) is untouched either way - this only
-# controls whether any of that gets used to steer generation.
-WORD_WEIGHTING_ENABLED = os.environ.get("WORD_WEIGHTING_ENABLED", "true").strip().lower() not in ("false", "0", "")
+# controls whether any of that gets used to steer generation. Off by
+# default for now (an A/B test found even a single gently-nudged word could
+# make the 1.7B model echo the question back before answering - see
+# logit_bias.py); also never actually active against the "openai" provider
+# regardless of this value, since logit_bias needs the local model's own
+# tokenizer (see app.settings_store.weighting_active). This is only the
+# BOOT default - see MODEL_PROVIDER's comment above, same caveat applies.
+WORD_WEIGHTING_ENABLED = os.environ.get("WORD_WEIGHTING_ENABLED", "false").strip().lower() not in ("false", "0", "")
 
 # Text-to-speech (DeepInfra, a hosted API - separate from the self-hosted chat
 # model above). Empty token means TTS is disabled; app/tts/deepinfra_client.py

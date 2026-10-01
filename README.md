@@ -100,7 +100,10 @@ Environment variables (all optional, sensible defaults shown):
 | `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |
 | `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used to synthesize speech |
 | `DEEPINFRA_TTS_VOICE` | *(none)* | force one specific voice regardless of language - normally left unset so the voice is picked per-request from `app/tts/kokoro_voices.py`'s language map |
-| `WORD_WEIGHTING_ENABLED` | `true` | kill switch for vocabulary steering (`logit_bias` + the prompt's "prefer/introduce these words" lines) - set to `false` to compare the model's raw, unsteered behavior. Word-bank tracking (exposure, hover, familiarity) keeps working either way |
+| `WORD_WEIGHTING_ENABLED` | `false` | **boot default only** - kill switch for vocabulary steering (`logit_bias` + the prompt's "prefer/introduce these words" lines). The live value a user actually gets is the UI toggle in the app's header (GET/PUT `/settings`), which seeds itself from this on first read. Word-bank tracking (exposure, hover, familiarity) keeps working either way. Never actually active against the `openai` provider below, regardless of this value - `logit_bias` needs the local model's own tokenizer |
+| `MODEL_PROVIDER` | `local` | **boot default only**, same caveat as above - which chat backend `app/chat/model_client.py` routes to: `local` (self-hosted llama-server) or `openai` (a hosted API, see below). Live-togglable from the same `/settings` UI control |
+| `OPENAI_API_KEY` | *(none)* | API key for the hosted `openai` provider; chat/translation calls return 503 if that provider is selected and this is unset |
+| `OPENAI_CHAT_MODEL` | `gpt-6-luna` | model id sent to the hosted API - change this if that id isn't valid for your account |
 
 ### Frontend
 
@@ -177,7 +180,9 @@ word is targeted per turn by default (`REINFORCE_WORDS_PER_TURN` /
 small enough that forcing several words into one short reply derails the
 reply more than it helps review (see below).
 
-Set `WORD_WEIGHTING_ENABLED=false` to turn steering off entirely - no
+Turn steering off entirely via the "Word weighting" toggle in the app's
+own header (backed by `GET`/`PUT /settings`, live - no redeploy needed),
+or `WORD_WEIGHTING_ENABLED=false` as the boot default it seeds from: no
 `logit_bias`, and the system prompt's vocabulary-rules section goes empty
 - while leaving all the tracking (exposure counts, hover, familiarity)
 running underneath. Useful for isolating "is the model bad" from "is the
@@ -213,9 +218,10 @@ echoing failure mode instead of just an abstract "don't do this" rule - small
 models pattern-match a concrete example far more reliably than they follow
 an abstract prohibition. Re-tested after both changes: 6/6 sampled replies
 were real, on-topic, grammatically correct answers with a natural follow-up
-question, no empties, no echoing. `WORD_WEIGHTING_ENABLED` stays `true`
-permanently as the default; the toggle remains useful as a standing
-diagnostic for isolating future "is the model bad" reports.
+question, no empties, no echoing. The toggle itself remains useful as a
+standing diagnostic for isolating future "is the model bad" reports - it's
+currently off by default (see `WORD_WEIGHTING_ENABLED` above), a separate,
+later decision unrelated to this test's result.
 
 ### Incident: an unbounded reply broke the whole model server
 
@@ -235,6 +241,31 @@ Nothing in `llama_client.chat`'s request ever bounded how long a reply
 could run - `MAX_REPLY_TOKENS` (300, `app/config.py`) fixes that. 300 is
 generous for the short replies/translations this app actually needs; it
 bounds the failure mode, not normal output.
+
+## Chat backend: local vs. hosted
+
+Every LLM-backed call (chat turns, per-word glossing, whole-message
+translation, the learner-input interpreter) routes through
+`app/chat/model_client.py`, which picks between two backends based on a
+live, UI-togglable setting (the "Model" dropdown in the app's own header -
+backed by `GET`/`PUT /settings`, persisted in SQLite, no redeploy needed
+to flip it):
+
+- **`local`** (the default) - the self-hosted llama-server described
+  above (`app/chat/llama_client.py`). Free per-call, but something you
+  have to run; supports word-bank vocabulary steering (`logit_bias`).
+- **`openai`** - a hosted, pay-per-token API (`app/chat/openai_client.py`,
+  `OPENAI_API_KEY`/`OPENAI_CHAT_MODEL` env vars). Nothing to run or keep
+  warm, but costs money per call, and **cannot support word-bank
+  weighting** - `logit_bias` is keyed to the local model's own tokenizer
+  (see `logit_bias.py`), which is meaningless against a hosted model's own,
+  different tokenizer. The "Word weighting" toggle next to the Model
+  dropdown is disabled whenever this provider is active, and the backend
+  independently forces it off regardless of the stored value
+  (`app.settings_store.weighting_active`) - not just a UI nicety.
+
+`OPENAI_CHAT_MODEL` defaults to `gpt-6-luna`; if that id isn't valid for
+your account, override it with no code change.
 
 ## Whole-message translation
 

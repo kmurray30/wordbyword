@@ -140,6 +140,21 @@ class TTSVoicesResponse(BaseModel):
     default: str
 
 
+class SettingsResponse(BaseModel):
+    model_provider: str  # "local" | "openai"
+    word_weighting_enabled: bool
+    # Whether word_weighting_enabled actually does anything right now -
+    # false whenever model_provider isn't "local", regardless of the
+    # stored toggle value (see app.settings_store.weighting_active) -
+    # logit_bias needs the local model's own tokenizer.
+    word_weighting_active: bool
+
+
+class UpdateSettingsRequest(BaseModel):
+    model_provider: str | None = None
+    word_weighting_enabled: bool | None = None
+
+
 class WordBankEntryOut(BaseModel):
     lemma: str
     pos: str

@@ -25,7 +25,8 @@
 .app__header-controls {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-top: 8px;
 }
 
@@ -45,6 +46,7 @@
 }
 
 .app__clear-chat {
+  margin-left: auto;
   background: none;
   color: #9aa1b1;
   border: 1px solid rgba(255, 255, 255, 0.15);

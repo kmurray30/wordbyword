@@ -192,6 +192,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Settings */
+        get: operations["read_settings_settings_get"];
+        /** Write Settings */
+        put: operations["write_settings_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -218,17 +236,20 @@ export interface paths {
         };
         /**
          * Health Llm
-         * @description Whether the model server is loaded and can actually serve a chat
-         *     completion right now - distinct from /health above, which only means
-         *     this process is up. model-server runs with Railway's serverless mode
-         *     (sleeps after ~5-10min idle) and, right after a cold start, spends a
-         *     stretch loading the model's weights into memory before its own /health
-         *     reports ready - either way, a chat/translate request that lands during
-         *     that window fails with llama_client.ModelServerUnavailableError. Hitting
-         *     it here (rather than trusting a cached flag) is itself the wake-up
+         * @description Whether the active chat backend can actually serve a completion
+         *     right now - distinct from /health above, which only means this process
+         *     is up. Under the "openai" provider there's no self-hosted model server
+         *     to wait on at all - ready as soon as a key is configured to call it
+         *     with, no cold-start wait to gate the UI on. Under "local" (the
+         *     default): model-server runs with Railway's serverless mode (sleeps
+         *     after ~5-10min idle) and, right after a cold start, spends a stretch
+         *     loading the model's weights into memory before its own /health reports
+         *     ready - either way, a chat/translate request that lands during that
+         *     window fails with llama_client.ModelServerUnavailableError. Hitting it
+         *     here (rather than trusting a cached flag) is itself the wake-up
          *     trigger for the sleep case - Railway wakes a serverless service on any
-         *     inbound request. The frontend is expected to poll this on page load and
-         *     hold the UI back until it reports ready, rather than let a real
+         *     inbound request. The frontend is expected to poll this on page load
+         *     and hold the UI back until it reports ready, rather than let a real
          *     interaction be the first thing to hit that failure mode.
          */
         get: operations["health_llm_health_llm_get"];
@@ -345,6 +366,15 @@ export interface components {
             /** Review Interval Days */
             review_interval_days: number;
         };
+        /** SettingsResponse */
+        SettingsResponse: {
+            /** Model Provider */
+            model_provider: string;
+            /** Word Weighting Enabled */
+            word_weighting_enabled: boolean;
+            /** Word Weighting Active */
+            word_weighting_active: boolean;
+        };
         /** TTSRequest */
         TTSRequest: {
             /** Text */
@@ -452,6 +482,13 @@ export interface components {
              * @default true
              */
             clickable: boolean;
+        };
+        /** UpdateSettingsRequest */
+        UpdateSettingsRequest: {
+            /** Model Provider */
+            model_provider?: string | null;
+            /** Word Weighting Enabled */
+            word_weighting_enabled?: boolean | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -786,6 +823,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_settings_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+        };
+    };
+    write_settings_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
                 };
             };
             /** @description Validation Error */

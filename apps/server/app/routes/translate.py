@@ -1,6 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 
+from app import settings_store
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
+from app.db import get_session
 from app.schemas import (
     InterpretInputRequest,
     InterpretInputResponse,
@@ -36,23 +39,27 @@ def translate_word(req: TranslateWordRequest) -> TranslateWordResponse:
 
 
 @router.post("/text", response_model=TranslateTextResponse)
-def translate_text(req: TranslateTextRequest) -> TranslateTextResponse:
+def translate_text(req: TranslateTextRequest, session: Session = Depends(get_session)) -> TranslateTextResponse:
+    provider = settings_store.get_settings(session).model_provider
     try:
-        translation = llm_translate.translate_text(req.text, req.source_lang, req.target_lang)
+        translation = llm_translate.translate_text(req.text, req.source_lang, req.target_lang, provider=provider)
     except llm_translate.TranslationUnavailableError as exc:
         return TranslateTextResponse(translation=f"(translation unavailable: {exc})")
     return TranslateTextResponse(translation=translation)
 
 
 @router.post("/interpret", response_model=InterpretInputResponse)
-def interpret_input(req: InterpretInputRequest) -> InterpretInputResponse:
+def interpret_input(req: InterpretInputRequest, session: Session = Depends(get_session)) -> InterpretInputResponse:
     """For the learner's own message: infers what they meant across a
     possible mix of English/Spanish and grammar mistakes, returning a
     corrected English restatement alongside its Spanish translation - used
     to show both under the user's chat bubble rather than a single literal
     (and possibly nonsensical) pass."""
+    provider = settings_store.get_settings(session).model_provider
     try:
-        native, target = llm_translate.interpret_user_input(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+        native, target = llm_translate.interpret_user_input(
+            req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider
+        )
     except llm_translate.TranslationUnavailableError as exc:
         msg = f"(translation unavailable: {exc})"
         return InterpretInputResponse(native=msg, target=msg)

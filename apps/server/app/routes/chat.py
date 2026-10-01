@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.chat.llama_client import ModelServerUnavailableError, chat as llama_chat
+from app import settings_store
+from app.chat.model_client import ModelServerUnavailableError, chat as model_chat
 from app.chat.logit_bias import build_logit_bias
 from app.chat.prompt_builder import build_messages
-from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE, WORD_WEIGHTING_ENABLED
+from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
 from app.models import ChatMessage, MessageToken
 from app.schemas import (
@@ -68,15 +69,17 @@ def clear_history(session_id: str, session: Session = Depends(get_session)) -> C
 
 @router.post("/turn", response_model=ChatTurnResponse)
 def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
+    settings = settings_store.get_settings(session)
+    provider = settings.model_provider
     reinforce_lemmas, new_lemmas, reinforce_urgency = store.pick_turn_vocabulary_if_enabled(
-        session, WORD_WEIGHTING_ENABLED
+        session, settings_store.weighting_active(settings)
     )
     history = _recent_history(session, req.session_id)
     messages = build_messages(history, reinforce_lemmas, new_lemmas, req.message)
     logit_bias = build_logit_bias(reinforce_lemmas, new_lemmas, reinforce_urgency)
 
     try:
-        reply_text = llama_chat(messages, logit_bias)
+        reply_text = model_chat(messages, logit_bias, provider=provider)
     except ModelServerUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -91,7 +94,9 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
     # for anything it didn't cover (a failed call, or a word it missed)
     # rather than let a translation hiccup break the whole turn.
     try:
-        translation, word_map = llm_translate.gloss_reply(reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE)
+        translation, word_map = llm_translate.gloss_reply(
+            reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE, provider=provider
+        )
     except llm_translate.TranslationUnavailableError:
         translation, word_map = "", {}
     empty_gloss = ("", "")

@@ -29,8 +29,8 @@ def test_every_real_spanish_word_gets_a_gloss_not_just_frequent_ones():
     # fallback to the older per-word mechanism.
     reply = "Hay una tormenta y el paraguas es mío."
     with (
-        patch("app.routes.chat.llama_chat", return_value=reply),
-        patch("app.translate.llm_translate.llama_chat", side_effect=ModelServerUnavailableError("down")),
+        patch("app.routes.chat.model_chat", return_value=reply),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
         patch("app.translate.service.mt.translate_word", return_value="storm"),
     ):
         result = take_turn(ChatTurnRequest(session_id="t1", message="hola"), session=_session())
@@ -43,8 +43,8 @@ def test_every_real_spanish_word_gets_a_gloss_not_just_frequent_ones():
 
 def test_punctuation_still_gets_no_gloss():
     with (
-        patch("app.routes.chat.llama_chat", return_value="Hola, ¿qué tal?"),
-        patch("app.translate.llm_translate.llama_chat", side_effect=ModelServerUnavailableError("down")),
+        patch("app.routes.chat.model_chat", return_value="Hola, ¿qué tal?"),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
     ):
         result = take_turn(ChatTurnRequest(session_id="t2", message="hola"), session=_session())
 
@@ -66,8 +66,8 @@ def test_word_gloss_prefers_llm_context_over_dictionary_lookup():
         '"cerrado": {"gloss": "closed", "note": ""}}}'
     )
     with (
-        patch("app.routes.chat.llama_chat", return_value=reply),
-        patch("app.translate.llm_translate.llama_chat", return_value=gloss_json),
+        patch("app.routes.chat.model_chat", return_value=reply),
+        patch("app.translate.llm_translate.model_chat", return_value=gloss_json),
     ):
         result = take_turn(ChatTurnRequest(session_id="t3", message="hola"), session=_session())
 
@@ -86,8 +86,8 @@ def test_word_missing_from_llm_map_falls_back_to_dictionary():
     # empty.
     gloss_json = '{"translation": "The cat is big.", "words": {"grande": {"gloss": "big", "note": ""}}}'
     with (
-        patch("app.routes.chat.llama_chat", return_value=reply),
-        patch("app.translate.llm_translate.llama_chat", return_value=gloss_json),
+        patch("app.routes.chat.model_chat", return_value=reply),
+        patch("app.translate.llm_translate.model_chat", return_value=gloss_json),
     ):
         result = take_turn(ChatTurnRequest(session_id="t4", message="hola"), session=_session())
 

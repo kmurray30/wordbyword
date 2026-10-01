@@ -13,7 +13,7 @@ not block the UI on it.
 import json
 import re
 
-from app.chat.llama_client import ModelServerUnavailableError, chat as llama_chat
+from app.chat.model_client import ModelServerUnavailableError, chat as model_chat
 from app.translate.lemmatizer import analyze
 
 _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
@@ -41,7 +41,7 @@ def _looks_garbled(text: str) -> bool:
     return bool(_UNEXPECTED_SCRIPT_RE.search(text))
 
 
-def translate_text(text: str, source_lang: str, target_lang: str) -> str:
+def translate_text(text: str, source_lang: str, target_lang: str, provider: str | None = None) -> str:
     if not text.strip():
         return ""
 
@@ -63,7 +63,7 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     last_result = ""
     for _attempt in range(2):
         try:
-            last_result = llama_chat(messages, logit_bias={}).strip()
+            last_result = model_chat(messages, logit_bias={}, provider=provider).strip()
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not _looks_garbled(last_result):
@@ -94,7 +94,9 @@ def _extract_word_map_json(reply: str) -> tuple[str, dict[str, tuple[str, str]]]
     return translation, parsed
 
 
-def gloss_reply(text: str, source_lang: str, target_lang: str) -> tuple[str, dict[str, tuple[str, str]]]:
+def gloss_reply(
+    text: str, source_lang: str, target_lang: str, provider: str | None = None
+) -> tuple[str, dict[str, tuple[str, str]]]:
     """Translates `text` and, in the same call, glosses every distinct word
     in it using its meaning IN THIS SENTENCE - one consistent source for
     both, instead of a whole-sentence translation (translate_text, this
@@ -139,7 +141,7 @@ def gloss_reply(text: str, source_lang: str, target_lang: str) -> tuple[str, dic
     last_error: Exception | None = None
     for _attempt in range(2):
         try:
-            last_reply = llama_chat(messages, logit_bias={}, max_tokens=_GLOSS_REPLY_MAX_TOKENS)
+            last_reply = model_chat(messages, logit_bias={}, max_tokens=_GLOSS_REPLY_MAX_TOKENS, provider=provider)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if _looks_garbled(last_reply):
@@ -199,7 +201,9 @@ def _looks_spanish(text: str) -> bool:
     return sum(1 for t in words if t.is_spanish) > len(words) / 2
 
 
-def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
+def interpret_user_input(
+    text: str, native_lang: str, target_lang: str, provider: str | None = None
+) -> tuple[str, str]:
     """Given raw learner input that may mix native_lang and target_lang, and
     may have grammar/spelling mistakes in either, return (corrected_native_
     text, target_language_translation) - the model infers intent across both
@@ -242,7 +246,7 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
     reply = ""
     for _attempt in range(2):
         try:
-            reply = llama_chat(messages, logit_bias={})
+            reply = model_chat(messages, logit_bias={}, provider=provider)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not _looks_garbled(reply):
@@ -252,8 +256,10 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
         # directly on the raw input rather than trying to parse garbage.
         # translate_text has its own retry, so this is a genuinely
         # independent second chance, not just repeating the same failure.
-        target_text = translate_text(text, native_lang, target_lang)
-        native_text = translate_text(text, target_lang, native_lang) if _looks_spanish(text) else text
+        target_text = translate_text(text, native_lang, target_lang, provider=provider)
+        native_text = (
+            translate_text(text, target_lang, native_lang, provider=provider) if _looks_spanish(text) else text
+        )
         return native_text, target_text
 
     native_text, target_text = _parse_labeled_lines(reply, native_name, target_name)
@@ -264,8 +270,10 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
         # anyway. Falls back to a plain, literal translate_text pass, which
         # has no "conversation" framing for the model to go off-script
         # with.
-        target_text = translate_text(text, native_lang, target_lang)
-        native_text = translate_text(text, target_lang, native_lang) if _looks_spanish(text) else text
+        target_text = translate_text(text, native_lang, target_lang, provider=provider)
+        native_text = (
+            translate_text(text, target_lang, native_lang, provider=provider) if _looks_spanish(text) else text
+        )
         return native_text, target_text
 
     # A small model can label its two lines correctly but swap which
@@ -285,14 +293,14 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
             # catches the line never being translated at all by forcing a
             # real translation rather than surfacing English where Spanish
             # was asked for.
-            target_text = translate_text(native_text, native_lang, target_lang)
+            target_text = translate_text(native_text, native_lang, target_lang, provider=provider)
 
     # _parse_labeled_lines already guarantees native_text is non-empty
     # unless the model's reply itself was blank (native_text falls back to
     # the whole raw reply when no labels matched at all) - so only one of
     # these two branches can actually fire for non-empty input.
     if not target_text and native_text:
-        target_text = translate_text(native_text, native_lang, target_lang)
+        target_text = translate_text(native_text, native_lang, target_lang, provider=provider)
     elif not native_text and target_text:
-        native_text = translate_text(target_text, target_lang, native_lang)
+        native_text = translate_text(target_text, target_lang, native_lang, provider=provider)
     return native_text, target_text

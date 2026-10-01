@@ -3,6 +3,7 @@ import { api } from "./api/client";
 import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { getSessionId } from "./lib/session";
 import "./App.css";
 
@@ -111,6 +112,7 @@ function App() {
         <h1>wordbyword</h1>
         <p>Chat in Spanish. Hover any word for a translation.</p>
         <div className="app__header-controls">
+          <SettingsPanel />
           {voices.length > 0 && voice && (
             <label className="app__voice-picker">
               Voice:{" "}
