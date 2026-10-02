@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { InputTokenAnnotation } from "../api/client";
+import { CoachPopover } from "./CoachPopover";
 import { FloatingPopover } from "./FloatingPopover";
-import { TranslatePopover } from "./TranslatePopover";
 import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import "./ChatInput.css";
 
@@ -43,7 +43,7 @@ function buildSegments(text: string, tokens: InputTokenAnnotation[]): Segment[] 
   return segments;
 }
 
-export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
+export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => void; sessionId: string }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   const dragAnchorRef = useRef<number | null>(null);
@@ -52,9 +52,16 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
   const [value, setValue] = useState("");
   const [tags, setTags] = useState<InputTokenAnnotation[]>([]);
   const [openTokenKey, setOpenTokenKey] = useState<string | null>(null);
-  const [draftTranslation, setDraftTranslation] = useState<string | null>(null);
-  const [draftTranslateState, setDraftTranslateState] = useState<"idle" | "loading" | "error">("idle");
-  const [showDraftPreview, setShowDraftPreview] = useState(false);
+  // The help button's coaching result for the current draft - cleared
+  // whenever the draft text changes (handleValueChange below), same as
+  // the old draft-translation preview it replaced.
+  const [coachResult, setCoachResult] = useState<{
+    meaning: string;
+    feedback: string;
+    options: { formality: string; spanish: string }[];
+  } | null>(null);
+  const [coachState, setCoachState] = useState<"idle" | "loading" | "error">("idle");
+  const [showCoach, setShowCoach] = useState(false);
   const [phraseSelection, setPhraseSelection] = useState<{ text: string; start: number; end: number } | null>(null);
   const [phraseTranslation, setPhraseTranslation] = useState<string | null>(null);
   const [phraseState, setPhraseState] = useState<"idle" | "loading" | "error">("idle");
@@ -67,7 +74,7 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
   const [phraseDirection, setPhraseDirection] = useState<"es" | "en">("es");
   const [phraseCoords, setPhraseCoords] = useState<{ top: number; left: number } | null>(null);
   const [openTokenAnchor, setOpenTokenAnchor] = useState<{ top: number; left: number } | null>(null);
-  const [draftAnchor, setDraftAnchor] = useState<{ top: number; left: number } | null>(null);
+  const [coachAnchor, setCoachAnchor] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     if (!value.trim()) return;
@@ -88,10 +95,10 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
   const handleValueChange = (next: string) => {
     setValue(next);
     // Whatever caused the text to change - typing, a word-candidate
-    // replace, or applying the draft translation below - any previously
-    // fetched draft translation is now of stale text, so drop it.
-    setDraftTranslation(null);
-    setDraftTranslateState("idle");
+    // replace, or applying a coaching suggestion below - any previously
+    // fetched coaching result is now of stale text, so drop it.
+    setCoachResult(null);
+    setCoachState("idle");
     setPhraseSelection(null);
   };
 
@@ -314,23 +321,35 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
     setTags([]);
   };
 
-  // Hovering the globe fetches and previews the translation (without
-  // touching the draft); clicking the preview's suggestion applies it -
-  // same interaction pattern as the word-candidate popovers. Always targets
-  // Spanish, regardless of what's typed so far - interpretInput handles a
-  // draft that's already partly or fully Spanish (or a mix, or has typos)
-  // and returns a single natural Spanish line for it, rather than us having
-  // to guess a source language first.
-  const fetchDraftTranslation = () => {
-    if (draftTranslateState === "loading" || draftTranslation !== null || !value.trim()) return;
-    setDraftTranslateState("loading");
+  // The help button's draft coaching - click-toggled rather than hover-
+  // triggered (a hover-only trigger never fires on a touch device at all,
+  // and the old globe button's only path to showing up on mobile was an
+  // iOS "ghost hover" on a first tap, which left a second tap with nothing
+  // left to do - no click handler ever existed for it to toggle). Fetches
+  // once per draft (cached in coachResult until handleValueChange clears
+  // it) and uses the whole recent conversation for context, unlike the
+  // flat interpretInput call it replaced.
+  const fetchCoach = () => {
+    if (coachState === "loading" || coachResult !== null || !value.trim()) return;
+    setCoachState("loading");
     api
-      .interpretInput({ text: value })
+      .coachDraft({ text: value, session_id: sessionId })
       .then((res) => {
-        setDraftTranslation(res.target);
-        setDraftTranslateState("idle");
+        setCoachResult({ meaning: res.meaning, feedback: res.feedback, options: res.options });
+        setCoachState("idle");
       })
-      .catch(() => setDraftTranslateState("error"));
+      .catch(() => setCoachState("error"));
+  };
+
+  const handleToggleCoach = (e: React.MouseEvent<HTMLSpanElement>) => {
+    if (!value.trim()) return;
+    const next = !showCoach;
+    setShowCoach(next);
+    if (next) {
+      fetchCoach();
+      const rect = e.currentTarget.getBoundingClientRect();
+      setCoachAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
+    }
   };
 
   return (
@@ -391,30 +410,38 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
         />
       </div>
       <span
-        className={`chat-input__translate-all chat-input__translate-all--${draftTranslateState}`}
-        onMouseEnter={(e) => {
-          setShowDraftPreview(true);
-          fetchDraftTranslation();
-          const rect = e.currentTarget.getBoundingClientRect();
-          setDraftAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
-        }}
-        onMouseLeave={() => setShowDraftPreview(false)}
+        className={`chat-input__help chat-input__help--${coachState}${showCoach ? " chat-input__help--active" : ""}`}
+        onClick={handleToggleCoach}
         role="button"
         tabIndex={value.trim() ? 0 : -1}
-        aria-label="Preview draft translation"
-        title={draftTranslateState === "error" ? "Translation failed - try again" : "Hover to preview, click the suggestion to use it"}
+        aria-label="Help with this draft"
+        aria-pressed={showCoach}
+        title="What am I trying to say, and how should I actually say it?"
       >
-        {draftTranslateState === "loading" ? "⏳" : "🌐"}
-        {showDraftPreview && draftTranslation !== null && draftAnchor && (
-          <FloatingPopover anchor={draftAnchor} direction="up">
-            <TranslatePopover
-              candidates={[{ translation: draftTranslation }]}
-              direction="up"
-              onSelect={(translation) => {
-                handleValueChange(translation);
-                setShowDraftPreview(false);
+        {coachState === "loading" ? "⏳" : "🪄"}
+        {showCoach && coachResult && coachAnchor && (
+          <FloatingPopover anchor={coachAnchor} direction="up">
+            <CoachPopover
+              meaning={coachResult.meaning}
+              feedback={coachResult.feedback}
+              options={coachResult.options}
+              loading={false}
+              error={false}
+              onSelect={(spanish) => {
+                handleValueChange(spanish);
+                setShowCoach(false);
               }}
             />
+          </FloatingPopover>
+        )}
+        {showCoach && coachState === "loading" && coachAnchor && (
+          <FloatingPopover anchor={coachAnchor} direction="up">
+            <CoachPopover meaning="" feedback="" options={[]} loading error={false} onSelect={() => {}} />
+          </FloatingPopover>
+        )}
+        {showCoach && coachState === "error" && coachAnchor && (
+          <FloatingPopover anchor={coachAnchor} direction="up">
+            <CoachPopover meaning="" feedback="" options={[]} loading={false} error onSelect={() => {}} />
           </FloatingPopover>
         )}
       </span>

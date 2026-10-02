@@ -71,6 +71,13 @@ export function FloatingPopover({ anchor, direction, className, children }: Floa
     <div
       ref={ref}
       className={className}
+      // A portal still bubbles its events through the REACT tree (not the
+      // DOM tree) to whatever JSX actually wraps it - several callers
+      // render this inside a clickable/pinnable span (WordToken's pin
+      // toggle, ChatInput's help button), and without this, clicking
+      // something inside the popover (a candidate, an option) would also
+      // re-trigger that wrapper's own click handler right after.
+      onClick={(e) => e.stopPropagation()}
       style={{
         position: "fixed",
         zIndex: 1000,

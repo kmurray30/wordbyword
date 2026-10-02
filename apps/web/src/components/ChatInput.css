@@ -99,7 +99,7 @@
   cursor: default;
 }
 
-.chat-input__translate-all {
+.chat-input__help {
   position: relative;
   cursor: pointer;
   opacity: 0.6;
@@ -107,10 +107,11 @@
   font-size: 1.1em;
 }
 
-.chat-input__translate-all:hover {
+.chat-input__help:hover,
+.chat-input__help--active {
   opacity: 1;
 }
 
-.chat-input__translate-all--error {
+.chat-input__help--error {
   opacity: 0.9;
 }
