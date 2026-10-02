@@ -304,3 +304,127 @@ def interpret_user_input(
     elif not native_text and target_text:
         native_text = translate_text(target_text, target_lang, native_lang, provider=provider)
     return native_text, target_text
+
+
+_COACH_MAX_TOKENS = 600
+_COACH_HISTORY_TURNS = 8
+_VALID_FORMALITIES = {"neutral", "casual", "formal"}
+
+
+def _parse_coach_json(reply: str) -> tuple[str, str, list[tuple[str, str]]]:
+    match = _JSON_OBJECT_RE.search(reply)
+    if not match:
+        raise ValueError(f"no JSON object found in reply: {reply!r}")
+    data = json.loads(match.group(0))
+    meaning = str(data.get("meaning", "")).strip()
+    feedback = str(data.get("feedback", "")).strip()
+    raw_options = data.get("options", [])
+    if not isinstance(raw_options, list):
+        raise ValueError(f"'options' wasn't a list: {data!r}")
+
+    options: list[tuple[str, str]] = []
+    seen_formalities: set[str] = set()
+    for item in raw_options:
+        if not isinstance(item, dict):
+            continue
+        formality = str(item.get("formality", "")).strip().lower()
+        spanish = str(item.get("spanish", "")).strip()
+        if not spanish or formality in seen_formalities:
+            continue
+        if formality not in _VALID_FORMALITIES:
+            formality = "neutral"
+        seen_formalities.add(formality)
+        options.append((formality, spanish))
+    return meaning, feedback, options
+
+
+def coach_draft(
+    draft: str,
+    history: list[tuple[str, str]],
+    native_lang: str,
+    target_lang: str,
+    provider: str | None = None,
+) -> tuple[str, str, list[tuple[str, str]]]:
+    """For a message the learner is still drafting (not yet sent): infers
+    what they're trying to say across a possible mix of native_lang/
+    target_lang and grammar mistakes, gives brief feedback on how apt that
+    attempt was, and suggests the ideal target_lang phrasing - at a couple
+    of formality levels - given the recent conversation's tone and context
+    (unlike interpret_user_input above, which corrects a single message in
+    isolation with no awareness of what's been said so far). Returns
+    (meaning, feedback, options) where options is a list of
+    (formality, target_lang text) pairs, always with at least one entry for
+    non-empty input."""
+    if not draft.strip():
+        return "", "", []
+
+    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
+    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+
+    recent = history[-_COACH_HISTORY_TURNS:]
+    transcript = "\n".join(f"{'Learner' if role == 'user' else 'Partner'}: {text}" for role, text in recent)
+    context_block = f"The conversation so far:\n{transcript}\n\n" if transcript else ""
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"You are a warm, encouraging writing coach for someone learning "
+                f"{target_name}, whose native language is {native_name}. They are "
+                f"drafting their NEXT message in the conversation below - it may "
+                f"mix {native_name} and {target_name}, and may have grammar or "
+                f"spelling mistakes in either. Your job, in order: (1) figure out "
+                f"what they're trying to say, (2) give ONE short, encouraging "
+                f"sentence of feedback on how close their attempt already is to "
+                f"that meaning (empty string if it was basically already right), "
+                f"(3) suggest the ideal way to actually say it in {target_name} "
+                f"given the conversation's tone and context so far - balancing "
+                f"what they attempted with what actually fits.\n\n"
+                f"{context_block}"
+                f"Reply with ONLY a single JSON object, no markdown fences, no "
+                f"explanation, in exactly this shape:\n"
+                f'{{"meaning": "<your best guess, in {native_name}, at what they '
+                f'are trying to say>", "feedback": "<one short, encouraging '
+                f'sentence on how apt their attempt was, or an empty string if '
+                f'it was already right>", "options": [{{"formality": "neutral", '
+                f'"spanish": "<the ideal {target_name} phrasing>"}}, {{"formality": '
+                f'"casual", "spanish": "<a more casual/informal way to say it>"}}, '
+                f'{{"formality": "formal", "spanish": "<a more formal/polite way '
+                f'to say it>"}}]}}\n\n'
+                f"Keep every {target_name} option to one natural sentence or "
+                f"short exchange, ready to send in chat as-is - not a lecture, "
+                f"and don't repeat the same phrasing across formality levels if "
+                f"you can genuinely vary it. If a formality distinction doesn't "
+                f"make sense for this particular message, it's fine for two "
+                f"options to be identical."
+            ),
+        },
+        {"role": "user", "content": draft},
+    ]
+
+    last_reply = ""
+    last_error: Exception | None = None
+    for _attempt in range(2):
+        try:
+            last_reply = model_chat(messages, logit_bias={}, max_tokens=_COACH_MAX_TOKENS, provider=provider)
+        except ModelServerUnavailableError as exc:
+            raise TranslationUnavailableError(str(exc)) from exc
+        if _looks_garbled(last_reply):
+            last_error = ValueError("garbled reply")
+            continue
+        try:
+            meaning, feedback, options = _parse_coach_json(last_reply)
+            if options:
+                return meaning, feedback, options
+            last_error = ValueError("no usable options in reply")
+        except (ValueError, json.JSONDecodeError, KeyError) as exc:
+            last_error = exc
+
+    # Both attempts failed to yield a structured, usable reply - fall back
+    # to the same plain interpretation interpret_user_input already does
+    # (no conversation context, but still a real, correct translation)
+    # rather than surface nothing at all.
+    native_text, target_text = interpret_user_input(draft, native_lang, target_lang, provider=provider)
+    if not target_text:
+        raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
+    return native_text, "", [("neutral", target_text)]

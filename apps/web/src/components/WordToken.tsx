@@ -13,6 +13,11 @@ interface WordTokenProps {
 
 export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenProps) {
   const [hovering, setHovering] = useState(false);
+  // Tapping (as opposed to hovering) pins the popover open - a tap has no
+  // "leave" event to close it on the way a mouse does, so it needs its own
+  // explicit toggle, same pattern as ChatMessage's translate-pin button.
+  const [pinned, setPinned] = useState(false);
+  const open = hovering || pinned;
   const anchorRef = useRef<HTMLSpanElement | null>(null);
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
 
@@ -24,22 +29,25 @@ export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenPro
   // stacking context). Rendering it into a portal at the document root,
   // positioned from the word's actual screen coordinates, sidesteps both.
   useLayoutEffect(() => {
-    if (!hovering || !anchorRef.current) {
+    if (!open || !anchorRef.current) {
       setCoords(null);
       return;
     }
     const rect = anchorRef.current.getBoundingClientRect();
     setCoords({ top: rect.bottom, left: rect.left + rect.width / 2 });
-  }, [hovering]);
+  }, [open]);
 
-  // Scrolling the feed while hovering would leave a portal-rendered popover
+  // Scrolling the feed while open would leave a portal-rendered popover
   // stranded at its old coordinates - simplest fix is to just close it.
   useLayoutEffect(() => {
-    if (!hovering) return;
-    const close = () => setHovering(false);
+    if (!open) return;
+    const close = () => {
+      setHovering(false);
+      setPinned(false);
+    };
     window.addEventListener("scroll", close, true);
     return () => window.removeEventListener("scroll", close, true);
-  }, [hovering]);
+  }, [open]);
 
   if (!gloss) {
     // Punctuation or a token we don't track in the word bank - render plain.
@@ -49,15 +57,24 @@ export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenPro
   return (
     <span
       ref={anchorRef}
-      className={`word-token${isNew ? " word-token--new" : ""}`}
+      className={`word-token${isNew ? " word-token--new" : ""}${open ? " word-token--active" : ""}`}
       onMouseEnter={() => {
         setHovering(true);
         onHover?.();
       }}
       onMouseLeave={() => setHovering(false)}
+      onClick={(e) => {
+        // Tapping on mobile never fires onMouseEnter at all, and even on
+        // desktop a click explicitly pinning it open (rather than just
+        // relying on hover) matches ChatMessage's own pin-to-keep-open
+        // pattern for its translation rows.
+        e.stopPropagation();
+        setPinned((p) => !p);
+        onHover?.();
+      }}
     >
       {surface}
-      {hovering && coords && (
+      {open && coords && (
         <FloatingPopover anchor={coords} direction="down">
           <TranslatePopover candidates={[{ translation: gloss, description: note || undefined }]} />
         </FloatingPopover>

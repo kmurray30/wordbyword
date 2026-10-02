@@ -1,10 +1,15 @@
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import settings_store
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
+from app.models import ChatMessage
 from app.schemas import (
+    CoachDraftRequest,
+    CoachDraftResponse,
+    CoachOption,
     InterpretInputRequest,
     InterpretInputResponse,
     TagInputRequest,
@@ -21,6 +26,8 @@ from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
 from app.translate.service import word_candidates
 from app.translate.word_validity import is_valid_english_word, is_valid_spanish_word
+
+_COACH_HISTORY_TURNS = 8
 
 router = APIRouter(prefix="/translate", tags=["translate"])
 
@@ -64,6 +71,37 @@ def interpret_input(req: InterpretInputRequest, session: Session = Depends(get_s
         msg = f"(translation unavailable: {exc})"
         return InterpretInputResponse(native=msg, target=msg)
     return InterpretInputResponse(native=native, target=target)
+
+
+@router.post("/coach", response_model=CoachDraftResponse)
+def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session)) -> CoachDraftResponse:
+    """For a message the learner is still drafting (not yet sent) - unlike
+    /interpret above, which corrects a single message in isolation, this
+    pulls the session's recent conversation for context so the suggested
+    phrasing actually fits the tone of what's been said so far, and returns
+    feedback on the attempt plus phrasing options at a few formality
+    levels rather than a single flat correction."""
+    provider = settings_store.get_settings(session).model_provider
+    history_rows = session.scalars(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == req.session_id)
+        .order_by(ChatMessage.id.desc())
+        .limit(_COACH_HISTORY_TURNS)
+    ).all()
+    history = [(row.role, row.text) for row in reversed(history_rows)]
+
+    try:
+        meaning, feedback, options = llm_translate.coach_draft(
+            req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider
+        )
+    except llm_translate.TranslationUnavailableError as exc:
+        msg = f"(translation unavailable: {exc})"
+        return CoachDraftResponse(meaning=msg, feedback="", options=[CoachOption(formality="neutral", spanish=msg)])
+    return CoachDraftResponse(
+        meaning=meaning,
+        feedback=feedback,
+        options=[CoachOption(formality=f, spanish=s) for f, s in options],
+    )
 
 
 @router.post("/tag-input", response_model=TagInputResponse)

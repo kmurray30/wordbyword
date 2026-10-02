@@ -9,6 +9,15 @@ import "./ChatInput.css";
 const TAG_DEBOUNCE_MS = 350;
 const PHRASE_DEBOUNCE_MS = 300;
 const SPANISH_WORD_RE = /^[a-zA-Zñáéíóúü]+$/i;
+// How long a touch has to hold still before it opens a word's translation,
+// and how far it can drift during that hold before being treated as a drag/
+// scroll instead. The hoverable overlay spans are pointer-events:none on
+// touch (see ChatInput.css) so taps reach the textarea for native cursor
+// placement/selection - a long-press is detected here, on the textarea
+// itself, instead of the overlay, specifically so it never competes with
+// that for a plain tap or a native text-selection drag.
+const LONG_PRESS_MS = 450;
+const LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 
 interface Segment {
   text: string;
@@ -38,6 +47,8 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   const dragAnchorRef = useRef<number | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
   const [value, setValue] = useState("");
   const [tags, setTags] = useState<InputTokenAnnotation[]>([]);
   const [openTokenKey, setOpenTokenKey] = useState<string | null>(null);
@@ -239,6 +250,55 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
     document.addEventListener("mouseup", handleMouseUp);
   };
 
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current !== null) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressStartRef.current = null;
+  };
+
+  // Touch's equivalent of hover: the overlay spans can't receive touch
+  // events at all here (pointer-events:none on touch, see ChatInput.css -
+  // required so a plain tap reaches the textarea underneath for cursor
+  // placement), so this listens on the textarea itself instead, which
+  // always gets every touch. A quick tap or a drag both fall through to the
+  // textarea's native behavior untouched; only a hold past LONG_PRESS_MS
+  // with no significant movement opens the word's popover, the same one
+  // desktop hover does, anchored the same way the phrase popover already
+  // computes its own anchor (via the matching overlay span's own rect).
+  const handleTextareaTouchStart = (e: React.TouchEvent<HTMLTextAreaElement>) => {
+    if (openTokenKey) setOpenTokenKey(null);
+    clearLongPressTimer();
+    const touch = e.touches[0];
+    if (!touch) return;
+    const offset = charOffsetAtPoint(touch.clientX, touch.clientY);
+    if (offset === null) return;
+    const token = effectiveTags.find((t) => t.columns.length > 0 && offset >= t.start && offset <= t.end);
+    if (!token) return;
+
+    longPressStartRef.current = { x: touch.clientX, y: touch.clientY };
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null;
+      const span = highlightRef.current?.querySelector<HTMLElement>(
+        `[data-start="${token.start}"][data-end="${token.end}"]`,
+      );
+      if (!span) return;
+      const rect = span.getBoundingClientRect();
+      setOpenTokenAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
+      setOpenTokenKey(`${token.start}-${token.end}`);
+    }, LONG_PRESS_MS);
+  };
+
+  const handleTextareaTouchMove = (e: React.TouchEvent<HTMLTextAreaElement>) => {
+    const start = longPressStartRef.current;
+    const touch = e.touches[0];
+    if (!start || !touch) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE_PX) clearLongPressTimer();
+  };
+
   const handleSend = () => {
     const text = value.trim();
     if (!text) return;
@@ -316,9 +376,12 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
           ref={textareaRef}
           className="chat-input__textarea"
           value={value}
-          placeholder="Escribe en español... (hover or select any text for a translation)"
+          placeholder="Escribe en español... (hover, long-press, or select text for a translation)"
           onChange={(e) => handleValueChange(e.target.value)}
           onSelect={handleTextareaSelect}
+          onTouchStart={handleTextareaTouchStart}
+          onTouchMove={handleTextareaTouchMove}
+          onTouchEnd={clearLongPressTimer}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

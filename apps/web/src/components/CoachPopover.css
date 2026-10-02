@@ -1,0 +1,81 @@
+/* Positioned by FloatingPopover - this class only carries appearance. See
+   WordCandidatesPopover.css for why max-width is viewport-relative. */
+.coach-popover {
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 260px;
+  max-width: min(420px, calc(100vw - 24px));
+  background: #1f2430;
+  color: #f2f2f2;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  padding: 10px 12px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.coach-popover__status {
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.coach-popover__status--error {
+  color: #ff8a8a;
+  font-style: normal;
+}
+
+.coach-popover__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.coach-popover__label {
+  font-weight: 700;
+  opacity: 0.6;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.coach-popover__feedback {
+  opacity: 0.8;
+  font-size: 0.8rem;
+}
+
+.coach-popover__options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.coach-popover__option {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.coach-popover__option:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.coach-popover__option-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.coach-popover__option-text {
+  font-size: 0.92rem;
+}

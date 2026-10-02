@@ -149,7 +149,7 @@ function App() {
         )}
       </main>
 
-      <ChatInput onSend={handleSend} />
+      <ChatInput onSend={handleSend} sessionId={sessionId} />
     </div>
   );
 }

@@ -13,6 +13,20 @@ interface FloatingPopoverProps {
   children: ReactNode;
 }
 
+// The visible area when a mobile on-screen keyboard is open - window.
+// innerWidth/innerHeight stay pinned to the full LAYOUT viewport on iOS
+// Safari even once the keyboard eats the bottom of the screen, so clamping
+// against them keeps treating long-gone space below the input as available,
+// which is exactly what made a popover anchored just above the chat input
+// render clamped way higher than intended once typing opened the keyboard.
+// visualViewport tracks the actual on-screen area (and its offset, e.g.
+// under pinch-zoom) and is supported in every browser this app targets.
+function visibleBounds() {
+  const vv = window.visualViewport;
+  if (vv) return { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height };
+  return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+}
+
 // Portals `children` to document.body, positioned near `anchor` and
 // horizontally (and vertically) clamped to stay fully on screen -
 // centering purely on the anchor point (the old CSS left:50%/
@@ -31,9 +45,20 @@ export function FloatingPopover({ anchor, direction, className, children }: Floa
     const el = ref.current;
     if (!el) return;
     const { offsetWidth: width, offsetHeight: height } = el;
-    const left = Math.min(Math.max(anchor.left - width / 2, MARGIN), window.innerWidth - width - MARGIN);
-    const rawTop = direction === "down" ? anchor.top : anchor.top - height;
-    const top = Math.min(Math.max(rawTop, MARGIN), window.innerHeight - height - MARGIN);
+    const bounds = visibleBounds();
+    const left = Math.min(
+      Math.max(anchor.left - width / 2, bounds.left + MARGIN),
+      bounds.left + bounds.width - width - MARGIN,
+    );
+    // Prefer the requested direction, but flip to whichever side actually
+    // has room when the preferred one doesn't fit - e.g. the input's help
+    // button opens "up", but once the keyboard is open there may be more
+    // (or only) room below the anchor instead.
+    const fitsUp = anchor.top - height >= bounds.top + MARGIN;
+    const fitsDown = anchor.top + height <= bounds.top + bounds.height - MARGIN;
+    const effectiveDirection = direction === "up" ? (fitsUp || !fitsDown ? "up" : "down") : fitsDown || !fitsUp ? "down" : "up";
+    const rawTop = effectiveDirection === "down" ? anchor.top : anchor.top - height;
+    const top = Math.min(Math.max(rawTop, bounds.top + MARGIN), bounds.top + bounds.height - height - MARGIN);
     // Bail out (return the same object) once the measurement has converged -
     // calling setStyle with a fresh object on every run, unconditionally,
     // re-triggers this effect every render with no way to stabilize, which

@@ -113,6 +113,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/translate/coach": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Coach Draft
+         * @description For a message the learner is still drafting (not yet sent) - unlike
+         *     /interpret above, which corrects a single message in isolation, this
+         *     pulls the session's recent conversation for context so the suggested
+         *     phrasing actually fits the tone of what's been said so far, and returns
+         *     feedback on the attempt plus phrasing options at a few formality
+         *     levels rather than a single flat correction.
+         */
+        post: operations["coach_draft_translate_coach_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/translate/tag-input": {
         parameters: {
             query?: never;
@@ -309,6 +334,29 @@ export interface components {
         ClearHistoryResponse: {
             /** Cleared */
             cleared: number;
+        };
+        /** CoachDraftRequest */
+        CoachDraftRequest: {
+            /** Text */
+            text: string;
+            /** Session Id */
+            session_id: string;
+        };
+        /** CoachDraftResponse */
+        CoachDraftResponse: {
+            /** Meaning */
+            meaning: string;
+            /** Feedback */
+            feedback: string;
+            /** Options */
+            options: components["schemas"]["CoachOption"][];
+        };
+        /** CoachOption */
+        CoachOption: {
+            /** Formality */
+            formality: string;
+            /** Spanish */
+            spanish: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -693,6 +741,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InterpretInputResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    coach_draft_translate_coach_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoachDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachDraftResponse"];
                 };
             };
             /** @description Validation Error */

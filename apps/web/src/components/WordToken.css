@@ -1,15 +1,21 @@
 .word-token {
   position: relative;
-  cursor: help;
-  border-bottom: 1px dotted rgba(255, 255, 255, 0.4);
-  /* Vertical-only padding: enlarges the hover hit area toward the popover
-     (which opens directly below) without disturbing horizontal text flow/
-     word spacing. */
-  padding: 3px 0;
-  margin: -3px 0;
+  cursor: pointer;
+  border-radius: 4px;
+  /* Vertical-only padding: enlarges the hover/tap hit area toward the
+     popover (which opens directly below) without disturbing horizontal
+     text flow/word spacing. */
+  padding: 3px 2px;
+  margin: -3px -2px;
+  transition: background-color 0.1s ease;
 }
 
 .word-token--new {
-  border-bottom-color: #7dd3fc;
-  color: #7dd3fc;
+  background: rgba(125, 211, 252, 0.18);
+}
+
+/* Open (hovered or tapped-pinned) - a light highlight instead of an
+   underline/color change, which read as a hyperlink. */
+.word-token--active {
+  background: rgba(255, 255, 255, 0.18);
 }

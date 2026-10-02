@@ -5,6 +5,7 @@ import pytest
 from app.chat.llama_client import ModelServerUnavailableError
 from app.translate.llm_translate import (
     TranslationUnavailableError,
+    coach_draft,
     gloss_reply,
     interpret_user_input,
     translate_text,
@@ -267,3 +268,79 @@ def test_interpret_user_input_falls_back_to_translate_text_on_garbled_reply():
     assert native == "Do you hablo the espanol good?"
     assert target == "¿Hablas bien español?"
     assert mock_chat.call_count == 3
+
+
+def test_coach_draft_empty_input_short_circuits():
+    with patch("app.translate.llm_translate.model_chat") as mock_chat:
+        assert coach_draft("   ", [], "en", "es") == ("", "", [])
+    mock_chat.assert_not_called()
+
+
+def test_coach_draft_parses_meaning_feedback_and_options():
+    reply = (
+        '{"meaning": "I want to go to the beach tomorrow.", '
+        '"feedback": "Good attempt - just a word order slip.", '
+        '"options": ['
+        '{"formality": "neutral", "spanish": "Quiero ir a la playa mañana."}, '
+        '{"formality": "casual", "spanish": "Quiero ir a la playa mañana, ¿sí?"}, '
+        '{"formality": "formal", "spanish": "Me gustaría ir a la playa mañana."}'
+        "]}"
+    )
+    with patch("app.translate.llm_translate.model_chat", return_value=reply) as mock_chat:
+        meaning, feedback, options = coach_draft("quiero playa mañana ir", [], "en", "es")
+
+    assert meaning == "I want to go to the beach tomorrow."
+    assert feedback == "Good attempt - just a word order slip."
+    assert options == [
+        ("neutral", "Quiero ir a la playa mañana."),
+        ("casual", "Quiero ir a la playa mañana, ¿sí?"),
+        ("formal", "Me gustaría ir a la playa mañana."),
+    ]
+    (messages,), kwargs = mock_chat.call_args
+    assert kwargs["logit_bias"] == {}
+    assert messages[-1] == {"role": "user", "content": "quiero playa mañana ir"}
+
+
+def test_coach_draft_includes_recent_history_in_prompt():
+    reply = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    history = [("assistant", "¿Qué planes tienes para el fin de semana?"), ("user", "quiero ir playa")]
+    with patch("app.translate.llm_translate.model_chat", return_value=reply) as mock_chat:
+        coach_draft("mañana quiero ir", history, "en", "es")
+
+    (messages,), _ = mock_chat.call_args
+    prompt = messages[0]["content"]
+    assert "¿Qué planes tienes para el fin de semana?" in prompt
+    assert "quiero ir playa" in prompt
+
+
+def test_coach_draft_defaults_unknown_formality_to_neutral():
+    reply = '{"meaning": "x", "feedback": "", "options": [{"formality": "sarcastic", "spanish": "y"}]}'
+    with patch("app.translate.llm_translate.model_chat", return_value=reply):
+        _, _, options = coach_draft("algo", [], "en", "es")
+
+    assert options == [("neutral", "y")]
+
+
+def test_coach_draft_falls_back_when_model_omits_options():
+    # Garbled on the first pass, well-formed but with no "options" on the
+    # second - exhausts both attempts, so falls back to interpret_user_input
+    # (a plain, context-free but still usable correction) rather than
+    # raising over a structured-output miss.
+    with patch(
+        "app.translate.llm_translate.model_chat",
+        side_effect=["not json at all", '{"meaning": "x", "feedback": "", "options": []}'],
+    ), patch(
+        "app.translate.llm_translate.interpret_user_input", return_value=("I want water", "Quiero agua")
+    ) as mock_interpret:
+        meaning, feedback, options = coach_draft("quiero water", [], "en", "es")
+
+    assert meaning == "I want water"
+    assert feedback == ""
+    assert options == [("neutral", "Quiero agua")]
+    mock_interpret.assert_called_once_with("quiero water", "en", "es", provider=None)
+
+
+def test_coach_draft_wraps_model_server_error():
+    with patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")):
+        with pytest.raises(TranslationUnavailableError, match="down"):
+            coach_draft("hola", [], "en", "es")

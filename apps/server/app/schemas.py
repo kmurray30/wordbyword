@@ -82,6 +82,26 @@ class InterpretInputResponse(BaseModel):
     target: str
 
 
+class CoachDraftRequest(BaseModel):
+    text: str
+    session_id: str
+
+
+class CoachOption(BaseModel):
+    formality: str  # "neutral" | "casual" | "formal"
+    spanish: str
+
+
+class CoachDraftResponse(BaseModel):
+    # Best-guess English meaning of what the learner is trying to say -
+    # empty if the draft was empty.
+    meaning: str
+    # One short, encouraging note on how apt/correct the attempt was -
+    # empty if there's nothing worth flagging.
+    feedback: str
+    options: list[CoachOption]
+
+
 class TagInputRequest(BaseModel):
     text: str
 
