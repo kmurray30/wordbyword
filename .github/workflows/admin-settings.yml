@@ -16,6 +16,8 @@ on:
         description: "local | openai - leave blank to leave unchanged"
       word_weighting_enabled:
         description: "true | false - leave blank to leave unchanged"
+      test_message:
+        description: "If set, also sends this one message to /chat/turn (no retry) and prints the raw response"
   # workflow_dispatch needs the workflow file discovered on the default
   # branch first, which this repo doesn't use - push (scoped to this
   # workflow's own files) is how runs actually get kicked off, same as
@@ -34,6 +36,7 @@ jobs:
       BACKEND_URL: ${{ github.event.inputs.backend_url || 'https://server-production-f688.up.railway.app' }}
       MODEL_PROVIDER: ${{ github.event.inputs.model_provider }}
       WORD_WEIGHTING_ENABLED: ${{ github.event.inputs.word_weighting_enabled }}
+      TEST_MESSAGE: ${{ github.event.inputs.test_message }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

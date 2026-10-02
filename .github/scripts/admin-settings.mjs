@@ -4,9 +4,17 @@
 // resulting settings so a run triggered with nothing set (e.g. the push
 // trigger, which has no workflow_dispatch inputs to read) still reports
 // current state rather than doing nothing silently.
+//
+// If TEST_MESSAGE is also set, sends ONE direct, un-retried /chat/turn
+// request and prints the raw status + body - chat-sample.mjs's retry loop
+// treats any 5xx (including a real, persistent application error like a
+// rejected API key) as "backend still waking up" and keeps retrying for
+// minutes before finally surfacing the real body, which makes diagnosing
+// a genuine failure slow; this gives an immediate answer instead.
 const BACKEND_URL = process.env.BACKEND_URL;
 const MODEL_PROVIDER = (process.env.MODEL_PROVIDER || "").trim();
 const WORD_WEIGHTING_ENABLED = (process.env.WORD_WEIGHTING_ENABLED || "").trim();
+const TEST_MESSAGE = (process.env.TEST_MESSAGE || "").trim();
 
 function fail(message) {
   console.error(`FAIL: ${message}`);
@@ -57,4 +65,22 @@ async function main() {
   }
 }
 
-main();
+async function testChat() {
+  console.log(`\nSending one direct /chat/turn request: ${JSON.stringify(TEST_MESSAGE)} ...`);
+  const res = await fetch(`${BACKEND_URL}/chat/turn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: TEST_MESSAGE, session_id: `admin-test-${Date.now()}` }),
+  });
+  const body = await res.text();
+  console.log(`Status: ${res.status}`);
+  console.log(`Body: ${body}`);
+  if (!res.ok) fail(`/chat/turn returned ${res.status}`);
+}
+
+async function run() {
+  await main();
+  if (TEST_MESSAGE) await testChat();
+}
+
+run();
