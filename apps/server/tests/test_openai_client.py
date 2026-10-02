@@ -33,6 +33,22 @@ def test_chat_returns_content_and_sends_configured_model():
     assert kwargs["headers"]["Authorization"] == "Bearer sk-fake"
 
 
+def test_chat_sends_max_completion_tokens_not_max_tokens():
+    # Real bug, caught live against the actual OpenAI API: "max_tokens" is
+    # rejected outright by newer models ("Unsupported parameter: 'max_tokens'
+    # is not supported with this model. Use 'max_completion_tokens' instead"),
+    # confirmed live against gpt-6-luna specifically.
+    with (
+        patch("app.chat.openai_client.OPENAI_API_KEY", "sk-fake"),
+        patch("httpx.post", return_value=_response("hola")) as mock_post,
+    ):
+        chat([{"role": "user", "content": "hi"}], max_tokens=42)
+
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["max_completion_tokens"] == 42
+    assert "max_tokens" not in payload
+
+
 def test_chat_ignores_logit_bias_without_erroring():
     # logit_bias is accepted for a uniform call signature with
     # llama_client.chat (see model_client.py) but is meaningless against

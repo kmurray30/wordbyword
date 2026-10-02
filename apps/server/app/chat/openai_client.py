@@ -38,7 +38,11 @@ def chat(
     payload = {
         "model": OPENAI_CHAT_MODEL,
         "messages": messages,
-        "max_tokens": max_tokens if max_tokens is not None else MAX_REPLY_TOKENS,
+        # Newer OpenAI models (confirmed live against gpt-6-luna) reject the
+        # classic "max_tokens" field outright ("Unsupported parameter...
+        # Use 'max_completion_tokens' instead") - this is the field every
+        # current model accepts, legacy ones included.
+        "max_completion_tokens": max_tokens if max_tokens is not None else MAX_REPLY_TOKENS,
     }
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
 
