@@ -19,23 +19,29 @@
 //     not the old Argos error string. Also checks /translate/word for a
 //     few known slang words (bro/sup/partner) - regression coverage for a
 //     real bug where Argos's word-level fallback echoed unknown words back
-//     unchanged instead of translating them.
+//     unchanged instead of translating them. Finally hits /translate/coach
+//     (the input's help button's backend) using this session's own recent
+//     history for context.
 //  3. Confirm GET /chat/history reflects what stages 1/2 just sent, and
 //     that POST /chat/history/clear actually empties it.
 //  4. If those pass, drive the real site with Playwright end to end: confirm
 //     the LLM-readiness gate isn't blocking the page (the model server is
-//     already known warm by this point), send a message, hover a word
-//     gloss, toggle both messages' translation rows
-//     open and closed, confirm the user message gets two rows (EN+ES),
-//     hover a cognate word in the input box for its dual-column candidates,
-//     drag-select a multi-word phrase in the input (starting the drag ON a
-//     hoverable word, not just in a gap between them) and confirm it shows
-//     one phrase translation (in whichever direction the selected words'
-//     majority language calls for) rather than a leftover single-word
-//     popover - all of that before touching TTS at all, same reasoning as
-//     stages 1-2 before 5-6 - then play the assistant message's audio,
-//     switch the voice picker and confirm that request carries the chosen
-//     voice, then reload and clear the chat.
+//     already known warm by this point), send a message, hover AND click a
+//     word gloss (click should pin it open with a highlight, no underline -
+//     the only way it ever shows on a real tap, which never fires hover),
+//     toggle both messages' translation rows open and closed, confirm the
+//     user message gets two rows (EN+ES), hover a cognate word in the input
+//     box for its dual-column candidates, drag-select a multi-word phrase
+//     in the input (starting the drag ON a hoverable word, not just in a
+//     gap between them) and confirm it shows one phrase translation (in
+//     whichever direction the selected words' majority language calls for)
+//     rather than a leftover single-word popover, click the help button
+//     (replaces the old hover-only globe) and confirm its coach popover
+//     renders on-screen and applying an option updates the draft - all of
+//     that before touching TTS at all, same reasoning as stages 1-2 before
+//     5-6 - then play the assistant message's audio, switch the voice
+//     picker and confirm that request carries the chosen voice, then
+//     reload and clear the chat.
 //  5. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
 //     actually working" (right model/voice, valid token) from the frontend.
 //  6. Hit /tts/voices and /tts/speak for each Spanish voice directly -
@@ -227,6 +233,27 @@ async function checkEnglishInputAndTranslation() {
     }
     console.log(`  "${word}" -> ${JSON.stringify(best.translation)} (${JSON.stringify(best.description)}, ${data.candidates.length} candidate(s))`);
   }
+
+  // The input's "help" button - uses this session's recent history (stage
+  // 1's "Hola" and this function's own hobbies question) for context, so
+  // runs after there's actually some history to use.
+  console.log(`[2/6] Checking /translate/coach ...`);
+  const coachRes = await fetch(`${BACKEND_URL}/translate/coach`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "me gusta mucho leer libros", session_id: TEST_SESSION_ID }),
+  });
+  if (!coachRes.ok) fail(`/translate/coach returned ${coachRes.status}: ${await coachRes.text()}`);
+  const coachData = await coachRes.json();
+  if (!coachData.options || coachData.options.length === 0) {
+    fail(`/translate/coach returned no options: ${JSON.stringify(coachData)}`);
+  }
+  for (const opt of coachData.options) {
+    if (!opt.spanish) fail(`/translate/coach option missing spanish text: ${JSON.stringify(opt)}`);
+  }
+  console.log(`  meaning: ${JSON.stringify(coachData.meaning)}`);
+  console.log(`  feedback: ${JSON.stringify(coachData.feedback)}`);
+  console.log(`  options: ${JSON.stringify(coachData.options)}`);
 }
 
 async function checkHistoryAndClear() {
@@ -308,6 +335,29 @@ async function checkBrowserEndToEnd() {
       // positioned from the word's own coordinates, which can land right
       // over the action row below the bubble and intercept the next
       // step's hover on the globe button otherwise.
+      await page.mouse.move(0, 0);
+      await page.waitForTimeout(100);
+
+      // Clicking (not just hovering) should pin it open with a highlight -
+      // the mobile equivalent of hover, since a tap never fires mouseenter
+      // on a real touch device.
+      await wordToken.click();
+      await page.waitForTimeout(100);
+      const pinnedActive = await wordToken.evaluate((el) => el.classList.contains("word-token--active"));
+      const pinnedPopoverVisible = await page.locator(".translate-popover").first().isVisible().catch(() => false);
+      if (!pinnedActive || !pinnedPopoverVisible) {
+        fail("clicking a word token did not pin it open with a highlight + popover");
+      }
+      const borderBottom = await wordToken.evaluate((el) => getComputedStyle(el).borderBottomStyle);
+      if (borderBottom !== "none") {
+        fail(`word token still has a border-bottom (${borderBottom}) - looks like a hyperlink`);
+      }
+      console.log("  OK - clicking a word token pins it open with a highlight, no underline");
+      // Pinning is sticky by design (stays open after the mouse leaves,
+      // same pattern as ChatMessage's own translate-pin) - unpin it again
+      // explicitly so it doesn't sit open and overlap later steps below it
+      // in the bubble (the audio/translate-toggle buttons).
+      await wordToken.click();
       await page.mouse.move(0, 0);
       await page.waitForTimeout(100);
     } else {
@@ -554,6 +604,38 @@ async function checkBrowserEndToEnd() {
     } else {
       fail('could not find "gusta"/"negro" as hoverable words to test drag-selection');
     }
+    await textarea.fill("");
+
+    // The input's help button (replaces the old hover-only globe) - click-
+    // toggled, so this also exercises that toggle actually opens/closes it
+    // rather than relying on hover (which never fires on a real tap).
+    await textarea.fill("quiero ir playa manana");
+    const helpButton = page.locator(".chat-input__help");
+    await helpButton.click();
+    await page.waitForSelector(".coach-popover", { timeout: 10_000 });
+    await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
+      timeout: 10_000,
+    });
+    const coachBox = await page.locator(".coach-popover").first().boundingBox();
+    const viewport = page.viewportSize();
+    if (coachBox.y < 0 || coachBox.y + coachBox.height > viewport.height) {
+      fail(`coach popover rendered out of bounds: y=${coachBox.y} height=${coachBox.height} viewport=${viewport.height}`);
+    }
+    const coachText = await page.locator(".coach-popover").innerText();
+    console.log(`  OK - help button opened coach popover: ${JSON.stringify(coachText)}`);
+    await page.screenshot({ path: "e2e-debug-coach-popover.png" });
+
+    const firstOption = page.locator(".coach-popover__option").first();
+    const optionText = await firstOption.locator(".coach-popover__option-text").innerText();
+    await firstOption.click();
+    await page.waitForTimeout(150);
+    const draftAfterApply = await textarea.inputValue();
+    if (draftAfterApply !== optionText) {
+      fail(`clicking a coach option set the draft to ${JSON.stringify(draftAfterApply)}, expected ${JSON.stringify(optionText)}`);
+    }
+    const coachStillOpen = await page.locator(".coach-popover").isVisible().catch(() => false);
+    if (coachStillOpen) fail("coach popover still open after applying an option");
+    console.log("  OK - clicking a coach option applies it to the draft and closes the popover");
     await textarea.fill("");
 
     // Click the speaker button and confirm the browser's own /tts/speak
