@@ -302,7 +302,7 @@ async function checkBrowserEndToEnd() {
     const wordToken = page.locator(".chat-message--assistant .word-token").first();
     if ((await wordToken.count()) > 0) {
       await wordToken.hover();
-      await page.waitForSelector(".word-token__popover-anchor .translate-popover", { timeout: 8_000 });
+      await page.waitForSelector(".translate-popover", { timeout: 8_000 });
       console.log("  OK - hover translation popover works");
       // Close it before moving on - it's portaled to document.body and
       // positioned from the word's own coordinates, which can land right
@@ -508,7 +508,7 @@ async function checkBrowserEndToEnd() {
       // deliberately 0x0 (its only child is position:absolute, so it never
       // contributes to the anchor's own box), so wait for the actual
       // rendered popover content, not the anchor element.
-      await page.waitForSelector(".chat-input__phrase-popover-anchor .word-candidates-popover", { timeout: 8_000 });
+      await page.waitForSelector(".word-candidates-popover", { timeout: 8_000 });
       // Scoped to a *nested* instance (inside a hoverable word span) so this
       // only catches a genuine leftover single-word popover, not the phrase
       // popover itself - both render the same .word-candidates-popover class.
@@ -524,17 +524,17 @@ async function checkBrowserEndToEnd() {
       // correct into Spanish.
       await page.waitForFunction(
         () => {
-          const el = document.querySelector(".chat-input__phrase-popover-anchor .candidate-cycler__text");
+          const el = document.querySelector(".word-candidates-popover .candidate-cycler__text");
           return !!el && !el.textContent.includes("…");
         },
         { timeout: 8_000 },
       );
       const phraseHeading = await page
-        .locator(".chat-input__phrase-popover-anchor .word-candidates-popover__heading")
+        .locator(".word-candidates-popover__heading")
         .first()
         .innerText();
       const phraseTranslationText = await page
-        .locator(".chat-input__phrase-popover-anchor .candidate-cycler__text")
+        .locator(".word-candidates-popover .candidate-cycler__text")
         .first()
         .innerText();
       if (phraseHeading !== "English") {
@@ -546,7 +546,7 @@ async function checkBrowserEndToEnd() {
       console.log(`  OK - highlighting an all-Spanish phrase translated it to English: ${JSON.stringify(phraseTranslationText)}`);
       // Debug screenshot: visually confirm the phrase popover's actual
       // rendered appearance (not just its DOM structure via selectors).
-      const phraseBox = await page.locator(".chat-input__phrase-popover-anchor .word-candidates-popover").first().boundingBox();
+      const phraseBox = await page.locator(".word-candidates-popover").first().boundingBox();
       await page.screenshot({
         path: "e2e-debug-phrase-popover.png",
         clip: { x: Math.max(0, phraseBox.x - 10), y: Math.max(0, phraseBox.y - 10), width: phraseBox.width + 20, height: phraseBox.height + 20 },
