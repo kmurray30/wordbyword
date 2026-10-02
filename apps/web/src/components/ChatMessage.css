@@ -30,6 +30,10 @@
   padding: 10px 14px;
   border-radius: 14px;
   line-height: 1.5;
+  /* A long unbroken word (a URL, a run-on compound) would otherwise force
+     the bubble wider than its 70% column cap, pushing it toward/off the
+     edge of a narrow mobile viewport instead of wrapping. */
+  overflow-wrap: anywhere;
 }
 
 .chat-message--assistant .chat-message__bubble {

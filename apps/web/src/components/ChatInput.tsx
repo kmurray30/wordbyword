@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { api } from "../api/client";
 import type { InputTokenAnnotation } from "../api/client";
+import { FloatingPopover } from "./FloatingPopover";
 import { TranslatePopover } from "./TranslatePopover";
 import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import "./ChatInput.css";
@@ -55,6 +55,8 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
   // below from the majority language of the words it covers.
   const [phraseDirection, setPhraseDirection] = useState<"es" | "en">("es");
   const [phraseCoords, setPhraseCoords] = useState<{ top: number; left: number } | null>(null);
+  const [openTokenAnchor, setOpenTokenAnchor] = useState<{ top: number; left: number } | null>(null);
+  const [draftAnchor, setDraftAnchor] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     if (!value.trim()) return;
@@ -282,7 +284,11 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
                 className="chat-input__hoverable"
                 data-start={seg.start}
                 data-end={seg.end}
-                onMouseEnter={() => setOpenTokenKey(`${seg.token!.start}-${seg.token!.end}`)}
+                onMouseEnter={(e) => {
+                  setOpenTokenKey(`${seg.token!.start}-${seg.token!.end}`);
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setOpenTokenAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
+                }}
                 onMouseLeave={() => setOpenTokenKey(null)}
                 onMouseDown={(e) => handleWordMouseDown(e, seg.token!)}
               >
@@ -290,11 +296,13 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
                 {/* Suppressed while a real (multi-char) selection is active - a drag
                     can end with the pointer resting over a word, which would otherwise
                     leave this open at the same time as the phrase popover below. */}
-                {openTokenKey === `${seg.token.start}-${seg.token.end}` && !phraseSelection && (
-                  <WordCandidatesPopover
-                    columns={seg.token.columns}
-                    onSelect={(translation) => handleReplace(seg.token!, translation)}
-                  />
+                {openTokenKey === `${seg.token.start}-${seg.token.end}` && !phraseSelection && openTokenAnchor && (
+                  <FloatingPopover anchor={openTokenAnchor} direction="up">
+                    <WordCandidatesPopover
+                      columns={seg.token.columns}
+                      onSelect={(translation) => handleReplace(seg.token!, translation)}
+                    />
+                  </FloatingPopover>
                 )}
               </span>
             ) : (
@@ -321,9 +329,11 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
       </div>
       <span
         className={`chat-input__translate-all chat-input__translate-all--${draftTranslateState}`}
-        onMouseEnter={() => {
+        onMouseEnter={(e) => {
           setShowDraftPreview(true);
           fetchDraftTranslation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          setDraftAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
         }}
         onMouseLeave={() => setShowDraftPreview(false)}
         role="button"
@@ -332,51 +342,50 @@ export function ChatInput({ onSend }: { onSend: (text: string) => void }) {
         title={draftTranslateState === "error" ? "Translation failed - try again" : "Hover to preview, click the suggestion to use it"}
       >
         {draftTranslateState === "loading" ? "⏳" : "🌐"}
-        {showDraftPreview && draftTranslation !== null && (
-          <TranslatePopover
-            candidates={[{ translation: draftTranslation }]}
-            direction="up"
-            onSelect={(translation) => {
-              handleValueChange(translation);
-              setShowDraftPreview(false);
-            }}
-          />
+        {showDraftPreview && draftTranslation !== null && draftAnchor && (
+          <FloatingPopover anchor={draftAnchor} direction="up">
+            <TranslatePopover
+              candidates={[{ translation: draftTranslation }]}
+              direction="up"
+              onSelect={(translation) => {
+                handleValueChange(translation);
+                setShowDraftPreview(false);
+              }}
+            />
+          </FloatingPopover>
         )}
       </span>
       <button type="button" onClick={handleSend} disabled={!value.trim()}>
         Send
       </button>
-      {phraseSelection &&
-        phraseCoords &&
-        createPortal(
-          <div className="chat-input__phrase-popover-anchor" style={{ top: phraseCoords.top, left: phraseCoords.left }}>
-            <WordCandidatesPopover
-              columns={[
-                {
-                  language: phraseDirection,
-                  // Clickable only in the "es" direction (swap the Spanish
-                  // translation into the draft) - the "en" direction is
-                  // just a gloss of a phrase you already wrote in Spanish,
-                  // same as the per-word popover's non-clickable EN column.
-                  clickable: phraseDirection === "es",
-                  candidates: [
-                    phraseState === "loading"
-                      ? { translation: "…" }
-                      : phraseState === "error"
-                        ? { translation: "(translation failed)" }
-                        : { translation: phraseTranslation ?? "…" },
-                  ],
-                },
-              ]}
-              onSelect={(translation) => {
-                const next = value.slice(0, phraseSelection.start) + translation + value.slice(phraseSelection.end);
-                handleValueChange(next);
-                setPhraseSelection(null);
-              }}
-            />
-          </div>,
-          document.body,
-        )}
+      {phraseSelection && phraseCoords && (
+        <FloatingPopover anchor={phraseCoords} direction="up">
+          <WordCandidatesPopover
+            columns={[
+              {
+                language: phraseDirection,
+                // Clickable only in the "es" direction (swap the Spanish
+                // translation into the draft) - the "en" direction is
+                // just a gloss of a phrase you already wrote in Spanish,
+                // same as the per-word popover's non-clickable EN column.
+                clickable: phraseDirection === "es",
+                candidates: [
+                  phraseState === "loading"
+                    ? { translation: "…" }
+                    : phraseState === "error"
+                      ? { translation: "(translation failed)" }
+                      : { translation: phraseTranslation ?? "…" },
+                ],
+              },
+            ]}
+            onSelect={(translation) => {
+              const next = value.slice(0, phraseSelection.start) + translation + value.slice(phraseSelection.end);
+              handleValueChange(next);
+              setPhraseSelection(null);
+            }}
+          />
+        </FloatingPopover>
+      )}
     </div>
   );
 }

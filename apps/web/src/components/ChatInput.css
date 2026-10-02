@@ -41,18 +41,22 @@
   background: transparent;
 }
 
-.chat-input__hoverable {
-  position: relative;
-  pointer-events: auto;
-  cursor: text;
-}
-
-/* Zero-size portal anchor for the selected-phrase translation popover (see
-   ChatInput.tsx) - fixed positioning so it isn't clipped by the input's own
-   layout, same technique as WordToken's popover anchor. */
-.chat-input__phrase-popover-anchor {
-  position: fixed;
-  z-index: 1000;
+/* Only intercepts the pointer on a device that actually has hover (mouse/
+   trackpad) - on a touchscreen "hover" has no meaning, and still giving
+   these spans pointer-events here (so they beat the textarea beneath for
+   every tap) blocked native cursor placement and text selection across
+   almost the whole input, since nearly every real word is hoverable (see
+   buildSegments in ChatInput.tsx). Word/phrase lookups stay reachable on
+   touch through the exact same path as a drag-selected phrase
+   (handleTextareaSelect, wired to the textarea's own onSelect) - a native
+   double-tap-to-select-word or drag-select still surfaces the same
+   WordCandidatesPopover, just via selection instead of hover. */
+@media (hover: hover) and (pointer: fine) {
+  .chat-input__hoverable {
+    position: relative;
+    pointer-events: auto;
+    cursor: text;
+  }
 }
 
 .chat-input__textarea {

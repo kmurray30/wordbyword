@@ -1,23 +1,16 @@
+/* Positioned by FloatingPopover (a fixed-position, viewport-clamped portal
+   wrapper) - this class only carries appearance. min-width 260px with no
+   viewport-relative cap used to render a real chunk of this box off-screen
+   for any word near a narrow phone's edge; FloatingPopover's own JS clamp
+   is the primary defense now, but capping max-width here too means a
+   popover on a ~360px phone isn't awkwardly wide even once clamped on
+   screen. */
 .word-candidates-popover {
-  position: absolute;
   z-index: 20;
-  /* Opens upward, not downward: the chat input sits at the bottom of the
-     page, so a popover anchored to the word's bottom edge (the usual
-     top: 100%) renders off the bottom of the viewport. Centered under the
-     word rather than left-aligned, so it doesn't skew far to one side for
-     a short word next to a wide (dual-column) popover. */
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  /* No margin - see TranslatePopover.css for why a functional gap here
-     causes the popover to vanish right as you try to move into it. The
-     visual gap is padding-bottom instead, which stays part of the box's
-     hit area. */
-  margin-bottom: 0;
   display: flex;
   flex-direction: column;
   min-width: 260px;
-  max-width: 420px;
+  max-width: min(420px, calc(100vw - 24px));
   background: #1f2430;
   color: #f2f2f2;
   border-radius: 8px;

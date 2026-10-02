@@ -41,6 +41,7 @@ async function main() {
     const res = await fetch(`${BACKEND_URL}/settings`);
     if (!res.ok) fail(`GET /settings returned ${res.status}: ${await res.text()}`);
     console.log(JSON.stringify(await res.json(), null, 2));
+    await printHealthLlm();
     return;
   }
 
@@ -63,6 +64,12 @@ async function main() {
       `word_weighting_enabled didn't take - requested ${body.word_weighting_enabled}, server reports ${result.word_weighting_enabled}`
     );
   }
+  await printHealthLlm();
+}
+
+async function printHealthLlm() {
+  const res = await fetch(`${BACKEND_URL}/health/llm`);
+  console.log(`\nGET /health/llm -> ${res.status}: ${await res.text()}`);
 }
 
 async function testChat() {

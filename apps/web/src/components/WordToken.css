@@ -13,13 +13,3 @@
   border-bottom-color: #7dd3fc;
   color: #7dd3fc;
 }
-
-/* Zero-size portal anchor rendered at the hovered word's own screen
-   coordinates (see WordToken.tsx) - fixed positioning escapes the chat
-   feed's scroll clipping and sibling-bubble stacking contexts entirely.
-   TranslatePopover's own left:50%/transform:translateX(-50%) centers it
-   under this point exactly as it would under the word itself. */
-.word-token__popover-anchor {
-  position: fixed;
-  z-index: 1000;
-}

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { FloatingPopover } from "./FloatingPopover";
 import { TranslatePopover } from "./TranslatePopover";
 import "./WordToken.css";
 
@@ -57,14 +57,11 @@ export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenPro
       onMouseLeave={() => setHovering(false)}
     >
       {surface}
-      {hovering &&
-        coords &&
-        createPortal(
-          <div className="word-token__popover-anchor" style={{ top: coords.top, left: coords.left }}>
-            <TranslatePopover candidates={[{ translation: gloss, description: note || undefined }]} />
-          </div>,
-          document.body,
-        )}
+      {hovering && coords && (
+        <FloatingPopover anchor={coords} direction="down">
+          <TranslatePopover candidates={[{ translation: gloss, description: note || undefined }]} />
+        </FloatingPopover>
+      )}
     </span>
   );
 }
