@@ -1,24 +1,8 @@
-# argostranslate depends on stanza (sentence-boundary detection for its MT
-# pipeline), and stanza unconditionally requires torch - pip has no way to
-# know this container has no GPU, so left to the default PyPI index it
-# resolves the full CUDA-enabled build: ~5.3GB of nvidia/triton packages
-# that never run (confirmed via `du -sh` in the built image - torch 1.2G +
-# nvidia 3.2G + triton 894M), and a real chunk of that ends up resident in
-# the running process too. Point pip at PyTorch's CPU-only wheel index
-# first, falling back to normal PyPI for everything else - same torch API,
-# ~150MB instead of ~5GB, no functional change since nothing here ever
-# touches a GPU.
---index-url https://download.pytorch.org/whl/cpu
---extra-index-url https://pypi.org/simple
-
 fastapi>=0.115
 uvicorn[standard]>=0.30
 sqlalchemy>=2.0
 pydantic>=2.7
 httpx>=0.27
 spacy>=3.7
-argostranslate>=1.9
-pyspellchecker>=0.8
-wordfreq>=3.0
 transformers>=4.45
 pytest>=8.0

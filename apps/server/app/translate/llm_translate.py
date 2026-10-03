@@ -99,16 +99,15 @@ def gloss_reply(
 ) -> tuple[str, dict[str, tuple[str, str]]]:
     """Translates `text` and, in the same call, glosses every distinct word
     in it using its meaning IN THIS SENTENCE - one consistent source for
-    both, instead of a whole-sentence translation (translate_text, this
-    module) and per-word glosses (app.translate.service.gloss, a dictionary/
-    MT lookup with no sentence context) that could each land on a different
-    sense of an ambiguous word. Returns (translation, word_map), where
-    word_map keys are the words as they literally appear in `text` and
-    values are (gloss, note) - note is a short explanation for a word whose
-    sense here might not be the obvious one (empty string otherwise). Raises
+    both, instead of a separately-fetched whole-sentence translation and
+    per-word glosses that could each land on a different sense of an
+    ambiguous word. Returns (translation, word_map), where word_map keys
+    are the words as they literally appear in `text` and values are
+    (gloss, note) - note is a short explanation for a word whose sense
+    here might not be the obvious one (empty string otherwise). Raises
     TranslationUnavailableError if the model's reply isn't parseable JSON
-    even after a retry - callers should catch this and fall back to the
-    older per-word mechanism rather than fail the whole turn over a gloss."""
+    even after a retry - callers get no gloss for that turn rather than a
+    dictionary/MT fallback."""
     if not text.strip():
         return "", {}
 
@@ -304,6 +303,129 @@ def interpret_user_input(
     elif not native_text and target_text:
         native_text = translate_text(target_text, target_lang, native_lang, provider=provider)
     return native_text, target_text
+
+
+_TAG_DRAFT_MAX_TOKENS = 500  # a draft is usually one short in-progress
+# sentence - smaller than gloss_reply's 700-token budget for a full reply.
+
+
+def _extract_span_list_json(reply: str) -> tuple[str, list[dict[str, str]]]:
+    match = _JSON_OBJECT_RE.search(reply)
+    if not match:
+        raise ValueError(f"no JSON object found in reply: {reply!r}")
+    data = json.loads(match.group(0))
+    translation = data["translation"]
+    raw_spans = data["spans"]
+    if not isinstance(translation, str) or not isinstance(raw_spans, list):
+        raise ValueError(f"unexpected JSON shape: {data!r}")
+
+    spans: list[dict[str, str]] = []
+    for item in raw_spans:
+        if not isinstance(item, dict):
+            continue
+        surface = str(item.get("surface", "")).strip()
+        if not surface:
+            continue
+        spans.append(
+            {
+                "surface": surface,
+                "gloss": str(item.get("gloss", "")),
+                "note": str(item.get("note", "")),
+                "translation": str(item.get("translation", "")),
+            }
+        )
+    return translation, spans
+
+
+def tag_draft(
+    draft: str, native_lang: str, target_lang: str, provider: str | None = None
+) -> tuple[str, list[dict[str, str]]]:
+    """For text the learner is still typing (not sent yet) - possibly mixing
+    native_lang/target_lang, with grammar/spelling mistakes in either (same
+    messy-input framing as coach_draft/interpret_user_input, but with NO
+    conversation history - this needs to stay fast/cheap, since it's called
+    far more often than coach_draft, once per word/boundary rather than once
+    per click). One LLM call returns (translation, spans): translation is
+    the model's best whole-draft interpretation, translated into
+    target_lang - not shown anywhere in the UI directly, but gives the
+    model sentence-level context so its per-span glosses below are
+    consistent with it (mirrors gloss_reply's shape). spans is an ORDERED
+    list, not a dict keyed by surface text like gloss_reply's word_map -
+    gloss_reply can get away with a dict because every occurrence of a
+    repeated word shares one gloss, but here the same surface text can
+    genuinely appear twice in one draft and each occurrence needs its own
+    later position-match (see app.translate.span_matching.match_spans) - a
+    dict would silently collapse them. Each span dict is
+        {"surface": <copied exactly from the draft, not paraphrased>,
+         "gloss": <short native_lang meaning in context>,
+         "note": <disambiguation note, or empty>,
+         "translation": <target_lang replacement text, empty if the
+            surface text is already natural target_lang as typed>}.
+    The model decides span boundaries - usually one word, occasionally a
+    few words grouped as an idiom/phrasal verb/fixed expression. This does
+    NOT itself guarantee the surface text is actually findable in draft at
+    an exact offset - that matching happens separately (span_matching.py),
+    so a span can be silently dropped downstream rather than misplaced.
+    Raises TranslationUnavailableError only if the model's reply isn't
+    parseable JSON even after a retry."""
+    if not draft.strip():
+        return "", []
+
+    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
+    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"A language learner, whose native language is {native_name}, is "
+                f"typing a message in {target_name} - still a draft, not sent yet. "
+                f"It may mix {native_name} and {target_name}, and may have grammar, "
+                f"spelling, or word-order mistakes in either. Your job: (1) give your "
+                f"best whole-message interpretation, translated into natural "
+                f"{target_name}; (2) break the draft into a list of words or short "
+                f"word-groups, IN THE SAME ORDER THEY APPEAR IN THE DRAFT (left to "
+                f"right, earliest first), that together cover as much of the draft as "
+                f"you reasonably can, skipping pure punctuation. For each one, give a "
+                f"short {native_name} gloss of what it means here, and - only if it "
+                f"ISN'T already written as natural {target_name} - a corrected/"
+                f"translated {target_name} replacement for it (leave this empty if "
+                f"the learner's own text for that span is already correct, natural "
+                f"{target_name} - there's nothing to replace). Group a few words "
+                f"together ONLY when they form an idiom, phrasal verb, or fixed "
+                f"expression that doesn't translate word-by-word - most spans should "
+                f"be a single word. Copy each span's `surface` EXACTLY as it appears "
+                f"in the draft - same spelling, same case, same accents, not "
+                f"corrected or paraphrased (corrections belong only in "
+                f"`translation`).\n\n"
+                f"Reply with ONLY a single JSON object, no markdown fences, no "
+                f"explanation, in exactly this shape:\n"
+                f'{{"translation": "<your best {target_name} translation of the '
+                f'whole draft>", "spans": [{{"surface": "<exact text from the '
+                f'draft>", "gloss": "<its meaning here, in {native_name}>", "note": '
+                f'"<short reason if this sense could be confused with another - '
+                f'else empty>", "translation": "<a corrected/translated '
+                f'{target_name} replacement - empty if already correct, natural '
+                f'{target_name}>"}}, ...]}}'
+            ),
+        },
+        {"role": "user", "content": draft},
+    ]
+
+    last_reply = ""
+    last_error: Exception | None = None
+    for _attempt in range(2):
+        try:
+            last_reply = model_chat(messages, logit_bias={}, max_tokens=_TAG_DRAFT_MAX_TOKENS, provider=provider)
+        except ModelServerUnavailableError as exc:
+            raise TranslationUnavailableError(str(exc)) from exc
+        if _looks_garbled(last_reply):
+            last_error = ValueError("garbled reply")
+            continue
+        try:
+            return _extract_span_list_json(last_reply)
+        except (ValueError, json.JSONDecodeError, KeyError) as exc:
+            last_error = exc
+    raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
 
 
 _COACH_MAX_TOKENS = 600

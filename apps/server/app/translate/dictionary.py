@@ -1,12 +1,8 @@
-"""Small curated ES->EN dictionary with per-sense descriptions, used before
-falling back to Argos Translate's word-level MT. Argos gives one plausible
-translation with no sense disambiguation; this override exists specifically
-for common words where showing the user multiple senses (with a short
-description of each) is more useful than a single guess."""
-
-from functools import lru_cache
-
-from app.translate.text_normalize import strip_accents
+"""A small curated list of common Spanish lemmas - no longer an active
+translation source (translation is LLM-based now, see
+app.translate.llm_translate), but app.translate.frequency_es_set still
+folds these keys into KNOWN_SPANISH_LEMMAS, which app.translate.lemmatizer's
+is_spanish heuristic depends on."""
 
 DICTIONARY_ES_EN: dict[str, list[dict[str, str]]] = {
     "ser": [
@@ -79,12 +75,3 @@ DICTIONARY_ES_EN: dict[str, list[dict[str, str]]] = {
     "amor": [{"translation": "love", "description": "the emotion"}],
     "familia": [{"translation": "family", "description": "relatives"}],
 }
-
-
-@lru_cache(maxsize=1)
-def _normalized_index() -> dict[str, list[dict[str, str]]]:
-    return {strip_accents(k): v for k, v in DICTIONARY_ES_EN.items()}
-
-
-def lookup(lemma: str) -> list[dict[str, str]]:
-    return _normalized_index().get(strip_accents(lemma.lower()), [])

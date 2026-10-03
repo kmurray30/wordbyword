@@ -60,6 +60,14 @@
   }
 }
 
+/* A light cue that this word/group is the one currently open for
+   translation - outside the media query above so it also shows on a tap
+   (which sets the same openTokenKey but never has real hover). */
+.chat-input__hoverable--active {
+  background-color: rgba(59, 110, 240, 0.22);
+  border-radius: 3px;
+}
+
 .chat-input__textarea {
   z-index: 1;
   background: transparent;

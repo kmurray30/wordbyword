@@ -55,23 +55,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/translate/word": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Translate Word */
-        post: operations["translate_word_translate_word_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/translate/text": {
         parameters: {
             query?: never;
@@ -149,15 +132,17 @@ export interface paths {
         put?: never;
         /**
          * Tag Input
-         * @description The learner is assumed to be writing Spanish by default: every real
-         *     word is checked independently against both languages' dictionaries
-         *     (word_validity), not classified into a single Spanish-or-English bucket.
-         *     A word already valid Spanish gets an unclickable EN gloss (it's correct
-         *     as typed, nothing to replace); a word valid English gets a clickable ES
-         *     translation (swaps it in place); a word valid in both - e.g. "once",
-         *     Spanish for "eleven" and also an English word - gets both, independently.
-         *     A word in neither dictionary (typo, name, slang) falls back to the
-         *     morphological is_spanish guess for a single best-effort column.
+         * @description Two independent passes over the same draft text: `tokens` is a
+         *     cheap, synchronous, LLM-free per-word classification (spaCy +
+         *     lemmatizer.py's is_spanish heuristic) the frontend needs on every call
+         *     for reward-event tracking and its phrase-selection direction vote;
+         *     `spans` is the slower LLM-backed word/group glossing (app.translate.
+         *     llm_translate.tag_draft) that drives the hover-to-translate UI,
+         *     matched back to exact offsets via app.translate.span_matching. Kept in
+         *     one response so the frontend only has one request to debounce, even
+         *     though the two halves serve different purposes. On an LLM failure,
+         *     `spans` comes back empty - no dictionary/MT fallback - but `tokens` is
+         *     unaffected.
          */
         post: operations["tag_input_translate_tag_input_post"];
         delete?: never;
@@ -358,13 +343,21 @@ export interface components {
             /** Spanish */
             spanish: string;
         };
-        /** HTTPValidationError */
-        HTTPValidationError: {
-            /** Detail */
-            detail?: components["schemas"]["ValidationError"][];
+        /** DraftSpan */
+        DraftSpan: {
+            /** Surface */
+            surface: string;
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
+            /** Clickable */
+            clickable: boolean;
+            /** Candidates */
+            candidates: components["schemas"]["TranslateCandidate"][];
         };
-        /** InputTokenAnnotation */
-        InputTokenAnnotation: {
+        /** DraftToken */
+        DraftToken: {
             /** Surface */
             surface: string;
             /** Lemma */
@@ -375,11 +368,11 @@ export interface components {
             start: number;
             /** End */
             end: number;
-            /**
-             * Columns
-             * @default []
-             */
-            columns: components["schemas"]["TranslationColumn"][];
+        };
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
         };
         /** InterpretInputRequest */
         InterpretInputRequest: {
@@ -450,7 +443,9 @@ export interface components {
         /** TagInputResponse */
         TagInputResponse: {
             /** Tokens */
-            tokens: components["schemas"]["InputTokenAnnotation"][];
+            tokens: components["schemas"]["DraftToken"][];
+            /** Spans */
+            spans: components["schemas"]["DraftSpan"][];
         };
         /** TokenAnnotation */
         TokenAnnotation: {
@@ -499,37 +494,6 @@ export interface components {
         TranslateTextResponse: {
             /** Translation */
             translation: string;
-        };
-        /** TranslateWordRequest */
-        TranslateWordRequest: {
-            /** Word */
-            word: string;
-            /**
-             * Source Lang
-             * @default es
-             */
-            source_lang: string;
-        };
-        /** TranslateWordResponse */
-        TranslateWordResponse: {
-            /** Word */
-            word: string;
-            /** Lemma */
-            lemma: string;
-            /** Candidates */
-            candidates: components["schemas"]["TranslateCandidate"][];
-        };
-        /** TranslationColumn */
-        TranslationColumn: {
-            /** Language */
-            language: string;
-            /** Candidates */
-            candidates: components["schemas"]["TranslateCandidate"][];
-            /**
-             * Clickable
-             * @default true
-             */
-            clickable: boolean;
         };
         /** UpdateSettingsRequest */
         UpdateSettingsRequest: {
@@ -642,39 +606,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatTurnResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    translate_word_translate_word_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TranslateWordRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TranslateWordResponse"];
                 };
             };
             /** @description Validation Error */

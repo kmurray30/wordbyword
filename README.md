@@ -4,10 +4,9 @@ A chat-based Spanish tutor. You talk to a locally-hosted LLM whose vocabulary
 is steered by a per-word "word bank": every word you've been exposed to has a
 mastery score that decays over time and gets reinforced (or penalized) based
 on how you interact with it - mainly whether you hover to translate it. Hover
-any word, in the agent's replies or in your own draft, to see a translation
-(both directions - hover a Spanish word for its English meaning, an English
-one for Spanish, and a cognate like "hotel" for both side by side); click the
-🌐 at the end of a message to toggle a full translation underneath it.
+any word (or short group of words), in the agent's replies or in your own
+draft, to see its translation in context; click the 🌐 at the end of a
+message to toggle a full translation underneath it.
 
 ## Architecture
 
@@ -16,9 +15,10 @@ apps/model-server  llama.cpp's own server (llama-server), running Qwen3-1.7B.
                     Not Ollama - see "Why llama.cpp, not Ollama" below.
 apps/server         Python (FastAPI) - word bank + RL-style weighting, chat
                     orchestration (talks to model-server), translation
-                    (spaCy for lemmatizing, a dictionary + Argos Translate
-                    for single words, the LLM itself for whole-message
-                    translation), SQLite storage.
+                    (spaCy for lemmatizing/word-bank tracking, the LLM
+                    itself for every actual translation - single words,
+                    the learner's in-progress draft, and whole messages),
+                    SQLite storage.
 apps/web            React + Vite + TypeScript - chat UI, hover tooltips, the
                     draft-input overlay that flags English words you type.
                     API types are generated from the backend's OpenAPI schema.
@@ -71,17 +71,7 @@ cd apps/server
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m spacy download es_core_news_sm
-python scripts/install_translate_models.py   # installs Argos Translate en<->es packages
-python scripts/build_dictionary_data.py      # bundles a Wiktionary EN<->ES dictionary
 ```
-
-Both scripts download from the network (Argos Translate's package index and
-kaikki.org's Wiktionary exports, respectively) and need unrestricted outbound
-access - they'll fail in network-locked sandboxes (as this repo's own dev
-container does) but work fine on a normal machine. Neither failing is fatal
-to running the app: word-level translation just falls back further down its
-chain (see app/translate/service.py) - to Argos-only if the Wiktionary
-dataset is missing, or to "no translation found" if Argos is missing too.
 
 Run it:
 
@@ -278,17 +268,16 @@ A click you control is unambiguous, and it also gives a way to lazily fetch
 a translation for a history-hydrated message, which skips the eager
 prefetch below.
 
-Translation itself used to go through Argos Translate (still used for
-single-word lookups - see `app/translate/service.py`), but its offline MT
-produced rough, sometimes outright wrong translations on short/informal
-Spanish. `POST /translate/text` (`app/translate/llm_translate.py`) now asks
-the same local chat model (`llama_client.chat`) to translate instead, with a
-system prompt that asks for the translation only, no commentary. The LLM is
-slower per call than Argos was, so the frontend doesn't wait for the toggle
-to ask for it: `ChatMessage.tsx` fires the request automatically as soon as
-a message is shown, in the background, so it's normally already cached by
-the time anyone opens it. Either way it never blocks the message itself
-from rendering.
+Translation used to go through Argos Translate's offline MT, which produced
+rough, sometimes outright wrong translations on short/informal Spanish -
+every translation in this app is LLM-based now (`app/translate/
+llm_translate.py`). `POST /translate/text` asks the same local chat model
+(`llama_client.chat`) to translate, with a system prompt that asks for the
+translation only, no commentary. The LLM is slower per call than Argos was,
+so the frontend doesn't wait for the toggle to ask for it: `ChatMessage.tsx`
+fires the request automatically as soon as a message is shown, in the
+background, so it's normally already cached by the time anyone opens it.
+Either way it never blocks the message itself from rendering.
 
 **The agent's messages get one translation row (Spanish -> English).** The
 **user's own messages get two** - an English row and a Spanish row - because
@@ -307,19 +296,20 @@ rows, plus the agent's) gets its own 🔊 button, reusing the same TTS
 pipeline as the agent's raw-message audio; the raw user input itself doesn't,
 since its grammar or spelling might be exactly what's in question.
 
-**Hovering a word in the input box** (not just the chat bubbles) gives a
-ranked list of translation candidates via `POST /translate/tag-input`, and
-clicking one replaces that word in place. Every real word is checked
-independently against both languages' dictionaries
-(`app/translate/word_validity.py`, backed by `pyspellchecker`'s bundled
-offline word-frequency dictionaries), not classified into a single
-Spanish-or-English bucket: a word valid Spanish gets an unclickable EN gloss
-column (it's already correct - there's nothing to replace), a word valid
-English gets a clickable ES translation column (swaps it in place), and a
-word valid in *both* - like "once" (Spanish for "eleven", also an English
-word) or "hotel" - gets both columns side by side, independently. A word
-neither dictionary recognizes (a typo, a name, slang) falls back to a single
-best-guess column from spaCy's morphology.
+**Hovering a word (or short group of words) in the input box** gives its
+in-context translation via `POST /translate/tag-input`, and clicking a
+clickable one replaces that span in place. Fired after every word boundary
+while typing (debounced), this asks the LLM to gloss the whole draft in one
+call (`llm_translate.tag_draft`) - the same `{translation, spans}` shape
+`gloss_reply` already uses for the agent's own replies, just run on the
+learner's still-being-typed, possibly mixed-language text instead. The
+model decides span boundaries itself (usually one word, occasionally a few
+words grouped together for an idiom or phrasal verb) and, since it has real
+sentence context, picks the one sense that applies rather than needing a
+Spanish/English toggle. Each span's surface text is matched back to exact
+character offsets by `app/translate/span_matching.py` - a span the model
+hallucinated or couldn't be located in the draft is just dropped, not
+misplaced.
 
 ## Text-to-speech
 

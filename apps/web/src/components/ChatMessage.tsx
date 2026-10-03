@@ -253,18 +253,6 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
           ) : (
             message.text
           )}
-          {openWordIndex !== null && message.tokens?.[openWordIndex] && (
-            <DockedPopover position="below" onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
-              <TranslatePopover
-                candidates={[
-                  {
-                    translation: message.tokens[openWordIndex].gloss,
-                    description: message.tokens[openWordIndex].note || undefined,
-                  },
-                ]}
-              />
-            </DockedPopover>
-          )}
         </div>
         <div className="chat-message__actions">
           <button
@@ -313,6 +301,18 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
               </>
             )}
           </div>
+        )}
+        {openWordIndex !== null && message.tokens?.[openWordIndex] && (
+          <DockedPopover position="below" onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
+            <TranslatePopover
+              candidates={[
+                {
+                  translation: message.tokens[openWordIndex].gloss,
+                  description: message.tokens[openWordIndex].note || undefined,
+                },
+              ]}
+            />
+          </DockedPopover>
         )}
       </div>
     </div>

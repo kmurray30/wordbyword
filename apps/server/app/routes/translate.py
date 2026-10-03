@@ -10,6 +10,8 @@ from app.schemas import (
     CoachDraftRequest,
     CoachDraftResponse,
     CoachOption,
+    DraftSpan,
+    DraftToken,
     InterpretInputRequest,
     InterpretInputResponse,
     TagInputRequest,
@@ -17,32 +19,14 @@ from app.schemas import (
     TranslateCandidate,
     TranslateTextRequest,
     TranslateTextResponse,
-    TranslateWordRequest,
-    TranslateWordResponse,
-    InputTokenAnnotation,
-    TranslationColumn,
 )
 from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
-from app.translate.service import word_candidates
-from app.translate.word_validity import is_valid_english_word, is_valid_spanish_word
+from app.translate.span_matching import match_spans
 
 _COACH_HISTORY_TURNS = 8
 
 router = APIRouter(prefix="/translate", tags=["translate"])
-
-
-def _word_candidates(lemma: str, source_lang: str, target_lang: str) -> list[TranslateCandidate]:
-    return [TranslateCandidate(**c) for c in word_candidates(lemma, source_lang, target_lang)]
-
-
-@router.post("/word", response_model=TranslateWordResponse)
-def translate_word(req: TranslateWordRequest) -> TranslateWordResponse:
-    target_lang = NATIVE_LANGUAGE if req.source_lang == TARGET_LANGUAGE else TARGET_LANGUAGE
-    tokens = analyze(req.word)
-    lemma = tokens[0].lemma if tokens else req.word.lower()
-    candidates = _word_candidates(lemma, req.source_lang, target_lang)
-    return TranslateWordResponse(word=req.word, lemma=lemma, candidates=candidates)
 
 
 @router.post("/text", response_model=TranslateTextResponse)
@@ -105,57 +89,44 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
 
 
 @router.post("/tag-input", response_model=TagInputResponse)
-def tag_input(req: TagInputRequest) -> TagInputResponse:
-    """The learner is assumed to be writing Spanish by default: every real
-    word is checked independently against both languages' dictionaries
-    (word_validity), not classified into a single Spanish-or-English bucket.
-    A word already valid Spanish gets an unclickable EN gloss (it's correct
-    as typed, nothing to replace); a word valid English gets a clickable ES
-    translation (swaps it in place); a word valid in both - e.g. "once",
-    Spanish for "eleven" and also an English word - gets both, independently.
-    A word in neither dictionary (typo, name, slang) falls back to the
-    morphological is_spanish guess for a single best-effort column."""
-    tokens = analyze(req.text)
-    out: list[InputTokenAnnotation] = []
-    for tok in tokens:
-        is_word = tok.surface.isalpha() and len(tok.surface) > 1
-        columns: list[TranslationColumn] = []
-        spanish_valid = False
+def tag_input(req: TagInputRequest, session: Session = Depends(get_session)) -> TagInputResponse:
+    """Two independent passes over the same draft text: `tokens` is a
+    cheap, synchronous, LLM-free per-word classification (spaCy +
+    lemmatizer.py's is_spanish heuristic) the frontend needs on every call
+    for reward-event tracking and its phrase-selection direction vote;
+    `spans` is the slower LLM-backed word/group glossing (app.translate.
+    llm_translate.tag_draft) that drives the hover-to-translate UI,
+    matched back to exact offsets via app.translate.span_matching. Kept in
+    one response so the frontend only has one request to debounce, even
+    though the two halves serve different purposes. On an LLM failure,
+    `spans` comes back empty - no dictionary/MT fallback - but `tokens` is
+    unaffected."""
+    provider = settings_store.get_settings(session).model_provider
 
-        if is_word:
-            spanish_valid = is_valid_spanish_word(tok.surface)
-            english_valid = is_valid_english_word(tok.surface)
-            if not spanish_valid and not english_valid:
-                # Neither dictionary recognizes it - fall back to the
-                # morphological guess rather than showing nothing.
-                spanish_valid = tok.is_spanish
-                english_valid = not tok.is_spanish
+    tokens = [
+        DraftToken(surface=tok.surface, lemma=tok.lemma, is_spanish=tok.is_spanish, start=tok.start, end=tok.end)
+        for tok in analyze(req.text)
+        if tok.surface.isalpha() and len(tok.surface) > 1
+    ]
 
-            if spanish_valid:
-                columns.append(
-                    TranslationColumn(
-                        language=NATIVE_LANGUAGE,
-                        clickable=False,
-                        candidates=_word_candidates(tok.lemma, TARGET_LANGUAGE, NATIVE_LANGUAGE),
-                    )
-                )
-            if english_valid:
-                columns.append(
-                    TranslationColumn(
-                        language=TARGET_LANGUAGE,
-                        clickable=True,
-                        candidates=_word_candidates(tok.surface.lower(), NATIVE_LANGUAGE, TARGET_LANGUAGE),
-                    )
-                )
+    try:
+        _translation, raw_spans = llm_translate.tag_draft(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider)
+    except llm_translate.TranslationUnavailableError:
+        raw_spans = []
 
-        out.append(
-            InputTokenAnnotation(
-                surface=tok.surface,
-                lemma=tok.lemma,
-                is_spanish=is_word and spanish_valid,
-                start=tok.start,
-                end=tok.end,
-                columns=columns,
+    spans: list[DraftSpan] = []
+    for m in match_spans(req.text, raw_spans):
+        candidate_text = m.translation.strip() or m.gloss.strip()
+        if not candidate_text:
+            continue  # nothing usable to show for this span - drop it
+        spans.append(
+            DraftSpan(
+                surface=m.surface,
+                start=m.start,
+                end=m.end,
+                clickable=bool(m.translation.strip()),
+                candidates=[TranslateCandidate(translation=candidate_text, description=m.note)],
             )
         )
-    return TagInputResponse(tokens=out)
+
+    return TagInputResponse(tokens=tokens, spans=spans)

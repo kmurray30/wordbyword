@@ -19,7 +19,6 @@ from app.schemas import (
 )
 from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
-from app.translate.service import gloss
 from app.wordbank import store
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -87,12 +86,9 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
 
     # One LLM call glosses every word in the reply using its meaning IN
     # CONTEXT, and returns the whole-sentence translation from that exact
-    # same pass - one consistent source for both, instead of a dictionary/MT
-    # per-word lookup (gloss(), below) that has no sentence context and can
-    # land on a different sense of an ambiguous word than a separately-
-    # fetched translation would. Falls back to the old per-word mechanism
-    # for anything it didn't cover (a failed call, or a word it missed)
-    # rather than let a translation hiccup break the whole turn.
+    # same pass - one consistent source for both. No dictionary/MT fallback
+    # for a word it missed or a failed call - that word just gets no gloss
+    # until a later turn supplies one (see store.record_exposure below).
     try:
         translation, word_map = llm_translate.gloss_reply(
             reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE, provider=provider
@@ -119,7 +115,7 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
             continue
 
         llm_gloss, llm_note = word_map.get(tok.surface.lower()) or word_map.get(tok.lemma.lower()) or empty_gloss
-        word_gloss = llm_gloss or gloss(tok.lemma, TARGET_LANGUAGE, NATIVE_LANGUAGE)
+        word_gloss = llm_gloss
         word_note = llm_note if llm_gloss else ""
         entry = store.record_exposure(session, tok.lemma, pos=tok.pos, translation=word_gloss)
         is_new = tok.lemma in new_lemma_set or entry.exposure_count == 1

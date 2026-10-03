@@ -15,13 +15,15 @@
 //  2. Send an English message to /chat/turn, and a fixed Spanish phrase to
 //     /translate/text - prints both for a human to eyeball (semantic
 //     correctness isn't something a script can assert), but at least
-//     confirms the LLM-backed translation path actually returns something,
-//     not the old Argos error string. Also checks /translate/word for a
-//     few known slang words (bro/sup/partner) - regression coverage for a
-//     real bug where Argos's word-level fallback echoed unknown words back
-//     unchanged instead of translating them. Finally hits /translate/coach
-//     (the input's help button's backend) using this session's own recent
-//     history for context.
+//     confirms the LLM-backed translation path actually returns something.
+//     Also checks /translate/tag-input directly on an idiom-bearing draft -
+//     every returned span must carry a usable gloss/translation (no more
+//     dictionary/Argos fallback anywhere - a miss just means no gloss),
+//     and whether it grouped multiple words into one span (e.g. "miss
+//     you") is eyeballed, not asserted, since that varies run to run with
+//     a small model. Finally hits /translate/coach (the input's help
+//     button's backend) using this session's own recent history for
+//     context.
 //  3. Confirm GET /chat/history reflects what stages 1/2 just sent, and
 //     that POST /chat/history/clear actually empties it.
 //  4. If those pass, drive the real site with Playwright end to end: confirm
@@ -204,43 +206,45 @@ async function checkEnglishInputAndTranslation() {
   }
   console.log(`  "¡Hola! ¿Estás bien?" -> ${JSON.stringify(translateData.translation)}`);
 
-  // Regression check for a real reported bug: Argos MT's word-level lookup
-  // (used before the Wiktionary dataset was added) had no way to say "I
-  // don't know this word" - for slang never seen in its formal training
-  // corpus, it just echoed the input back unchanged with no explanation,
-  // which looked exactly like a real (wrong) translation rather than a
-  // miss. The bug signature specifically is translation === input AND no
-  // description - an UNEXPLAINED echo.
-  //
-  // "bro", "sup" and "partner" all have real candidates now: "sup" and
-  // "bro" via the curated informal_dictionary.py override (Wiktionary's
-  // crowd-sourced translation tables were too thin for these - no "es"
-  // entry for "sup" at all, and only a bare self-referential one for
-  // "bro"), "partner" via Wiktionary's own translation table. "bro" and
-  // "sup" must each offer more than one real candidate (the whole point of
-  // the cycle button) - "partner" already does via Wiktionary alone.
-  console.log(`[2/6] Checking /translate/word no longer echoes known slang back unchanged ...`);
-  for (const word of ["bro", "sup", "partner"]) {
-    const res = await fetch(`${BACKEND_URL}/translate/word`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ word, source_lang: "en" }),
-    });
-    if (!res.ok) fail(`/translate/word(${word}) returned ${res.status}: ${await res.text()}`);
-    const data = await res.json();
-    const best = data.candidates?.[0];
-    if (!best || !best.translation) {
-      fail(`/translate/word(${word}) returned no usable candidate: ${JSON.stringify(data)}`);
-    }
-    const isUnexplainedEcho = best.translation.toLowerCase() === word.toLowerCase() && !best.description;
-    if (isUnexplainedEcho) {
-      fail(`/translate/word(${word}) echoed the input back unchanged with no explanation: ${JSON.stringify(data)}`);
-    }
-    if (data.candidates.length < 2) {
-      fail(`/translate/word(${word}) returned only ${data.candidates.length} candidate(s) - expected multiple: ${JSON.stringify(data)}`);
-    }
-    console.log(`  "${word}" -> ${JSON.stringify(best.translation)} (${JSON.stringify(best.description)}, ${data.candidates.length} candidate(s))`);
+  // Direct backend check for the input's LLM-based word/group tagging
+  // (app.translate.llm_translate.tag_draft + span_matching, replaces the
+  // old dictionary/Argos /translate/tag-input path entirely - no more
+  // fallback, no /translate/word route either). The draft below contains
+  // "miss you", a clear single-unit idiom, specifically to exercise the
+  // model's ability to group multiple words into one span rather than
+  // only ever tagging single words - the old path never had sentence
+  // context and could never do this at all.
+  console.log(`[2/6] Checking /translate/tag-input (LLM-based word/group tagging) ...`);
+  const tagRes = await fetch(`${BACKEND_URL}/translate/tag-input`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "I want to go to the beach tomorrow, I miss you" }),
+  });
+  if (!tagRes.ok) fail(`/translate/tag-input returned ${tagRes.status}: ${await tagRes.text()}`);
+  const tagData = await tagRes.json();
+  if (!Array.isArray(tagData.tokens) || tagData.tokens.length === 0) {
+    fail(`/translate/tag-input returned no tokens: ${JSON.stringify(tagData)}`);
   }
+  if (!Array.isArray(tagData.spans) || tagData.spans.length === 0) {
+    fail(`/translate/tag-input returned no spans at all: ${JSON.stringify(tagData)}`);
+  }
+  console.log(`  spans: ${JSON.stringify(tagData.spans.map((s) => s.surface))}`);
+  for (const span of tagData.spans) {
+    if (!span.candidates?.[0]?.translation) {
+      fail(`span ${JSON.stringify(span.surface)} has no usable gloss/translation: ${JSON.stringify(span)}`);
+    }
+  }
+  console.log("  OK - every returned span carries a usable gloss/translation");
+  // Whether the model actually groups "miss you" into one span (rather
+  // than two single-word ones) varies run to run with a small model - not
+  // asserted, just eyeballed, same as this file's other free-form LLM
+  // output checks (see chatTurn above).
+  const hasMultiWordGroup = tagData.spans.some((s) => s.surface.trim().includes(" "));
+  console.log(
+    hasMultiWordGroup
+      ? '  (eyeball) the model grouped at least one multi-word span (e.g. the "miss you" idiom)'
+      : '  (eyeball) no multi-word group this run - the model tagged every word individually',
+  );
 
   // The input's "help" button - uses this session's recent history (stage
   // 1's "Hola" and this function's own hobbies question) for context, so
@@ -330,11 +334,14 @@ async function checkBrowserEndToEnd() {
     console.log(`  OK - assistant replied: ${JSON.stringify(replyText)}`);
 
     // Hover a word token and confirm the translation popover appears,
-    // docked flush to the bottom of this message's own bubble (DockedPopover
-    // - see ChatMessage.tsx), not floating off wherever the hovered word
-    // happens to sit.
+    // docked flush to the bottom of the WHOLE message column (bubble +
+    // actions row + translation rows, when open - DockedPopover anchored
+    // to .chat-message__column, not just .chat-message__bubble, so it
+    // never overlaps the actions/translation rows that sit below the
+    // bubble - see ChatMessage.tsx), not floating off wherever the hovered
+    // word happens to sit.
     const wordToken = page.locator(".chat-message--assistant .word-token").first();
-    const assistantBubble = page.locator(".chat-message--assistant .chat-message__bubble").first();
+    const assistantColumn = page.locator(".chat-message--assistant .chat-message__column").first();
     if ((await wordToken.count()) > 0) {
       // No word should carry a persistent highlight at rest (e.g. a "new
       // vocabulary" tint) - only the click-to-pin/hover state below should
@@ -350,16 +357,16 @@ async function checkBrowserEndToEnd() {
       await page.waitForSelector(".translate-popover", { timeout: 8_000 });
       console.log("  OK - hover translation popover works");
 
-      const bubbleBox = await assistantBubble.boundingBox();
+      const columnBox = await assistantColumn.boundingBox();
       const wordPopoverBox = await page.locator(".translate-popover").first().boundingBox();
-      const wordDockGap = wordPopoverBox.y - (bubbleBox.y + bubbleBox.height);
+      const wordDockGap = wordPopoverBox.y - (columnBox.y + columnBox.height);
       if (Math.abs(wordDockGap) > 2) {
-        fail(`chat-bubble word popover isn't flush against the bottom of its bubble (gap=${wordDockGap.toFixed(1)}px)`);
+        fail(`chat-bubble word popover isn't flush against the bottom of its message column (gap=${wordDockGap.toFixed(1)}px)`);
       } else {
-        console.log("  OK - word popover docks flush to the bottom of its message bubble");
+        console.log("  OK - word popover docks flush to the bottom of its message column");
       }
 
-      // Close it before moving on - docked below the whole bubble, which
+      // Close it before moving on - docked below the whole column, which
       // can land right over the action row below it and intercept the
       // next step's hover on the globe button otherwise. The close is
       // delayed (HOVER_CLOSE_DELAY_MS in ChatMessage.tsx) so the pointer
@@ -502,65 +509,90 @@ async function checkBrowserEndToEnd() {
     await page.waitForTimeout(200);
     await textarea.fill("");
 
-    // Hovering a word in the input box should show translation candidates -
-    // "hotel" is a real word in both languages (app/translate/word_validity.py
-    // checks each independently), so it should get BOTH an English and a
-    // Spanish column, not just one direction. Wait for the actual
-    // /translate/tag-input response rather than a fixed delay - a word
-    // valid in both languages needs two Argos MT calls (one per direction),
-    // which can take longer than the 350ms debounce alone suggests.
+    // Hovering a clickable English word dropped into an otherwise-Spanish
+    // draft should show a Spanish replacement candidate, and clicking it
+    // should swap just that word in place - the input's main per-word LLM
+    // path (app.translate.llm_translate.tag_draft), replacing the old
+    // dictionary/Argos one. Wait for the actual /translate/tag-input
+    // response rather than a fixed delay - this is a real LLM call now,
+    // not an instant dictionary lookup.
     const tagResponsePromise = page.waitForResponse(
       (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
-      { timeout: 10_000 }
+      { timeout: 15_000 }
     );
-    await textarea.fill("hotel");
+    await textarea.fill("Quiero ir to the beach");
     await tagResponsePromise;
-    await page.waitForTimeout(150); // let React apply the response to state/DOM
-    const hoverableWord = page.locator(".chat-input__hoverable").first();
-    if ((await hoverableWord.count()) > 0) {
-      await hoverableWord.hover();
+    await page.waitForTimeout(200); // let React apply the response to state/DOM
+    const toSpan = page.locator(".chat-input__hoverable", { hasText: "to" }).first();
+    if ((await toSpan.count()) > 0) {
+      await toSpan.hover();
       await page.waitForSelector(".word-candidates-popover", { timeout: 8_000 });
-      const toggleButtons = page.locator(".word-candidates-popover__toggle-btn");
-      const toggleLabels = await toggleButtons.allTextContents();
-      if (JSON.stringify(toggleLabels.sort()) !== JSON.stringify(["English", "Spanish"])) {
-        fail(`hovering "hotel" in the input did not show a Spanish/English toggle - got ${JSON.stringify(toggleLabels)}`);
-      }
-      console.log('  OK - hovering a cognate ("hotel") in the input shows a Spanish | English toggle');
+      const candidateText = await page.locator(".candidate-cycler__text, .candidate-cycler__main").first().innerText();
+      console.log(`  "to" candidate: ${JSON.stringify(candidateText)}`);
+      // The active-highlight class (Fix 2) should show while it's open.
+      const isActive = await toSpan.evaluate((el) => el.classList.contains("chat-input__hoverable--active"));
+      if (!isActive) fail('hovering "to" did not add the chat-input__hoverable--active highlight class');
+      else console.log("  OK - the hovered word gets the active highlight class");
 
-      // The Spanish reading (a translation to swap in for the English word
-      // "hotel") is the default when present - Spanish is the target
-      // language, so that's the reading a learner most wants to see first.
-      // It's also the clickable one (swaps it into the input). The English
-      // reading (what "hotel" means, glossed) is a static gloss, not a
-      // button.
-      const defaultActiveLabel = await page.locator(".word-candidates-popover__toggle-btn--active").innerText();
-      if (defaultActiveLabel !== "Spanish") {
-        fail(`expected "Spanish" to be the default active toggle for "hotel", got ${JSON.stringify(defaultActiveLabel)}`);
-      }
-      const isClickableByDefault = (await page.locator(".candidate-cycler__main--static").count()) === 0;
-      if (!isClickableByDefault) {
-        fail('expected the default (Spanish) reading for "hotel" to be clickable, not a static gloss');
-      }
       // Debug screenshot: visually confirm the word-hover popover's actual
       // rendered appearance (not just its DOM structure via selectors).
-      const hotelBox = await page.locator(".word-candidates-popover").first().boundingBox();
+      const toBox = await page.locator(".word-candidates-popover").first().boundingBox();
       await page.screenshot({
         path: "e2e-debug-word-hover-popover.png",
-        clip: { x: Math.max(0, hotelBox.x - 10), y: Math.max(0, hotelBox.y - 10), width: hotelBox.width + 20, height: hotelBox.height + 20 },
+        clip: { x: Math.max(0, toBox.x - 10), y: Math.max(0, toBox.y - 10), width: toBox.width + 20, height: toBox.height + 20 },
       });
 
-      // Clicking the other toggle should switch to the English reading,
-      // which is a static gloss (not clickable - nothing to swap in, since
-      // "hotel" is already the English word being typed).
-      await page.locator(".word-candidates-popover__toggle-btn", { hasText: "English" }).click();
-      await page.waitForSelector(".candidate-cycler__main--static", { timeout: 3_000 });
-      const nowActiveLabel = await page.locator(".word-candidates-popover__toggle-btn--active").innerText();
-      if (nowActiveLabel !== "English") {
-        fail(`expected clicking "English" to switch the active toggle, got ${JSON.stringify(nowActiveLabel)}`);
+      const candidateButton = page.locator(".word-candidates-popover button").first();
+      if ((await candidateButton.count()) > 0) {
+        await candidateButton.click();
+        await page.waitForTimeout(150);
+        const afterReplace = await textarea.inputValue();
+        if (afterReplace.includes(" to ")) {
+          fail(`clicking the candidate for "to" did not replace it in the draft: ${JSON.stringify(afterReplace)}`);
+        } else {
+          console.log(`  OK - clicking a word's candidate replaced it in place: ${JSON.stringify(afterReplace)}`);
+        }
+      } else {
+        console.log('  (eyeball) "to" had no clickable candidate this run - not failing, model-dependent');
       }
-      console.log('  OK - toggling to "English" switches to the static gloss reading');
     } else {
-      fail('"hotel" in the input box was not flagged as hoverable');
+      fail('"to" in "Quiero ir to the beach" was not flagged as hoverable');
+    }
+    await textarea.fill("");
+
+    // Multi-word grouping: the model may group a clear idiom into ONE span
+    // covering several words rather than tagging each word alone - the
+    // old dictionary/Argos path had no sentence context and could never
+    // do this at all. Clicking such a group's candidate should replace
+    // the WHOLE group, not just one word inside it. Not asserted as a hard
+    // requirement (a small model doesn't group every time), but exercised
+    // and eyeballed, with a hard check that IF it grouped, replacement
+    // covers the whole span.
+    const idiomTagPromise = page.waitForResponse(
+      (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
+      { timeout: 15_000 }
+    );
+    await textarea.fill("I miss you");
+    await idiomTagPromise;
+    await page.waitForTimeout(200);
+    const groupSpan = page.locator(".chat-input__hoverable").filter({ hasText: /\s/ }).first();
+    if ((await groupSpan.count()) > 0) {
+      const groupText = await groupSpan.innerText();
+      await groupSpan.hover();
+      await page.waitForSelector(".word-candidates-popover", { timeout: 8_000 });
+      const groupButton = page.locator(".word-candidates-popover button").first();
+      if ((await groupButton.count()) > 0) {
+        await groupButton.click();
+        await page.waitForTimeout(150);
+        const afterGroupReplace = await textarea.inputValue();
+        if (afterGroupReplace.includes(groupText)) {
+          fail(`clicking the group's candidate left the original group text "${groupText}" in the draft: ${JSON.stringify(afterGroupReplace)}`);
+        } else {
+          console.log(`  OK - clicking a multi-word group ("${groupText}") replaced the whole group: ${JSON.stringify(afterGroupReplace)}`);
+        }
+      }
+    } else {
+      console.log('  (eyeball) the model tagged "I miss you" word-by-word this run, not as a group - not failing, model-dependent');
     }
     await textarea.fill("");
 
@@ -628,17 +660,10 @@ async function checkBrowserEndToEnd() {
         },
         { timeout: 8_000 },
       );
-      const phraseHeading = await page
-        .locator(".word-candidates-popover__heading")
-        .first()
-        .innerText();
       const phraseTranslationText = await page
         .locator(".word-candidates-popover .candidate-cycler__text")
         .first()
         .innerText();
-      if (phraseHeading !== "English") {
-        fail(`expected the phrase popover for an all-Spanish selection to read "English", got ${JSON.stringify(phraseHeading)}`);
-      }
       if (!phraseTranslationText.toLowerCase().includes("cat")) {
         fail(`expected the Spanish->English phrase translation to mention "cat", got ${JSON.stringify(phraseTranslationText)}`);
       }

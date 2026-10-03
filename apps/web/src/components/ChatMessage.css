@@ -12,6 +12,7 @@
 }
 
 .chat-message__column {
+  position: relative;
   display: flex;
   flex-direction: column;
   max-width: 70%;

@@ -1,4 +1,4 @@
-import type { paths } from "./schema";
+import type { components, paths } from "./schema";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
@@ -10,11 +10,6 @@ type ChatHistoryResponse =
   paths["/chat/history"]["get"]["responses"][200]["content"]["application/json"];
 type ClearHistoryResponse =
   paths["/chat/history/clear"]["post"]["responses"][200]["content"]["application/json"];
-
-type TranslateWordRequest =
-  paths["/translate/word"]["post"]["requestBody"]["content"]["application/json"];
-type TranslateWordResponse =
-  paths["/translate/word"]["post"]["responses"][200]["content"]["application/json"];
 
 type TranslateTextRequest =
   paths["/translate/text"]["post"]["requestBody"]["content"]["application/json"];
@@ -190,8 +185,6 @@ async function updateSettings(body: UpdateSettingsRequest): Promise<SettingsResp
 
 export const api = {
   chatTurn: (body: ChatTurnRequest) => post<ChatTurnRequest, ChatTurnResponse>("/chat/turn", body),
-  translateWord: (body: TranslateWordRequest) =>
-    post<TranslateWordRequest, TranslateWordResponse>("/translate/word", body),
   translateText: (body: TranslateTextRequest) =>
     post<TranslateTextRequest, TranslateTextResponse>("/translate/text", body),
   tagInput: (body: TagInputRequest) => post<TagInputRequest, TagInputResponse>("/translate/tag-input", body),
@@ -210,13 +203,13 @@ export const api = {
 };
 
 export type TokenAnnotation = ChatTurnResponse["tokens"][number];
-export type InputTokenAnnotation = TagInputResponse["tokens"][number];
-export type TranslateCandidate = TranslateWordResponse["candidates"][number];
+export type DraftToken = TagInputResponse["tokens"][number];
+export type DraftSpan = TagInputResponse["spans"][number];
+export type TranslateCandidate = components["schemas"]["TranslateCandidate"];
 export type ChatHistoryMessage = ChatHistoryResponse["messages"][number];
 
 export type {
   ChatTurnResponse,
-  TranslateWordResponse,
   TranslateTextResponse,
   TagInputResponse,
   InterpretInputResponse,

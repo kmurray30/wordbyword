@@ -8,6 +8,7 @@ from app.translate.llm_translate import (
     coach_draft,
     gloss_reply,
     interpret_user_input,
+    tag_draft,
     translate_text,
 )
 
@@ -251,6 +252,86 @@ def test_gloss_reply_wraps_model_server_error():
     with patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError, match="down"):
             gloss_reply("Hola", "es", "en")
+
+
+def test_tag_draft_empty_input_short_circuits():
+    with patch("app.translate.llm_translate.model_chat") as mock_chat:
+        assert tag_draft("   ", "en", "es") == ("", [])
+    mock_chat.assert_not_called()
+
+
+def test_tag_draft_parses_translation_and_ordered_spans():
+    reply = (
+        '{"translation": "Quiero ir a la playa.", "spans": ['
+        '{"surface": "quiero", "gloss": "I want", "note": "", "translation": ""}, '
+        '{"surface": "ir to", "gloss": "to go to", "note": "mixed English/Spanish", "translation": "ir a"}'
+        "]}"
+    )
+    with patch("app.translate.llm_translate.model_chat", return_value=reply) as mock_chat:
+        translation, spans = tag_draft("quiero ir to the beach", "en", "es")
+
+    assert translation == "Quiero ir a la playa."
+    assert spans == [
+        {"surface": "quiero", "gloss": "I want", "note": "", "translation": ""},
+        {"surface": "ir to", "gloss": "to go to", "note": "mixed English/Spanish", "translation": "ir a"},
+    ]
+    (messages,), kwargs = mock_chat.call_args
+    assert kwargs["logit_bias"] == {}
+    assert messages[-1] == {"role": "user", "content": "quiero ir to the beach"}
+
+
+def test_tag_draft_returns_duplicate_surface_spans_as_an_ordered_list():
+    # Unlike gloss_reply's word_map (a dict), repeated surface text in a
+    # draft must produce two separate span entries - a dict would silently
+    # collapse them, and each occurrence needs its own later position-match.
+    reply = (
+        '{"translation": "the cat and the cat", "spans": ['
+        '{"surface": "cat", "gloss": "a", "note": "", "translation": ""}, '
+        '{"surface": "cat", "gloss": "b", "note": "", "translation": ""}'
+        "]}"
+    )
+    with patch("app.translate.llm_translate.model_chat", return_value=reply):
+        _translation, spans = tag_draft("the cat and the cat", "en", "es")
+
+    assert len(spans) == 2
+    assert [s["gloss"] for s in spans] == ["a", "b"]
+
+
+def test_tag_draft_drops_spans_with_no_surface_text():
+    reply = '{"translation": "hola", "spans": [{"surface": "", "gloss": "x", "note": "", "translation": ""}]}'
+    with patch("app.translate.llm_translate.model_chat", return_value=reply):
+        _translation, spans = tag_draft("hola", "en", "es")
+    assert spans == []
+
+
+def test_tag_draft_retries_once_on_unparseable_reply():
+    with patch(
+        "app.translate.llm_translate.model_chat",
+        side_effect=["not json at all", '{"translation": "Hi", "spans": [{"surface": "hola", "gloss": "hi"}]}'],
+    ) as mock_chat:
+        translation, spans = tag_draft("hola", "en", "es")
+
+    assert translation == "Hi"
+    assert spans == [{"surface": "hola", "gloss": "hi", "note": "", "translation": ""}]
+    assert mock_chat.call_count == 2
+
+
+def test_tag_draft_raises_after_exhausting_retries():
+    with patch("app.translate.llm_translate.model_chat", return_value="not json at all"):
+        with pytest.raises(TranslationUnavailableError):
+            tag_draft("hola", "en", "es")
+
+
+def test_tag_draft_raises_on_garbled_reply():
+    with patch("app.translate.llm_translate.model_chat", return_value="你好世界"):
+        with pytest.raises(TranslationUnavailableError):
+            tag_draft("hola", "en", "es")
+
+
+def test_tag_draft_wraps_model_server_error():
+    with patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")):
+        with pytest.raises(TranslationUnavailableError, match="down"):
+            tag_draft("hola", "en", "es")
 
 
 def test_interpret_user_input_falls_back_to_translate_text_on_garbled_reply():

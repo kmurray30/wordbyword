@@ -1,12 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { InputTokenAnnotation } from "../api/client";
+import type { DraftSpan, DraftToken } from "../api/client";
 import { CoachPopover } from "./CoachPopover";
 import { DockedPopover } from "./DockedPopover";
 import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import "./ChatInput.css";
 
-const TAG_DEBOUNCE_MS = 350;
+// Fired almost immediately after the just-typed character completes a word
+// boundary (space/punctuation) - just enough delay to coalesce a fast burst
+// (paste, double punctuation) without feeling laggy. Falls back to a longer
+// idle debounce for the word currently being typed, with no trailing
+// boundary yet - bumped up from the old single-rate 350ms debounce since
+// this now costs a real LLM call (/translate/tag-input), not an instant
+// dictionary lookup.
+const BOUNDARY_DEBOUNCE_MS = 60;
+const IDLE_DEBOUNCE_MS = 550;
+const WORD_BOUNDARY_RE = /[\s.,!?;:¡¿()"'«»…]/;
 const PHRASE_DEBOUNCE_MS = 300;
 const SPANISH_WORD_RE = /^[a-zA-Zñáéíóúü]+$/i;
 // How far a touch can drift between start and end before it's treated as a
@@ -24,21 +33,23 @@ interface Segment {
   text: string;
   start: number;
   end: number;
-  token?: InputTokenAnnotation;
+  span?: DraftSpan;
 }
 
-function buildSegments(text: string, tokens: InputTokenAnnotation[]): Segment[] {
-  // Any word with at least one translation column is hoverable - that's
-  // every real word now, not just ones flagged as non-Spanish (see
-  // /translate/tag-input: a Spanish word gets an ES->EN column, an English
-  // one gets EN->ES, a cognate like "hotel" gets both).
-  const hot = tokens.filter((t) => t.columns.length > 0).sort((a, b) => a.start - b.start);
+function buildSegments(text: string, spans: DraftSpan[]): Segment[] {
+  // Every returned span is hoverable by construction (the backend only
+  // returns one when it has something usable to show) - unlike the old
+  // per-token columns, no filtering needed here. Spans are already
+  // non-overlapping (app.translate.span_matching guarantees it), but sort
+  // defensively anyway since nothing else here depends on response order.
+  const sorted = [...spans].sort((a, b) => a.start - b.start);
   const segments: Segment[] = [];
   let cursor = 0;
-  for (const t of hot) {
-    if (t.start > cursor) segments.push({ text: text.slice(cursor, t.start), start: cursor, end: t.start });
-    segments.push({ text: text.slice(t.start, t.end), start: t.start, end: t.end, token: t });
-    cursor = t.end;
+  for (const s of sorted) {
+    if (s.start < cursor) continue;
+    if (s.start > cursor) segments.push({ text: text.slice(cursor, s.start), start: cursor, end: s.start });
+    segments.push({ text: text.slice(s.start, s.end), start: s.start, end: s.end, span: s });
+    cursor = s.end;
   }
   if (cursor < text.length) segments.push({ text: text.slice(cursor), start: cursor, end: text.length });
   return segments;
@@ -52,8 +63,16 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   const touchMovedRef = useRef(false);
   const wasFocusedRef = useRef(false);
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped on every /translate/tag-input request fired, and checked again
+  // when each one resolves - since an LLM-backed call can take real time
+  // (unlike the old near-instant dictionary lookup), a request for an
+  // earlier, shorter draft can resolve AFTER one for a later, longer draft.
+  // A response is only applied if it's still the most recent request
+  // issued, so a slow stale response can never clobber a newer result.
+  const tagSeqRef = useRef(0);
   const [value, setValue] = useState("");
-  const [tags, setTags] = useState<InputTokenAnnotation[]>([]);
+  const [tokens, setTokens] = useState<DraftToken[]>([]);
+  const [spans, setSpans] = useState<DraftSpan[]>([]);
   const [openTokenKey, setOpenTokenKey] = useState<string | null>(null);
   // The help button's coaching result for the current draft - cleared
   // whenever the draft text changes (handleValueChange below), same as
@@ -68,22 +87,35 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   const [phraseSelection, setPhraseSelection] = useState<{ text: string; start: number; end: number } | null>(null);
   const [phraseTranslation, setPhraseTranslation] = useState<string | null>(null);
   const [phraseState, setPhraseState] = useState<"idle" | "loading" | "error">("idle");
-  // Which way the phrase popover translates: "es" (candidates ARE Spanish -
+  // Which way the phrase popover translates: "es" (candidate IS Spanish -
   // a mostly-English/mixed selection, corrected and translated INTO
-  // Spanish, clickable to swap in) or "en" (candidates ARE English - a
+  // Spanish, clickable to swap in) or "en" (candidate IS English - a
   // mostly-Spanish selection, translated INTO English, just a gloss).
-  // Mirrors the per-word popover's two column types, decided per-selection
-  // below from the majority language of the words it covers.
+  // Decided per-selection below from the majority language of the words it
+  // covers.
   const [phraseDirection, setPhraseDirection] = useState<"es" | "en">("es");
 
+  const fireTagInput = (text: string) => {
+    const seq = ++tagSeqRef.current;
+    api
+      .tagInput({ text })
+      .then((res) => {
+        if (seq !== tagSeqRef.current) return; // a newer request has since been issued - drop this stale result
+        setTokens(res.tokens);
+        setSpans(res.spans);
+      })
+      .catch(() => {});
+  };
+
   useEffect(() => {
-    if (!value.trim()) return;
-    const handle = setTimeout(() => {
-      api
-        .tagInput({ text: value })
-        .then((res) => setTags(res.tokens))
-        .catch(() => {});
-    }, TAG_DEBOUNCE_MS);
+    if (!value.trim()) {
+      setTokens([]);
+      setSpans([]);
+      return;
+    }
+    const lastChar = value[value.length - 1];
+    const delay = WORD_BOUNDARY_RE.test(lastChar) ? BOUNDARY_DEBOUNCE_MS : IDLE_DEBOUNCE_MS;
+    const handle = setTimeout(() => fireTagInput(value), delay);
     return () => clearTimeout(handle);
   }, [value]);
 
@@ -127,13 +159,14 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
 
   // Derived rather than synced via effect: avoids a stale word-candidate
   // popover surviving a moment after the user clears the input.
-  const effectiveTags = value.trim() ? tags : [];
-  const segments = buildSegments(value, effectiveTags);
+  const effectiveTokens = value.trim() ? tokens : [];
+  const effectiveSpans = value.trim() ? spans : [];
+  const segments = buildSegments(value, effectiveSpans);
   // Suppressed while a real (multi-char) selection is active - a drag can
   // end with the pointer resting over a word, which would otherwise leave
   // this open at the same time as the phrase popover.
   const openToken = !phraseSelection
-    ? effectiveTags.find((t) => `${t.start}-${t.end}` === openTokenKey)
+    ? effectiveSpans.find((s) => `${s.start}-${s.end}` === openTokenKey)
     : undefined;
 
   const handleValueChange = (next: string) => {
@@ -146,8 +179,8 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     setPhraseSelection(null);
   };
 
-  const handleReplace = (token: InputTokenAnnotation, translation: string) => {
-    const next = value.slice(0, token.start) + translation + value.slice(token.end);
+  const handleReplace = (span: DraftSpan, translation: string) => {
+    const next = value.slice(0, span.start) + translation + value.slice(span.end);
     handleValueChange(next);
     setOpenTokenKey(null);
     // The candidate button just taken focus (it's a real <button>, inside a
@@ -188,12 +221,13 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       return;
     }
     // Majority-vote the language of the real words the selection covers
-    // (same per-word is_spanish flags /translate/tag-input already
-    // computed) to decide which way to translate: a mostly-Spanish
-    // selection goes to English, a mostly-English (or mixed/typo-ridden)
-    // one goes to Spanish, same as the per-word popover's two directions.
-    const overlapping = effectiveTags.filter(
-      (t) => t.columns.length > 0 && t.end > phraseSelection.start && t.start < phraseSelection.end,
+    // (same per-word is_spanish flags /translate/tag-input's cheap token
+    // pass already computed) to decide which way to translate: a mostly-
+    // Spanish selection goes to English, a mostly-English (or mixed/typo-
+    // ridden) one goes to Spanish, same as the per-word popover's two
+    // directions.
+    const overlapping = effectiveTokens.filter(
+      (t) => t.end > phraseSelection.start && t.start < phraseSelection.end,
     );
     const spanishCount = overlapping.filter((t) => t.is_spanish).length;
     const isSpanishPhrase = overlapping.length > 0 && spanishCount * 2 > overlapping.length;
@@ -226,12 +260,12 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   const charOffsetAtPoint = (clientX: number, clientY: number): number | null => {
     const container = highlightRef.current;
     if (!container) return null;
-    const spans = container.querySelectorAll<HTMLElement>("[data-start]");
-    for (const span of spans) {
-      const rect = span.getBoundingClientRect();
+    const els = container.querySelectorAll<HTMLElement>("[data-start]");
+    for (const el of els) {
+      const rect = el.getBoundingClientRect();
       if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
-        const start = Number(span.dataset.start);
-        const end = Number(span.dataset.end);
+        const start = Number(el.dataset.start);
+        const end = Number(el.dataset.end);
         const fraction = rect.width > 0 ? (clientX - rect.left) / rect.width : 0;
         return Math.round(start + Math.min(1, Math.max(0, fraction)) * (end - start));
       }
@@ -252,12 +286,12 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   // works the same regardless of what it started on. A plain click (no
   // movement) behaves exactly as before. Clicks inside the popover itself
   // (picking a candidate) are left alone.
-  const handleWordMouseDown = (e: React.MouseEvent<HTMLSpanElement>, token: InputTokenAnnotation) => {
+  const handleWordMouseDown = (e: React.MouseEvent<HTMLSpanElement>, span: DraftSpan) => {
     if ((e.target as HTMLElement).closest(".word-candidates-popover")) return;
     e.preventDefault();
     const textarea = textareaRef.current;
     if (!textarea) return;
-    const pos = charOffsetAtPoint(e.clientX, e.clientY) ?? token.start;
+    const pos = charOffsetAtPoint(e.clientX, e.clientY) ?? span.start;
     textarea.focus();
     textarea.setSelectionRange(pos, pos);
     dragAnchorRef.current = pos;
@@ -325,10 +359,10 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     if (!touch) return;
     const offset = charOffsetAtPoint(touch.clientX, touch.clientY);
     if (offset === null) return;
-    const token = effectiveTags.find((t) => t.columns.length > 0 && offset >= t.start && offset <= t.end);
-    if (!token) return;
+    const span = effectiveSpans.find((s) => offset >= s.start && offset <= s.end);
+    if (!span) return;
     setShowCoach(false);
-    setOpenTokenKey(`${token.start}-${token.end}`);
+    setOpenTokenKey(`${span.start}-${span.end}`);
   };
 
   const cancelHoverClose = () => {
@@ -353,7 +387,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     const text = value.trim();
     if (!text) return;
 
-    for (const tok of effectiveTags) {
+    for (const tok of effectiveTokens) {
       if (tok.is_spanish && SPANISH_WORD_RE.test(tok.surface) && tok.surface.length > 1) {
         api.rewardEvent({ event_type: "userTypedSpanishWord", lemma: tok.lemma }).catch(() => {});
       }
@@ -361,7 +395,9 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
 
     onSend(text);
     handleValueChange("");
-    setTags([]);
+    tagSeqRef.current += 1; // invalidate any outstanding tagInput request for the just-sent draft
+    setTokens([]);
+    setSpans([]);
   };
 
   // The help button's draft coaching - click-toggled rather than hover-
@@ -409,19 +445,21 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       <div className="chat-input__editor">
         <div className="chat-input__highlight" aria-hidden="true" ref={highlightRef}>
           {segments.map((seg, i) =>
-            seg.token ? (
+            seg.span ? (
               <span
                 key={i}
-                className="chat-input__hoverable"
+                className={`chat-input__hoverable${
+                  openTokenKey === `${seg.span.start}-${seg.span.end}` ? " chat-input__hoverable--active" : ""
+                }`}
                 data-start={seg.start}
                 data-end={seg.end}
                 onMouseEnter={() => {
                   cancelHoverClose();
-                  setOpenTokenKey(`${seg.token!.start}-${seg.token!.end}`);
+                  setOpenTokenKey(`${seg.span!.start}-${seg.span!.end}`);
                   setShowCoach(false);
                 }}
                 onMouseLeave={scheduleHoverClose}
-                onMouseDown={(e) => handleWordMouseDown(e, seg.token!)}
+                onMouseDown={(e) => handleWordMouseDown(e, seg.span!)}
               >
                 {seg.text}
               </span>
@@ -471,7 +509,8 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       {openToken && (
         <DockedPopover onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
           <WordCandidatesPopover
-            columns={openToken.columns}
+            candidates={openToken.candidates}
+            clickable={openToken.clickable}
             onSelect={(translation) => handleReplace(openToken, translation)}
           />
         </DockedPopover>
@@ -479,23 +518,14 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       {phraseSelection && (
         <DockedPopover>
           <WordCandidatesPopover
-            columns={[
-              {
-                language: phraseDirection,
-                // Clickable only in the "es" direction (swap the Spanish
-                // translation into the draft) - the "en" direction is
-                // just a gloss of a phrase you already wrote in Spanish,
-                // same as the per-word popover's non-clickable EN column.
-                clickable: phraseDirection === "es",
-                candidates: [
-                  phraseState === "loading"
-                    ? { translation: "…" }
-                    : phraseState === "error"
-                      ? { translation: "(translation failed)" }
-                      : { translation: phraseTranslation ?? "…" },
-                ],
-              },
+            candidates={[
+              phraseState === "loading"
+                ? { translation: "…" }
+                : phraseState === "error"
+                  ? { translation: "(translation failed)" }
+                  : { translation: phraseTranslation ?? "…" },
             ]}
+            clickable={phraseDirection === "es"}
             onSelect={(translation) => {
               const next = value.slice(0, phraseSelection.start) + translation + value.slice(phraseSelection.end);
               handleValueChange(next);

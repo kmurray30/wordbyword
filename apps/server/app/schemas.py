@@ -10,8 +10,8 @@ class TokenAnnotation(BaseModel):
     # From the same LLM call as ChatTurnResponse.translation - a short note
     # on why this word's sense applies here, when it could otherwise be
     # confused with a different one. Empty for punctuation, when the LLM
-    # call failed (gloss then falls back to the older dictionary/MT lookup,
-    # which has no such note), or when the word didn't need one.
+    # call missed this word or failed outright (gloss is then also empty -
+    # no dictionary/MT fallback), or when the word didn't need a note.
     note: str = ""
 
 
@@ -27,8 +27,8 @@ class ChatTurnResponse(BaseModel):
     # From the same LLM call that produced `tokens`' per-word glosses (see
     # app.translate.llm_translate.gloss_reply) - guaranteed to agree with
     # them on word sense, unlike a translation fetched separately. Empty
-    # string if that call failed (rare; the per-word glosses themselves
-    # still fall back to the older dictionary/MT lookup in that case).
+    # string if that call failed (rare; the per-word glosses are then also
+    # empty - no dictionary/MT fallback).
     translation: str = ""
 
 
@@ -47,20 +47,9 @@ class ClearHistoryResponse(BaseModel):
     cleared: int
 
 
-class TranslateWordRequest(BaseModel):
-    word: str
-    source_lang: str = "es"
-
-
 class TranslateCandidate(BaseModel):
     translation: str
     description: str = ""
-
-
-class TranslateWordResponse(BaseModel):
-    word: str
-    lemma: str
-    candidates: list[TranslateCandidate]
 
 
 class TranslateTextRequest(BaseModel):
@@ -106,28 +95,36 @@ class TagInputRequest(BaseModel):
     text: str
 
 
-class TranslationColumn(BaseModel):
-    language: str  # the language these candidates translate INTO ("en" or "es")
-    candidates: list[TranslateCandidate]
-    # False for a column showing what a word the learner typed already means
-    # in Spanish - there's nothing to replace, it's already correct. True for
-    # a column offering a Spanish translation to swap in for a word read as
-    # English.
-    clickable: bool = True
-
-
-class InputTokenAnnotation(BaseModel):
+class DraftToken(BaseModel):
+    # Cheap, LLM-free per-word classification (spaCy tokenize/lemmatize +
+    # app.translate.lemmatizer's existing is_spanish heuristic), computed
+    # on every /translate/tag-input call regardless of whether the slower
+    # LLM-backed `spans` below succeeded. Needed for reward-event tracking
+    # (userTypedSpanishWord) and the phrase-selection direction vote.
     surface: str
     lemma: str
     is_spanish: bool
     start: int
     end: int
-    # One column per language the word is independently a valid word in (an
-    # unclickable Spanish-meaning gloss, a clickable English->Spanish
-    # translation, or both for a word valid in both, e.g. "once" - Spanish
-    # for "eleven" and English "on one occasion"); a word valid in neither
-    # dictionary falls back to a single best-guess column.
-    columns: list[TranslationColumn] = []
+
+
+class DraftSpan(BaseModel):
+    # One word, or an LLM-chosen multi-word group (idiom/phrasal verb/fixed
+    # expression) the learner is still typing - from app.translate.
+    # llm_translate.tag_draft, matched back to exact offsets by
+    # app.translate.span_matching. No dual Spanish/English-reading toggle
+    # (unlike the old InputTokenAnnotation/TranslationColumn this replaces)
+    # - the LLM already has full sentence context, so it picks the one
+    # sense that applies here instead of two independent dictionary
+    # lookups needing reconciliation in the UI.
+    surface: str
+    start: int
+    end: int
+    # False for a span that's already natural, correct Spanish as typed -
+    # nothing to replace, candidates[0] is just its in-context gloss. True
+    # for a span offering a Spanish replacement to swap in.
+    clickable: bool
+    candidates: list[TranslateCandidate]
 
 
 class LlmHealthResponse(BaseModel):
@@ -135,7 +132,8 @@ class LlmHealthResponse(BaseModel):
 
 
 class TagInputResponse(BaseModel):
-    tokens: list[InputTokenAnnotation]
+    tokens: list[DraftToken]
+    spans: list[DraftSpan]
 
 
 class RewardEventRequest(BaseModel):
