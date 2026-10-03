@@ -305,8 +305,14 @@ def interpret_user_input(
     return native_text, target_text
 
 
-_TAG_DRAFT_MAX_TOKENS = 500  # a draft is usually one short in-progress
-# sentence - smaller than gloss_reply's 700-token budget for a full reply.
+_TAG_DRAFT_MAX_TOKENS = 900  # each span here carries 4 string fields
+# (surface/gloss/note/translation) vs. gloss_reply's 2 (gloss/note) per
+# word - roughly double the per-word payload, so despite a draft usually
+# being shorter than a full reply, this needs a bigger budget than
+# gloss_reply's 700, not a smaller one. Too tight a budget truncates the
+# JSON mid-generation, which reads identically to the model just failing -
+# unparseable after retries, raising TranslationUnavailableError - rather
+# than an obviously-wrong but diagnosable response.
 
 
 def _extract_span_list_json(reply: str) -> tuple[str, list[dict[str, str]]]:

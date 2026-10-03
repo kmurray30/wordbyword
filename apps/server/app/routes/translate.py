@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,6 +25,8 @@ from app.schemas import (
 from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
 from app.translate.span_matching import match_spans
+
+logger = logging.getLogger(__name__)
 
 _COACH_HISTORY_TURNS = 8
 
@@ -111,11 +115,21 @@ def tag_input(req: TagInputRequest, session: Session = Depends(get_session)) -> 
 
     try:
         _translation, raw_spans = llm_translate.tag_draft(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider)
-    except llm_translate.TranslationUnavailableError:
+    except llm_translate.TranslationUnavailableError as exc:
+        logger.warning("tag_draft unavailable for %r: %s", req.text, exc)
         raw_spans = []
 
+    matched = match_spans(req.text, raw_spans)
+    if raw_spans and not matched:
+        # The call succeeded, but every span's surface text failed to
+        # locate in the draft (a hallucinated/paraphrased span, or a
+        # normalization mismatch span_matching doesn't handle) - visible
+        # here since the symptom (empty `spans` in the response) is
+        # otherwise indistinguishable from the LLM call failing outright.
+        logger.warning("tag_draft returned %d span(s) but none matched %r: %r", len(raw_spans), req.text, raw_spans)
+
     spans: list[DraftSpan] = []
-    for m in match_spans(req.text, raw_spans):
+    for m in matched:
         candidate_text = m.translation.strip() or m.gloss.strip()
         if not candidate_text:
             continue  # nothing usable to show for this span - drop it
