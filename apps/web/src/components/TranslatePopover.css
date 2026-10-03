@@ -1,14 +1,8 @@
-/* Positioned by FloatingPopover (a fixed-position, viewport-clamped portal
-   wrapper) - this class only carries appearance. min-width 260px with no
-   viewport-relative cap used to render a real chunk of this box off-screen
-   for any word near a narrow phone's edge; FloatingPopover's own JS clamp
-   is the primary defense now, but capping max-width here too means a
-   popover on a ~360px phone isn't awkwardly wide even once clamped on
-   screen. */
+/* Positioned by DockedPopover, which governs sizing - this class only
+   carries appearance. */
 .translate-popover {
   z-index: 20;
-  min-width: 260px;
-  max-width: min(420px, calc(100vw - 24px));
+  width: 100%;
   background: #1f2430;
   color: #f2f2f2;
   border-radius: 8px;

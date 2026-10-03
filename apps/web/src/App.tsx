@@ -4,6 +4,7 @@ import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { SegmentedControl } from "./components/SegmentedControl";
 import { getSessionId } from "./lib/session";
 import "./App.css";
 
@@ -114,16 +115,14 @@ function App() {
         <div className="app__header-controls">
           <SettingsPanel />
           {voices.length > 0 && voice && (
-            <label className="app__voice-picker">
+            <div className="app__voice-picker">
               Voice:{" "}
-              <select value={voice} onChange={(e) => handleVoiceChange(e.target.value)}>
-                {voices.map((v) => (
-                  <option key={v} value={v}>
-                    {voiceLabel(v)}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <SegmentedControl
+                value={voice}
+                onChange={handleVoiceChange}
+                options={voices.map((v) => ({ value: v, label: voiceLabel(v) }))}
+              />
+            </div>
           )}
           {messages.length > 0 && (
             <button type="button" className="app__clear-chat" onClick={handleClear} disabled={clearing}>

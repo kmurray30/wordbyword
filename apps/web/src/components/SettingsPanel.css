@@ -13,19 +13,6 @@
   white-space: nowrap;
 }
 
-.settings-panel__field select {
-  background: #2a2f3a;
-  color: #f2f2f2;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 6px;
-  padding: 2px 6px;
-  font-size: 0.85rem;
-}
-
-.settings-panel__field input[type="checkbox"]:disabled {
-  cursor: not-allowed;
-}
-
 .settings-panel__error {
   color: #ff8080;
 }

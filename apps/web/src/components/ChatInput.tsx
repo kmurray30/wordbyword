@@ -384,6 +384,11 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       .catch(() => setCoachState("error"));
   };
 
+  const closeCoach = () => {
+    setShowCoach(false);
+    textareaRef.current?.focus();
+  };
+
   const handleToggleCoach = () => {
     if (!value.trim()) return;
     const next = !showCoach;
@@ -501,7 +506,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
         </DockedPopover>
       )}
       {showCoach && coachResult && (
-        <DockedPopover>
+        <DockedPopover position="below">
           <CoachPopover
             meaning={coachResult.meaning}
             feedback={coachResult.feedback}
@@ -510,20 +515,20 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
             error={false}
             onSelect={(spanish) => {
               handleValueChange(spanish);
-              setShowCoach(false);
-              textareaRef.current?.focus();
+              closeCoach();
             }}
+            onClose={closeCoach}
           />
         </DockedPopover>
       )}
       {showCoach && coachState === "loading" && (
-        <DockedPopover>
-          <CoachPopover meaning="" feedback="" options={[]} loading error={false} onSelect={() => {}} />
+        <DockedPopover position="below">
+          <CoachPopover meaning="" feedback="" options={[]} loading error={false} onSelect={() => {}} onClose={closeCoach} />
         </DockedPopover>
       )}
       {showCoach && coachState === "error" && (
-        <DockedPopover>
-          <CoachPopover meaning="" feedback="" options={[]} loading={false} error onSelect={() => {}} />
+        <DockedPopover position="below">
+          <CoachPopover meaning="" feedback="" options={[]} loading={false} error onSelect={() => {}} onClose={closeCoach} />
         </DockedPopover>
       )}
     </div>

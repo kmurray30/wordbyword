@@ -12,6 +12,7 @@ interface CoachPopoverProps {
   loading: boolean;
   error: boolean;
   onSelect: (spanish: string) => void;
+  onClose: () => void;
 }
 
 const FORMALITY_LABEL: Record<string, string> = { neutral: "Natural", casual: "Casual", formal: "Formal" };
@@ -20,10 +21,16 @@ const FORMALITY_LABEL: Record<string, string> = { neutral: "Natural", casual: "C
 // translate preview it replaces, this shows the model's best guess at what
 // the learner meant, a short note on how close their attempt already was,
 // and a few ways to actually phrase it in Spanish (at different formality
-// levels) - clicking one applies it to the draft, same as before.
-export function CoachPopover({ meaning, feedback, options, loading, error, onSelect }: CoachPopoverProps) {
+// levels) - clicking one applies it to the draft, same as before. Also
+// closeable explicitly (not just by clicking the help button again) -
+// unlike a quick word lookup, this can sit open for a while reading
+// options, so it's worth a dedicated way out.
+export function CoachPopover({ meaning, feedback, options, loading, error, onSelect, onClose }: CoachPopoverProps) {
   return (
     <div className="coach-popover" role="tooltip">
+      <button type="button" className="coach-popover__close" onClick={onClose} aria-label="Close">
+        ✕
+      </button>
       {loading && <div className="coach-popover__status">Thinking…</div>}
       {error && <div className="coach-popover__status coach-popover__status--error">Couldn't get suggestions - try again</div>}
       {!loading && !error && (

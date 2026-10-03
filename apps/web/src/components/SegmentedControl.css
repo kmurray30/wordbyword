@@ -1,0 +1,28 @@
+.segmented-control {
+  display: inline-flex;
+  background: #2a2f3a;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented-control__option {
+  all: unset;
+  cursor: pointer;
+  color: #9aa1b1;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.segmented-control__option--active {
+  background: #4a5568;
+  color: #f2f2f2;
+}
+
+.segmented-control__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}

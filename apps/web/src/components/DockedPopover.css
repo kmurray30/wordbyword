@@ -1,15 +1,23 @@
 /* Wrap is the full-width positioning shell (so centering math is simple);
    pointer-events:none on it keeps it from blocking anything to its sides,
    with the actual popover box opting back into pointer-events. Needs its
-   parent (.chat-input) to be position: relative. */
+   nearest position:relative ancestor to be whatever it should dock
+   against (.chat-input, a .chat-message__bubble, ...). */
 .docked-popover-wrap {
   position: absolute;
-  bottom: 100%;
   left: 0;
   right: 0;
   display: flex;
   justify-content: center;
   pointer-events: none;
+}
+
+.docked-popover-wrap--above {
+  bottom: 100%;
+}
+
+.docked-popover-wrap--below {
+  top: 100%;
 }
 
 .docked-popover {

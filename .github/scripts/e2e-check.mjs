@@ -28,20 +28,28 @@
 //     the LLM-readiness gate isn't blocking the page (the model server is
 //     already known warm by this point), send a message, hover AND click a
 //     word gloss (click should pin it open with a highlight, no underline -
-//     the only way it ever shows on a real tap, which never fires hover),
-//     toggle both messages' translation rows open and closed, confirm the
-//     user message gets two rows (EN+ES), hover a cognate word in the input
-//     box for its dual-column candidates, drag-select a multi-word phrase
-//     in the input (starting the drag ON a hoverable word, not just in a
-//     gap between them) and confirm it shows one phrase translation (in
-//     whichever direction the selected words' majority language calls for)
-//     rather than a leftover single-word popover, click the help button
-//     (replaces the old hover-only globe) and confirm its coach popover
-//     renders on-screen and applying an option updates the draft - all of
-//     that before touching TTS at all, same reasoning as stages 1-2 before
-//     5-6 - then play the assistant message's audio, switch the voice
-//     picker and confirm that request carries the chosen voice, then
-//     reload and clear the chat.
+//     the only way it ever shows on a real tap, which never fires hover;
+//     hovering should dock the popover flush to the bottom of that
+//     message's own bubble, not float near the word), toggle both
+//     messages' translation rows open and closed, confirm the user message
+//     gets two rows (EN+ES), hover a cognate word in the input box for its
+//     dual-column candidates, drag-select a multi-word phrase in the input
+//     (starting the drag ON a hoverable word, not just in a gap between
+//     them) and confirm it shows one phrase translation (in whichever
+//     direction the selected words' majority language calls for) rather
+//     than a leftover single-word popover, click the help button (replaces
+//     the old hover-only globe) and confirm its coach popover renders
+//     docked below the input bar (not above - moved there so it reads out
+//     of the way of the draft), that its ✕ button closes it and returns
+//     focus to the draft, and that applying an option updates the draft -
+//     all of that before touching TTS at all, same reasoning as stages 1-2
+//     before 5-6 - then play the assistant message's audio, switch the
+//     voice picker (a button-based SegmentedControl, not a native <select>
+//     - see SegmentedControl.tsx) and confirm that request carries the
+//     chosen voice, confirm the chat textarea is the only native form
+//     control left on the page (the point of removing the native
+//     select/checkbox controls - keeps iOS Safari's keyboard accessory bar
+//     from showing field-navigation arrows), then reload and clear the chat.
 //  5. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
 //     actually working" (right model/voice, valid token) from the frontend.
 //  6. Hit /tts/voices and /tts/speak for each Spanish voice directly -
@@ -321,12 +329,12 @@ async function checkBrowserEndToEnd() {
     }
     console.log(`  OK - assistant replied: ${JSON.stringify(replyText)}`);
 
-    // Hover a word token and confirm the translation popover appears. It's
-    // rendered into a portal at document.body (see WordToken.tsx - escapes
-    // the scrolling chat feed's overflow clipping and sibling-bubble
-    // stacking contexts), so it's no longer a DOM descendant of the message
-    // bubble - just check it shows up on the page at all.
+    // Hover a word token and confirm the translation popover appears,
+    // docked flush to the bottom of this message's own bubble (DockedPopover
+    // - see ChatMessage.tsx), not floating off wherever the hovered word
+    // happens to sit.
     const wordToken = page.locator(".chat-message--assistant .word-token").first();
+    const assistantBubble = page.locator(".chat-message--assistant .chat-message__bubble").first();
     if ((await wordToken.count()) > 0) {
       // No word should carry a persistent highlight at rest (e.g. a "new
       // vocabulary" tint) - only the click-to-pin/hover state below should
@@ -341,12 +349,24 @@ async function checkBrowserEndToEnd() {
       await wordToken.hover();
       await page.waitForSelector(".translate-popover", { timeout: 8_000 });
       console.log("  OK - hover translation popover works");
-      // Close it before moving on - it's portaled to document.body and
-      // positioned from the word's own coordinates, which can land right
-      // over the action row below the bubble and intercept the next
-      // step's hover on the globe button otherwise.
+
+      const bubbleBox = await assistantBubble.boundingBox();
+      const wordPopoverBox = await page.locator(".translate-popover").first().boundingBox();
+      const wordDockGap = wordPopoverBox.y - (bubbleBox.y + bubbleBox.height);
+      if (Math.abs(wordDockGap) > 2) {
+        fail(`chat-bubble word popover isn't flush against the bottom of its bubble (gap=${wordDockGap.toFixed(1)}px)`);
+      } else {
+        console.log("  OK - word popover docks flush to the bottom of its message bubble");
+      }
+
+      // Close it before moving on - docked below the whole bubble, which
+      // can land right over the action row below it and intercept the
+      // next step's hover on the globe button otherwise. The close is
+      // delayed (HOVER_CLOSE_DELAY_MS in ChatMessage.tsx) so the pointer
+      // can safely travel from the word down to the docked popover without
+      // it vanishing first - wait past that delay, not just a moment.
       await page.mouse.move(0, 0);
-      await page.waitForTimeout(100);
+      await page.waitForTimeout(300);
 
       // Clicking (not just hovering) should pin it open with a highlight -
       // the mobile equivalent of hover, since a tap never fires mouseenter
@@ -388,7 +408,7 @@ async function checkBrowserEndToEnd() {
       // in the bubble (the audio/translate-toggle buttons).
       await wordToken.click();
       await page.mouse.move(0, 0);
-      await page.waitForTimeout(100);
+      await page.waitForTimeout(300);
     } else {
       console.log("  (no trackable word tokens in this reply - skipping hover check)");
     }
@@ -710,22 +730,51 @@ async function checkBrowserEndToEnd() {
     });
     const coachBox = await page.locator(".coach-popover").first().boundingBox();
     const viewport = page.viewportSize();
-    if (coachBox.y < 0 || coachBox.y + coachBox.height > viewport.height) {
-      fail(`coach popover rendered out of bounds: y=${coachBox.y} height=${coachBox.height} viewport=${viewport.height}`);
+    // Docking it below the input bar can push it past the bottom of a
+    // short viewport - DockedPopover scrolls it into view on open (see
+    // DockedPopover.tsx) rather than leaving it silently off-screen; allow
+    // a hair of slack for subpixel rounding in that scroll math.
+    if (coachBox.y < -1 || coachBox.y + coachBox.height > viewport.height + 1) {
+      fail(`coach popover isn't scrolled into view: y=${coachBox.y} height=${coachBox.height} viewport=${viewport.height}`);
     }
-    // Docked flush against the input bar's own top edge, not floating
-    // somewhere else on screen based on where the help button sits.
+    // Docked flush against the input bar's own BOTTOM edge (moved below the
+    // draft so it reads out of the way of the text being edited - see
+    // ChatInput.tsx), not above it and not floating somewhere else on
+    // screen based on where the help button sits.
     const coachInputBarBox = await page.locator(".chat-input").boundingBox();
-    const coachDockGap = coachInputBarBox.y - (coachBox.y + coachBox.height);
+    const coachDockGap = coachBox.y - (coachInputBarBox.y + coachInputBarBox.height);
     if (Math.abs(coachDockGap) > 2) {
-      fail(`coach popover isn't flush against the input bar (gap=${coachDockGap.toFixed(1)}px)`);
+      fail(`coach popover isn't flush against the bottom of the input bar (gap=${coachDockGap.toFixed(1)}px)`);
     } else {
-      console.log("  OK - coach popover sits flush against the input bar, not floating");
+      console.log("  OK - coach popover sits flush below the input bar, not above or floating");
     }
     const coachText = await page.locator(".coach-popover").innerText();
     console.log(`  OK - help button opened coach popover: ${JSON.stringify(coachText)}`);
     await page.screenshot({ path: "e2e-debug-coach-popover.png" });
 
+    // Explicit close (✕) button - unlike a quick word lookup, this can sit
+    // open a while reading options, so it needs its own way out besides
+    // toggling the help button again.
+    const coachCloseButton = page.locator(".coach-popover__close");
+    if ((await coachCloseButton.count()) === 0) {
+      fail("coach popover has no visible close (✕) button");
+    }
+    await coachCloseButton.click();
+    const closedByX = (await page.locator(".coach-popover").count()) === 0;
+    if (!closedByX) fail("coach popover's ✕ button did not close it");
+    const focusAfterCoachClose = await page.evaluate(() => document.activeElement?.className ?? "");
+    if (!focusAfterCoachClose.includes("chat-input__textarea")) {
+      fail(`closing the coach popover via ✕ left focus on ${JSON.stringify(focusAfterCoachClose)}, not the draft textarea`);
+    }
+    console.log("  OK - the ✕ button closes the coach popover and returns focus to the draft");
+
+    // Re-open it to confirm applying an option still works and also closes
+    // the popover (a second, implicit way to close it).
+    await helpButton.click();
+    await page.waitForSelector(".coach-popover", { timeout: 10_000 });
+    await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
+      timeout: 10_000,
+    });
     const firstOption = page.locator(".coach-popover__option").first();
     const optionText = await firstOption.locator(".coach-popover__option-text").innerText();
     await firstOption.click();
@@ -775,15 +824,19 @@ async function checkBrowserEndToEnd() {
 
     // Switch the voice picker to a non-default voice and confirm the next
     // speak request actually carries that voice - not just that the
-    // dropdown renders.
-    const voiceSelect = page.locator(".app__voice-picker select");
-    if ((await voiceSelect.count()) > 0) {
-      const options = await voiceSelect.locator("option").allTextContents();
-      const targetLabel = options.includes("Alex") ? "Alex" : options.find((l) => l.trim().length > 0);
+    // control renders. This is a button-based SegmentedControl, not a
+    // native <select> (removed so the chat textarea is the page's only
+    // native form control - see SegmentedControl.tsx - which otherwise
+    // made iOS Safari show its keyboard accessory bar's field-navigation
+    // arrows).
+    const voiceOptions = page.locator(".app__voice-picker .segmented-control__option");
+    if ((await voiceOptions.count()) > 0) {
+      const labels = await voiceOptions.allTextContents();
+      const targetLabel = labels.includes("Alex") ? "Alex" : labels.find((l) => l.trim().length > 0);
       if (!targetLabel) {
         fail("voice picker has no selectable options");
       }
-      await voiceSelect.selectOption({ label: targetLabel });
+      await voiceOptions.filter({ hasText: targetLabel }).first().click();
 
       const responsePromise2 = page.waitForResponse(
         (res) => res.url().includes("/tts/speak") && res.request().method() === "POST",
@@ -797,7 +850,20 @@ async function checkBrowserEndToEnd() {
       }
       console.log(`  OK - voice picker switched to ${targetLabel}, request carried voice=${requestBody.voice}`);
     } else {
-      fail("no voice picker (.app__voice-picker select) found in the header");
+      fail("no voice picker (.app__voice-picker .segmented-control__option) found in the header");
+    }
+
+    // Regression check for the iOS keyboard accessory bar fix: the chat
+    // textarea should be the only native form control left on the page
+    // (see SegmentedControl.tsx/ToggleSwitch.tsx - voice picker, model
+    // provider, and word-weighting are all button-based now).
+    const formControlTagNames = await page.evaluate(() =>
+      [...document.querySelectorAll("input, select, textarea")].map((el) => el.tagName),
+    );
+    if (formControlTagNames.length !== 1 || formControlTagNames[0] !== "TEXTAREA") {
+      fail(`expected only the chat textarea as a native form control, found: ${JSON.stringify(formControlTagNames)}`);
+    } else {
+      console.log("  OK - the chat textarea is the only native form control on the page (no stray select/checkbox)");
     }
 
     // Reload and confirm history hydration actually restores the

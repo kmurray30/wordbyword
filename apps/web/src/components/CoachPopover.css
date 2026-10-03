@@ -1,6 +1,8 @@
 /* Positioned by DockedPopover, which governs sizing - this class only
-   carries appearance. */
+   carries appearance. position:relative so the close button can anchor
+   to its corner. */
 .coach-popover {
+  position: relative;
   z-index: 20;
   display: flex;
   flex-direction: column;
@@ -10,9 +12,25 @@
   color: #f2f2f2;
   border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  padding: 10px 12px;
+  padding: 10px 30px 10px 12px;
   font-size: 0.85rem;
   line-height: 1.35;
+}
+
+.coach-popover__close {
+  all: unset;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 4px;
+}
+
+.coach-popover__close:hover {
+  opacity: 1;
 }
 
 .coach-popover__status {

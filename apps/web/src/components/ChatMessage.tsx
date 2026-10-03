@@ -3,12 +3,19 @@ import { api } from "../api/client";
 import type { TokenAnnotation } from "../api/client";
 import { joinTokens } from "../lib/spacing";
 import { diffRawWords, pickDiffReference, tokenizeSegments } from "../lib/wordDiff";
+import { DockedPopover } from "./DockedPopover";
+import { TranslatePopover } from "./TranslatePopover";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
 import "./ChatMessage.css";
 
 const TRANSLATION_FAILED = "(translation failed)";
+// Grace period before closing a word's popover on mouseleave - it's
+// docked flush to the bottom of the whole bubble (see DockedPopover)
+// rather than floating right next to the hovered word, so the pointer
+// has to travel there, leaving the word's own bounds along the way.
+const HOVER_CLOSE_DELAY_MS = 200;
 
 export interface DisplayMessage {
   id: number;
@@ -37,6 +44,36 @@ const RESOLUTION_DELAY_MS = 6000;
 
 export function ChatMessage({ message, voice }: { message: DisplayMessage; voice?: string }) {
   const resolvedLemmas = useRef<Set<string>>(new Set());
+
+  // Which word's translation popover is open, if any - at most one per
+  // message, docked flush to the bottom of this message's own bubble
+  // (see the DockedPopover render below) rather than each word rendering
+  // its own floating popover. Hover takes precedence for display (so
+  // momentarily hovering a different word while one is pinned previews
+  // that word instead), falling back to whatever's pinned.
+  const [hoveredWordIndex, setHoveredWordIndex] = useState<number | null>(null);
+  const [pinnedWordIndex, setPinnedWordIndex] = useState<number | null>(null);
+  const openWordIndex = hoveredWordIndex ?? pinnedWordIndex;
+  const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelHoverClose = () => {
+    if (hoverCloseTimerRef.current !== null) {
+      clearTimeout(hoverCloseTimerRef.current);
+      hoverCloseTimerRef.current = null;
+    }
+  };
+  const scheduleHoverClose = () => {
+    cancelHoverClose();
+    hoverCloseTimerRef.current = setTimeout(() => {
+      hoverCloseTimerRef.current = null;
+      setHoveredWordIndex(null);
+    }, HOVER_CLOSE_DELAY_MS);
+  };
+  useEffect(() => {
+    return () => {
+      if (hoverCloseTimerRef.current !== null) clearTimeout(hoverCloseTimerRef.current);
+    };
+  }, []);
 
   // Hovering the message previews its translation (fetched eagerly below,
   // so it's normally instant); the toggle button also pins it open on
@@ -189,8 +226,17 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
                 <WordToken
                   surface={tok.surface}
                   gloss={tok.gloss}
-                  note={tok.note}
-                  onHover={() => handleHover(tok.lemma)}
+                  open={openWordIndex === i}
+                  onOpen={() => {
+                    cancelHoverClose();
+                    setHoveredWordIndex(i);
+                    handleHover(tok.lemma);
+                  }}
+                  onClose={scheduleHoverClose}
+                  onTogglePin={() => {
+                    setPinnedWordIndex((cur) => (cur === i ? null : i));
+                    handleHover(tok.lemma);
+                  }}
                 />
               </span>
             ))
@@ -206,6 +252,18 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
             )
           ) : (
             message.text
+          )}
+          {openWordIndex !== null && message.tokens?.[openWordIndex] && (
+            <DockedPopover position="below" onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
+              <TranslatePopover
+                candidates={[
+                  {
+                    translation: message.tokens[openWordIndex].gloss,
+                    description: message.tokens[openWordIndex].note || undefined,
+                  },
+                ]}
+              />
+            </DockedPopover>
           )}
         </div>
         <div className="chat-message__actions">
