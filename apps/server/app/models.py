@@ -48,7 +48,9 @@ class ChatMessage(Base):
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
-    tokens: Mapped[list["MessageToken"]] = relationship(back_populates="message", cascade="all, delete-orphan")
+    tokens: Mapped[list["MessageToken"]] = relationship(
+        back_populates="message", cascade="all, delete-orphan", order_by="MessageToken.position"
+    )
 
 
 class AppSettings(Base):

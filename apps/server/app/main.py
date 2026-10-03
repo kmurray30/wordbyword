@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app import settings_store
 from app.chat.logit_bias import warm_up as warm_up_tokenizer
 from app.config import MODEL_SERVER_BASE_URL, OPENAI_API_KEY
-from app.db import get_session, init_db
+from app.db import SessionLocal, get_session, init_db
 from app.routes import chat, events, settings, translate, tts
 from app.schemas import LlmHealthResponse
 
@@ -34,7 +34,18 @@ app.include_router(settings.router)
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
-    warm_up_tokenizer()
+    # The tokenizer this loads is only ever used for logit_bias (see
+    # logit_bias.py) - meaningless, and never touched, under the "openai"
+    # provider. Warming it up unconditionally made EVERY boot (including
+    # openai-provider deployments) block on a slow, network-dependent HF
+    # Hub fetch before the app would accept any connections at all.
+    session = SessionLocal()
+    try:
+        provider = settings_store.get_settings(session).model_provider
+    finally:
+        session.close()
+    if provider == "local":
+        warm_up_tokenizer()
 
 
 @app.get("/health")

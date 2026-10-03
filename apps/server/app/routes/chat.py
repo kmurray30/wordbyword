@@ -112,6 +112,14 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
         # Spanish by construction; only punctuation has nothing to gloss.
         if not tok.surface.isalpha():
             annotations.append(TokenAnnotation(surface=tok.surface, lemma=tok.lemma, pos=tok.pos, gloss="", is_new=False))
+            # Persisted too (not just returned live) - a MessageToken row
+            # with no gloss, same as any other token with nothing to show.
+            # Skipping this used to silently drop every punctuation mark
+            # from a message's token array on the very next history
+            # reload (GET /chat/history reconstructs tokens purely from
+            # these rows), which joinTokens.ts then rendered as words
+            # mashed directly together with no sign anything was missing.
+            token_rows.append(MessageToken(position=position, surface=tok.surface, lemma=tok.lemma, pos=tok.pos))
             continue
 
         llm_gloss, llm_note = word_map.get(tok.surface.lower()) or word_map.get(tok.lemma.lower()) or empty_gloss

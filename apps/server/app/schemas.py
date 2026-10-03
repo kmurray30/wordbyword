@@ -71,36 +71,18 @@ class InterpretInputResponse(BaseModel):
     target: str
 
 
-class CoachDraftRequest(BaseModel):
-    text: str
-    session_id: str
-
-
-class CoachOption(BaseModel):
-    formality: str  # "neutral" | "casual" | "formal"
-    spanish: str
-
-
-class CoachDraftResponse(BaseModel):
-    # Best-guess English meaning of what the learner is trying to say -
-    # empty if the draft was empty.
-    meaning: str
-    # One short, encouraging note on how apt/correct the attempt was -
-    # empty if there's nothing worth flagging.
-    feedback: str
-    options: list[CoachOption]
-
-
 class TagInputRequest(BaseModel):
     text: str
 
 
 class DraftToken(BaseModel):
     # Cheap, LLM-free per-word classification (spaCy tokenize/lemmatize +
-    # app.translate.lemmatizer's existing is_spanish heuristic), computed
-    # on every /translate/tag-input call regardless of whether the slower
-    # LLM-backed `spans` below succeeded. Needed for reward-event tracking
-    # (userTypedSpanishWord) and the phrase-selection direction vote.
+    # app.translate.lemmatizer's existing is_spanish heuristic) from
+    # /translate/tag-input - fast enough to keep calling on every keystroke
+    # (debounced), unlike the LLM-backed per-word/group glossing
+    # (GlossSpansResponse.spans below), which is fetched lazily instead.
+    # Needed for reward-event tracking (userTypedSpanishWord) and the
+    # phrase-selection direction vote.
     surface: str
     lemma: str
     is_spanish: bool
@@ -112,19 +94,24 @@ class DraftSpan(BaseModel):
     # One word, or an LLM-chosen multi-word group (idiom/phrasal verb/fixed
     # expression) the learner is still typing - from app.translate.
     # llm_translate.tag_draft, matched back to exact offsets by
-    # app.translate.span_matching. No dual Spanish/English-reading toggle
-    # (unlike the old InputTokenAnnotation/TranslationColumn this replaces)
-    # - the LLM already has full sentence context, so it picks the one
-    # sense that applies here instead of two independent dictionary
-    # lookups needing reconciliation in the UI.
+    # app.translate.span_matching.
     surface: str
     start: int
     end: int
     # False for a span that's already natural, correct Spanish as typed -
     # nothing to replace, candidates[0] is just its in-context gloss. True
-    # for a span offering a Spanish replacement to swap in.
+    # for a span offering a Spanish replacement to swap in. Always the
+    # EN->ES direction - the default/primary reading.
     clickable: bool
     candidates: list[TranslateCandidate]
+    # Non-empty only for a standalone word that's ALSO a legitimate,
+    # different word in the other language (a true cross-language cognate,
+    # e.g. "once" - Spanish for "eleven", also an English word) - its
+    # meaning read as that other word, in English. The frontend shows a
+    # low-profile toggle between the primary (candidates/clickable) and
+    # this alternate reading only when this is non-empty. Empty for the
+    # overwhelming majority of spans, which have no such ambiguity.
+    alternate_gloss: str = ""
 
 
 class LlmHealthResponse(BaseModel):
@@ -133,7 +120,61 @@ class LlmHealthResponse(BaseModel):
 
 class TagInputResponse(BaseModel):
     tokens: list[DraftToken]
+
+
+class GlossSpansRequest(BaseModel):
+    text: str
+
+
+class GlossSpansResponse(BaseModel):
     spans: list[DraftSpan]
+
+
+class CoachDraftRequest(BaseModel):
+    text: str
+    session_id: str
+
+
+class CoachOption(BaseModel):
+    formality: str  # "neutral" | "casual" | "formal"
+    spanish: str
+    # From the SAME streamed /translate/coach call's second phase - empty
+    # until that phase arrives (see the "translations" SSE event below).
+    # `english` is this option's own whole-phrase English translation;
+    # `spans` is its word-by-word gloss, in exactly the shape
+    # GlossSpansResponse.spans already uses for the draft text itself (same
+    # app.translate.span_matching matching, against THIS option's own
+    # spanish text) - so picking this option can seed the chat input's
+    # lazy gloss cache immediately, with no extra /translate/gloss-spans
+    # round trip.
+    english: str = ""
+    spans: list[DraftSpan] = []
+
+
+# The streamed /translate/coach endpoint sends these as SSE events
+# (`data: <json>\n\n`, `event:` line set to "core"/"translations"/"error")
+# rather than a single JSON response - PART 1 (core) is usable the moment
+# it arrives; PART 2 (translations) fills in each option's english/spans
+# a bit later, from the SAME underlying LLM call (see app.translate.
+# llm_translate.coach_draft_stream).
+class CoachCoreEvent(BaseModel):
+    # Best-guess English meaning of what the learner is trying to say -
+    # empty if the draft was empty.
+    meaning: str
+    # One short, encouraging note on how apt/correct the attempt was -
+    # empty if there's nothing worth flagging.
+    feedback: str
+    options: list[CoachOption]
+
+
+class CoachTranslationsEvent(BaseModel):
+    # Parallel to CoachCoreEvent.options by list position - the frontend
+    # merges these into the options it's already showing.
+    options: list[CoachOption]
+
+
+class CoachErrorEvent(BaseModel):
+    message: str
 
 
 class RewardEventRequest(BaseModel):

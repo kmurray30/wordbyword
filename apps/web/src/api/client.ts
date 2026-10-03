@@ -21,6 +21,11 @@ type TagInputRequest =
 type TagInputResponse =
   paths["/translate/tag-input"]["post"]["responses"][200]["content"]["application/json"];
 
+type GlossSpansRequest =
+  paths["/translate/gloss-spans"]["post"]["requestBody"]["content"]["application/json"];
+type GlossSpansResponse =
+  paths["/translate/gloss-spans"]["post"]["responses"][200]["content"]["application/json"];
+
 type InterpretInputRequest =
   paths["/translate/interpret"]["post"]["requestBody"]["content"]["application/json"];
 type InterpretInputResponse =
@@ -28,8 +33,89 @@ type InterpretInputResponse =
 
 type CoachDraftRequest =
   paths["/translate/coach"]["post"]["requestBody"]["content"]["application/json"];
-type CoachDraftResponse =
-  paths["/translate/coach"]["post"]["responses"][200]["content"]["application/json"];
+
+// /translate/coach streams Server-Sent Events rather than a single JSON
+// response (see app/routes/translate.py's coach_draft), so there's no
+// OpenAPI-generated response type for it - these mirror app/schemas.py's
+// CoachOption/CoachCoreEvent/CoachTranslationsEvent/CoachErrorEvent by
+// hand instead.
+export interface CoachOption {
+  formality: string;
+  spanish: string;
+  // Both empty until the "translations" event arrives - see
+  // CoachStreamEvent below.
+  english: string;
+  spans: DraftSpan[];
+}
+
+export interface CoachCoreEvent {
+  meaning: string;
+  feedback: string;
+  options: CoachOption[];
+}
+
+export interface CoachTranslationsEvent {
+  // Parallel to the core event's options by list position.
+  options: CoachOption[];
+}
+
+export interface CoachErrorEvent {
+  message: string;
+}
+
+export type CoachStreamEvent =
+  | { type: "core"; data: CoachCoreEvent }
+  | { type: "translations"; data: CoachTranslationsEvent }
+  | { type: "error"; data: CoachErrorEvent };
+
+function parseSseBlock(block: string): CoachStreamEvent | null {
+  let eventName = "";
+  let dataLine = "";
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) eventName = line.slice("event:".length).trim();
+    else if (line.startsWith("data:")) dataLine = line.slice("data:".length).trim();
+  }
+  if (!dataLine) return null;
+  if (eventName === "core" || eventName === "translations" || eventName === "error") {
+    return { type: eventName, data: JSON.parse(dataLine) } as CoachStreamEvent;
+  }
+  return null;
+}
+
+// Reads the coaching response's SSE stream incrementally, yielding each
+// event as it completes - "core" (the feedback + options themselves,
+// usable right away) typically arrives well before "translations" (each
+// option's own English translation + word-by-word breakdown, streamed
+// from the SAME underlying LLM call - see coach_draft_stream's docstring
+// in app/translate/llm_translate.py). `signal` lets the caller abort mid-
+// stream (e.g. the draft changed before coaching finished).
+async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal): AsyncGenerator<CoachStreamEvent> {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/translate/coach`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    const detail = response.body ? await response.text() : "";
+    throw new Error(`/translate/coach failed (${response.status}): ${detail}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const event = parseSseBlock(block);
+      if (event) yield event;
+    }
+  }
+}
 
 type RewardEventRequest =
   paths["/events/reward"]["post"]["requestBody"]["content"]["application/json"];
@@ -188,9 +274,10 @@ export const api = {
   translateText: (body: TranslateTextRequest) =>
     post<TranslateTextRequest, TranslateTextResponse>("/translate/text", body),
   tagInput: (body: TagInputRequest) => post<TagInputRequest, TagInputResponse>("/translate/tag-input", body),
+  glossSpans: (body: GlossSpansRequest) => post<GlossSpansRequest, GlossSpansResponse>("/translate/gloss-spans", body),
   interpretInput: (body: InterpretInputRequest) =>
     post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", body),
-  coachDraft: (body: CoachDraftRequest) => post<CoachDraftRequest, CoachDraftResponse>("/translate/coach", body),
+  coachDraftStream,
   rewardEvent: (body: RewardEventRequest) =>
     post<RewardEventRequest, RewardEventResponse>("/events/reward", body),
   speak,
@@ -204,7 +291,7 @@ export const api = {
 
 export type TokenAnnotation = ChatTurnResponse["tokens"][number];
 export type DraftToken = TagInputResponse["tokens"][number];
-export type DraftSpan = TagInputResponse["spans"][number];
+export type DraftSpan = GlossSpansResponse["spans"][number];
 export type TranslateCandidate = components["schemas"]["TranslateCandidate"];
 export type ChatHistoryMessage = ChatHistoryResponse["messages"][number];
 
@@ -212,8 +299,8 @@ export type {
   ChatTurnResponse,
   TranslateTextResponse,
   TagInputResponse,
+  GlossSpansResponse,
   InterpretInputResponse,
-  CoachDraftResponse,
   RewardEventRequest,
   TTSVoicesResponse,
   ChatHistoryResponse,

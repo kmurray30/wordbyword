@@ -1,9 +1,5 @@
+import type { CoachOption } from "../api/client";
 import "./CoachPopover.css";
-
-export interface CoachOption {
-  formality: string;
-  spanish: string;
-}
 
 interface CoachPopoverProps {
   meaning: string;
@@ -11,26 +7,52 @@ interface CoachPopoverProps {
   options: CoachOption[];
   loading: boolean;
   error: boolean;
-  onSelect: (spanish: string) => void;
+  // True while the SAME underlying streamed call's second phase (each
+  // option's own English translation + word-by-word breakdown) is still
+  // in flight - options themselves (and picking one) are already usable
+  // before this clears.
+  translationsPending: boolean;
+  // Which option the learner has picked, if any - stays set (and this
+  // popover stays open/rendered) after a pick, so they can compare a
+  // different option afterward. Not the same as "closed": only onClose
+  // or onRegenerate make the popover go away/refetch.
+  selectedIndex: number | null;
+  onSelect: (option: CoachOption, index: number) => void;
   onClose: () => void;
+  onRegenerate: () => void;
 }
 
 const FORMALITY_LABEL: Record<string, string> = { neutral: "Natural", casual: "Casual", formal: "Formal" };
 
-// The input's "help" button's popover: unlike the single-candidate draft
-// translate preview it replaces, this shows the model's best guess at what
-// the learner meant, a short note on how close their attempt already was,
-// and a few ways to actually phrase it in Spanish (at different formality
-// levels) - clicking one applies it to the draft, same as before. Also
-// closeable explicitly (not just by clicking the help button again) -
-// unlike a quick word lookup, this can sit open for a while reading
-// options, so it's worth a dedicated way out.
-export function CoachPopover({ meaning, feedback, options, loading, error, onSelect, onClose }: CoachPopoverProps) {
+export function CoachPopover({
+  meaning,
+  feedback,
+  options,
+  loading,
+  error,
+  translationsPending,
+  selectedIndex,
+  onSelect,
+  onClose,
+  onRegenerate,
+}: CoachPopoverProps) {
   return (
     <div className="coach-popover" role="tooltip">
-      <button type="button" className="coach-popover__close" onClick={onClose} aria-label="Close">
-        ✕
-      </button>
+      <div className="coach-popover__header-buttons">
+        <button
+          type="button"
+          className="coach-popover__regenerate"
+          onClick={onRegenerate}
+          disabled={loading}
+          aria-label="Get new suggestions"
+          title="Get new suggestions"
+        >
+          ↻
+        </button>
+        <button type="button" className="coach-popover__close" onClick={onClose} aria-label="Close">
+          ✕
+        </button>
+      </div>
       {loading && <div className="coach-popover__status">Thinking…</div>}
       {error && <div className="coach-popover__status coach-popover__status--error">Couldn't get suggestions - try again</div>}
       {!loading && !error && (
@@ -43,12 +65,23 @@ export function CoachPopover({ meaning, feedback, options, loading, error, onSel
           )}
           {feedback && <div className="coach-popover__feedback">{feedback}</div>}
           <div className="coach-popover__options">
-            {options.map((opt, i) => (
-              <button key={i} type="button" className="coach-popover__option" onClick={() => onSelect(opt.spanish)}>
-                <span className="coach-popover__option-label">{FORMALITY_LABEL[opt.formality] ?? opt.formality}</span>
-                <span className="coach-popover__option-text">{opt.spanish}</span>
-              </button>
-            ))}
+            {options.map((opt, i) => {
+              const selected = selectedIndex === i;
+              return (
+                <div key={i} className={`coach-popover__option${selected ? " coach-popover__option--selected" : ""}`}>
+                  <button type="button" className="coach-popover__option-main" onClick={() => onSelect(opt, i)}>
+                    <span className="coach-popover__option-label">{FORMALITY_LABEL[opt.formality] ?? opt.formality}</span>
+                    <span className="coach-popover__option-text">{opt.spanish}</span>
+                  </button>
+                  {selected &&
+                    (opt.english ? (
+                      <div className="coach-popover__option-english">{opt.english}</div>
+                    ) : translationsPending ? (
+                      <div className="coach-popover__option-english coach-popover__option-english--loading">Translating…</div>
+                    ) : null)}
+                </div>
+              );
+            })}
           </div>
         </>
       )}

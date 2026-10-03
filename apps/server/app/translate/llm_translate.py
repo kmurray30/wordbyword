@@ -13,7 +13,7 @@ not block the UI on it.
 import json
 import re
 
-from app.chat.model_client import ModelServerUnavailableError, chat as model_chat
+from app.chat.model_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.translate.lemmatizer import analyze
 
 _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
@@ -127,9 +127,10 @@ def gloss_reply(
                 f'exactly this shape: {{"translation": "<the full {target_name} '
                 f'translation>", "words": {{"<word as it appears in the text>": '
                 f'{{"gloss": "<its {target_name} meaning in this sentence>", '
-                f'"note": "<if this word could easily be confused with a '
-                f"different sense or word, one short phrase explaining why "
-                f'this sense applies here - otherwise an empty string>"}}, '
+                f'"note": "<in {target_name}: if this word could easily be '
+                f"confused with a different sense or word, one short phrase "
+                f'explaining why this sense applies here - otherwise an empty '
+                f'string>"}}, '
                 f"...}}}}"
             ),
         },
@@ -315,16 +316,11 @@ _TAG_DRAFT_MAX_TOKENS = 900  # each span here carries 4 string fields
 # than an obviously-wrong but diagnosable response.
 
 
-def _extract_span_list_json(reply: str) -> tuple[str, list[dict[str, str]]]:
-    match = _JSON_OBJECT_RE.search(reply)
-    if not match:
-        raise ValueError(f"no JSON object found in reply: {reply!r}")
-    data = json.loads(match.group(0))
-    translation = data["translation"]
-    raw_spans = data["spans"]
-    if not isinstance(translation, str) or not isinstance(raw_spans, list):
-        raise ValueError(f"unexpected JSON shape: {data!r}")
-
+def _coerce_spans(raw_spans: list) -> list[dict[str, str]]:
+    """Shared span-dict normalization for any LLM call that returns a
+    surface/gloss/note/translation/alternate_gloss list in this shape -
+    tag_draft below, and coach_draft_stream's per-option word-by-word
+    breakdown (app.routes.translate's streaming coach endpoint) alike."""
     spans: list[dict[str, str]] = []
     for item in raw_spans:
         if not isinstance(item, dict):
@@ -338,9 +334,22 @@ def _extract_span_list_json(reply: str) -> tuple[str, list[dict[str, str]]]:
                 "gloss": str(item.get("gloss", "")),
                 "note": str(item.get("note", "")),
                 "translation": str(item.get("translation", "")),
+                "alternate_gloss": str(item.get("alternate_gloss", "")),
             }
         )
-    return translation, spans
+    return spans
+
+
+def _extract_span_list_json(reply: str) -> tuple[str, list[dict[str, str]]]:
+    match = _JSON_OBJECT_RE.search(reply)
+    if not match:
+        raise ValueError(f"no JSON object found in reply: {reply!r}")
+    data = json.loads(match.group(0))
+    translation = data["translation"]
+    raw_spans = data["spans"]
+    if not isinstance(translation, str) or not isinstance(raw_spans, list):
+        raise ValueError(f"unexpected JSON shape: {data!r}")
+    return translation, _coerce_spans(raw_spans)
 
 
 def tag_draft(
@@ -366,7 +375,12 @@ def tag_draft(
          "gloss": <short native_lang meaning in context>,
          "note": <disambiguation note, or empty>,
          "translation": <target_lang replacement text, empty if the
-            surface text is already natural target_lang as typed>}.
+            surface text is already natural target_lang as typed>,
+         "alternate_gloss": <empty for almost every span; non-empty only
+            when a standalone word is ALSO a legitimate, different word in
+            native_lang (a true cross-language cognate, e.g. "once" -
+            Spanish for "eleven", also an English word) - that other
+            word's meaning, in native_lang>}.
     The model decides span boundaries - usually one word, occasionally a
     few words grouped as an idiom/phrasal verb/fixed expression. This does
     NOT itself guarantee the surface text is actually findable in draft at
@@ -402,16 +416,24 @@ def tag_draft(
                 f"be a single word. Copy each span's `surface` EXACTLY as it appears "
                 f"in the draft - same spelling, same case, same accents, not "
                 f"corrected or paraphrased (corrections belong only in "
-                f"`translation`).\n\n"
+                f"`translation`). (3) For a span that is just ONE standalone word, "
+                f"check whether that exact spelling is ALSO a legitimate, different "
+                f"word in {native_name} (a true cross-language cognate - for example "
+                f'"once" is Spanish for "eleven" but also an ordinary English word). '
+                f"If so, give that other word's meaning as `alternate_gloss`, in "
+                f"{native_name} - otherwise leave `alternate_gloss` an empty string; "
+                f"it will be empty for nearly every span.\n\n"
                 f"Reply with ONLY a single JSON object, no markdown fences, no "
                 f"explanation, in exactly this shape:\n"
                 f'{{"translation": "<your best {target_name} translation of the '
                 f'whole draft>", "spans": [{{"surface": "<exact text from the '
                 f'draft>", "gloss": "<its meaning here, in {native_name}>", "note": '
-                f'"<short reason if this sense could be confused with another - '
-                f'else empty>", "translation": "<a corrected/translated '
-                f'{target_name} replacement - empty if already correct, natural '
-                f'{target_name}>"}}, ...]}}'
+                f'"<in {native_name}: short reason if this sense could be confused '
+                f'with another - else empty>", "translation": "<a corrected/'
+                f'translated {target_name} replacement - empty if already '
+                f'correct, natural {target_name}>", "alternate_gloss": "<empty, or '
+                f"if this single-word span is ALSO a legitimate different word in "
+                f'{native_name}, that word\'s meaning, in {native_name}>"}}, ...]}}'
             ),
         },
         {"role": "user", "content": draft},
@@ -434,15 +456,27 @@ def tag_draft(
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
 
 
-_COACH_MAX_TOKENS = 600
+_COACH_CORE_MAX_TOKENS = 500
+_COACH_TRANSLATIONS_MAX_TOKENS = 700
+_COACH_STREAM_MAX_TOKENS = _COACH_CORE_MAX_TOKENS + _COACH_TRANSLATIONS_MAX_TOKENS
 _COACH_HISTORY_TURNS = 8
 _VALID_FORMALITIES = {"neutral", "casual", "formal"}
+# Written literally into the prompt, and watched for verbatim in the
+# streamed reply - delineates PART 1 (the coaching feedback + target_lang
+# options themselves, shown the moment it's ready) from PART 2 (each
+# option's own native_lang translation + word-by-word breakdown, which
+# keeps streaming after PART 1 is already on screen). Unlikely to
+# collide with real JSON string content, which is the only thing that
+# could make this fire early/never.
+_COACH_TRANSLATIONS_MARKER = "<<<TRANSLATIONS>>>"
 
 
-def _parse_coach_json(reply: str) -> tuple[str, str, list[tuple[str, str]]]:
-    match = _JSON_OBJECT_RE.search(reply)
+def _parse_coach_core_json(text: str) -> tuple[str, str, list[tuple[str, str]]]:
+    if _looks_garbled(text):
+        raise ValueError("garbled reply")
+    match = _JSON_OBJECT_RE.search(text)
     if not match:
-        raise ValueError(f"no JSON object found in reply: {reply!r}")
+        raise ValueError(f"no JSON object found in reply: {text!r}")
     data = json.loads(match.group(0))
     meaning = str(data.get("meaning", "")).strip()
     feedback = str(data.get("feedback", "")).strip()
@@ -466,25 +500,64 @@ def _parse_coach_json(reply: str) -> tuple[str, str, list[tuple[str, str]]]:
     return meaning, feedback, options
 
 
-def coach_draft(
+def _parse_coach_translations_json(text: str) -> list[dict]:
+    match = _JSON_OBJECT_RE.search(text)
+    if not match:
+        raise ValueError(f"no JSON object found in reply: {text!r}")
+    data = json.loads(match.group(0))
+    raw_options = data.get("options", [])
+    if not isinstance(raw_options, list):
+        raise ValueError(f"'options' wasn't a list: {data!r}")
+
+    result: list[dict] = []
+    for item in raw_options:
+        if not isinstance(item, dict):
+            result.append({"english": "", "spans": []})
+            continue
+        english = str(item.get("english", "")).strip()
+        raw_spans = item.get("spans", [])
+        spans = _coerce_spans(raw_spans) if isinstance(raw_spans, list) else []
+        result.append({"english": english, "spans": spans})
+    return result
+
+
+def coach_draft_stream(
     draft: str,
     history: list[tuple[str, str]],
     native_lang: str,
     target_lang: str,
     provider: str | None = None,
-) -> tuple[str, str, list[tuple[str, str]]]:
+):
     """For a message the learner is still drafting (not yet sent): infers
-    what they're trying to say across a possible mix of native_lang/
-    target_lang and grammar mistakes, gives brief feedback on how apt that
+    what they're trying to say, gives brief feedback on how apt that
     attempt was, and suggests the ideal target_lang phrasing - at a couple
-    of formality levels - given the recent conversation's tone and context
-    (unlike interpret_user_input above, which corrects a single message in
-    isolation with no awareness of what's been said so far). Returns
-    (meaning, feedback, options) where options is a list of
-    (formality, target_lang text) pairs, always with at least one entry for
-    non-empty input."""
+    of formality levels - given the recent conversation's tone and context.
+    ONE streamed LLM call, in two ordered parts delineated by
+    _COACH_TRANSLATIONS_MARKER in the raw reply:
+
+    PART 1 (the feedback + target_lang options themselves) is yielded as
+    ("core", {"meaning": ..., "feedback": ..., "options": [(formality,
+    target_lang text), ...]}) the moment it's complete, so the UI can show
+    it without waiting on PART 2 at all.
+
+    PART 2 (each PART-1 option's own native_lang translation + word-by-word
+    breakdown - the same surface/gloss/note/translation/alternate_gloss
+    shape tag_draft's spans use, matchable back to real offsets the same
+    way via app.translate.span_matching - so picking an option can seed
+    the chat input's lazy gloss cache immediately, with no extra fetch)
+    keeps streaming after that and is yielded separately, as
+    ("translations", [{"english": ..., "spans": [...]}, ...]), lined up
+    with PART 1's options by list position.
+
+    Unlike every other LLM-backed helper here, this does NOT retry on a
+    garbled/unparseable reply - PART 1 may already have been yielded (and
+    acted on by the caller) by the time PART 2 turns out unusable, so
+    there's nothing to cleanly retry. Raises TranslationUnavailableError
+    only if PART 1 itself never parses into anything usable; PART 2
+    failing/missing just means the generator yields one event instead of
+    two - a caller that only consumes "core" never notices."""
     if not draft.strip():
-        return "", "", []
+        return
 
     native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
     target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
@@ -501,20 +574,26 @@ def coach_draft(
                 f"{target_name}, whose native language is {native_name}. They are "
                 f"drafting their NEXT message in the conversation below - it may "
                 f"mix {native_name} and {target_name}, and may have grammar or "
-                f"spelling mistakes in either. Your job, in order: (1) figure out "
-                f"what they're trying to say, (2) give ONE short, encouraging "
-                f"sentence of feedback on how close their attempt already is to "
-                f"that meaning (empty string if it was basically already right), "
-                f"(3) suggest the ideal way to actually say it in {target_name} "
-                f"given the conversation's tone and context so far - balancing "
-                f"what they attempted with what actually fits.\n\n"
+                f"spelling mistakes in either.\n\n"
+                f"Respond in TWO parts, in this exact order, with nothing else.\n\n"
+                f"PART 1 - a single JSON object: (1) state their intent as a "
+                f"concise {native_name} sentence - if what they typed is ALREADY "
+                f"clear, grammatical {native_name}, just copy it verbatim; "
+                f"otherwise give the shortest natural {native_name} phrasing of "
+                f"what they meant, not a description of their intent; (2) give "
+                f"ONE short, encouraging sentence of feedback, in {native_name}, "
+                f"on how close their attempt already is to that meaning (empty "
+                f"string if it was basically already right); (3) suggest the "
+                f"ideal way to actually say it in {target_name} given the "
+                f"conversation's tone and context so far, at 3 formality levels.\n\n"
                 f"{context_block}"
-                f"Reply with ONLY a single JSON object, no markdown fences, no "
-                f"explanation, in exactly this shape:\n"
-                f'{{"meaning": "<your best guess, in {native_name}, at what they '
-                f'are trying to say>", "feedback": "<one short, encouraging '
-                f'sentence on how apt their attempt was, or an empty string if '
-                f'it was already right>", "options": [{{"formality": "neutral", '
+                f"PART 1's JSON shape, exactly:\n"
+                f'{{"meaning": "<their intent as a concise {native_name} '
+                f"sentence - verbatim copy of their own text if it's already "
+                f'clear, grammatical {native_name}>", "feedback": "<in '
+                f'{native_name}: one short, encouraging sentence on how apt '
+                f'their attempt was, or an empty string if it was already '
+                f'right>", "options": [{{"formality": "neutral", '
                 f'"spanish": "<the ideal {target_name} phrasing>"}}, {{"formality": '
                 f'"casual", "spanish": "<a more casual/informal way to say it>"}}, '
                 f'{{"formality": "formal", "spanish": "<a more formal/polite way '
@@ -524,35 +603,65 @@ def coach_draft(
                 f"and don't repeat the same phrasing across formality levels if "
                 f"you can genuinely vary it. If a formality distinction doesn't "
                 f"make sense for this particular message, it's fine for two "
-                f"options to be identical."
+                f"options to be identical.\n\n"
+                f"Immediately after PART 1's JSON, on its own, write exactly "
+                f"this marker: {_COACH_TRANSLATIONS_MARKER}\n\n"
+                f"Then PART 2 - a single JSON object translating EACH of PART "
+                f"1's options, IN THE SAME ORDER, back for the learner to "
+                f"double check: for every option, its whole-phrase "
+                f"{native_name} translation, and a word-by-word breakdown "
+                f"(skip pure punctuation; copy each `surface` EXACTLY as it "
+                f"appears in that option's own {target_name} text). PART 2's "
+                f"JSON shape, exactly:\n"
+                f'{{"options": [{{"english": "<whole-phrase {native_name} '
+                f'translation of this option>", "spans": [{{"surface": "<exact '
+                f"word/word-group from this option's {target_name} text>\", "
+                f'"gloss": "<its meaning here, in {native_name}>", "note": "<in '
+                f'{native_name}: short disambiguation note, or empty>"}}, '
+                f"...]}}, ...]}}\n\n"
+                f"No markdown fences, no explanation outside the two JSON "
+                f"objects and the marker between them."
             ),
         },
         {"role": "user", "content": draft},
     ]
 
-    last_reply = ""
-    last_error: Exception | None = None
-    for _attempt in range(2):
-        try:
-            last_reply = model_chat(messages, logit_bias={}, max_tokens=_COACH_MAX_TOKENS, provider=provider)
-        except ModelServerUnavailableError as exc:
-            raise TranslationUnavailableError(str(exc)) from exc
-        if _looks_garbled(last_reply):
-            last_error = ValueError("garbled reply")
-            continue
-        try:
-            meaning, feedback, options = _parse_coach_json(last_reply)
-            if options:
-                return meaning, feedback, options
-            last_error = ValueError("no usable options in reply")
-        except (ValueError, json.JSONDecodeError, KeyError) as exc:
-            last_error = exc
+    buffer = ""
+    core_yielded = False
+    try:
+        for chunk in model_chat_stream(
+            messages, logit_bias={}, max_tokens=_COACH_STREAM_MAX_TOKENS, provider=provider
+        ):
+            buffer += chunk
+            if core_yielded:
+                continue
+            idx = buffer.find(_COACH_TRANSLATIONS_MARKER)
+            if idx == -1:
+                continue
+            meaning, feedback, options = _parse_coach_core_json(buffer[:idx])
+            if not options:
+                raise ValueError("no usable options in reply")
+            core_yielded = True
+            yield ("core", {"meaning": meaning, "feedback": feedback, "options": options})
+            buffer = buffer[idx + len(_COACH_TRANSLATIONS_MARKER) :]
+    except ModelServerUnavailableError as exc:
+        raise TranslationUnavailableError(str(exc)) from exc
 
-    # Both attempts failed to yield a structured, usable reply - fall back
-    # to the same plain interpretation interpret_user_input already does
-    # (no conversation context, but still a real, correct translation)
-    # rather than surface nothing at all.
-    native_text, target_text = interpret_user_input(draft, native_lang, target_lang, provider=provider)
-    if not target_text:
-        raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
-    return native_text, "", [("neutral", target_text)]
+    if not core_yielded:
+        # The marker never arrived - under token pressure the model may
+        # have skipped PART 2 (or run out of budget) but the whole buffer
+        # can still be a usable PART 1 on its own.
+        try:
+            meaning, feedback, options = _parse_coach_core_json(buffer)
+        except (ValueError, json.JSONDecodeError, KeyError) as exc:
+            raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {buffer!r} ({exc})") from exc
+        if not options:
+            raise TranslationUnavailableError(f"Model reply had no usable options: {buffer!r}")
+        yield ("core", {"meaning": meaning, "feedback": feedback, "options": options})
+        return
+
+    try:
+        translations = _parse_coach_translations_json(buffer)
+    except (ValueError, json.JSONDecodeError, KeyError):
+        return  # PART 2 missing/garbled - PART 1 alone is still useful
+    yield ("translations", translations)

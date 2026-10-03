@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.chat.llama_client import ModelServerUnavailableError
 from app.db import Base
-from app.routes.chat import take_turn
+from app.routes.chat import get_history, take_turn
 from app.schemas import ChatTurnRequest
 
 
@@ -69,6 +69,26 @@ def test_word_gloss_uses_llm_context():
     assert by_surface["cerrado"].gloss == "closed"
     assert by_surface["cerrado"].note == ""
     assert result.translation == "The bank is closed."
+
+
+def test_punctuation_survives_a_history_reload():
+    # Punctuation tokens used to only ever exist in the live ChatTurnResponse
+    # (annotations) - never persisted as a MessageToken row - so GET
+    # /chat/history (which rebuilds tokens purely from those rows) silently
+    # dropped every punctuation mark on the very next reload.
+    session = _session()
+    with (
+        patch("app.routes.chat.model_chat", return_value="Hola, ¿qué tal?"),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+    ):
+        take_turn(ChatTurnRequest(session_id="t5", message="hola"), session=session)
+
+    history = get_history(session_id="t5", session=session)
+    assistant_message = next(m for m in history.messages if m.role == "assistant")
+    surfaces = [t.surface for t in assistant_message.tokens]
+    assert "," in surfaces
+    assert "¿" in surfaces
+    assert "?" in surfaces
 
 
 def test_word_missing_from_llm_map_gets_empty_gloss():

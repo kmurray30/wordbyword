@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -9,11 +10,15 @@ from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
 from app.models import ChatMessage
 from app.schemas import (
+    CoachCoreEvent,
     CoachDraftRequest,
-    CoachDraftResponse,
+    CoachErrorEvent,
     CoachOption,
+    CoachTranslationsEvent,
     DraftSpan,
     DraftToken,
+    GlossSpansRequest,
+    GlossSpansResponse,
     InterpretInputRequest,
     InterpretInputResponse,
     TagInputRequest,
@@ -31,6 +36,36 @@ logger = logging.getLogger(__name__)
 _COACH_HISTORY_TURNS = 8
 
 router = APIRouter(prefix="/translate", tags=["translate"])
+
+
+def _build_draft_spans(text: str, raw_spans: list[dict[str, str]]) -> list[DraftSpan]:
+    """Shared between /gloss-spans and the coach's streaming "translations"
+    phase below - matches raw surface/gloss/note/translation/
+    alternate_gloss dicts back to exact offsets in `text` (app.translate.
+    span_matching) and builds the DraftSpan shape the frontend's word-
+    candidate popover already knows how to render, whichever endpoint the
+    data came from."""
+    matched = match_spans(text, raw_spans)
+    spans: list[DraftSpan] = []
+    for m in matched:
+        candidate_text = m.translation.strip() or m.gloss.strip()
+        if not candidate_text:
+            continue  # nothing usable to show for this span - drop it
+        spans.append(
+            DraftSpan(
+                surface=m.surface,
+                start=m.start,
+                end=m.end,
+                clickable=bool(m.translation.strip()),
+                candidates=[TranslateCandidate(translation=candidate_text, description=m.note)],
+                alternate_gloss=m.alternate_gloss,
+            )
+        )
+    return spans
+
+
+def _sse(event: str, data: str) -> str:
+    return f"event: {event}\ndata: {data}\n\n"
 
 
 @router.post("/text", response_model=TranslateTextResponse)
@@ -61,14 +96,27 @@ def interpret_input(req: InterpretInputRequest, session: Session = Depends(get_s
     return InterpretInputResponse(native=native, target=target)
 
 
-@router.post("/coach", response_model=CoachDraftResponse)
-def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session)) -> CoachDraftResponse:
+@router.post("/coach")
+def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session)) -> StreamingResponse:
     """For a message the learner is still drafting (not yet sent) - unlike
     /interpret above, which corrects a single message in isolation, this
     pulls the session's recent conversation for context so the suggested
     phrasing actually fits the tone of what's been said so far, and returns
     feedback on the attempt plus phrasing options at a few formality
-    levels rather than a single flat correction."""
+    levels rather than a single flat correction.
+
+    Streamed as Server-Sent Events, one event per phase of the SAME
+    underlying LLM call (app.translate.llm_translate.coach_draft_stream):
+    a "core" event the moment the feedback + options themselves are ready
+    (usable immediately - the frontend shows these without waiting on
+    anything else), then a "translations" event once each option's own
+    English translation + word-by-word breakdown finishes streaming
+    afterward (for pre-populating the chat input's gloss cache the instant
+    an option is picked - see CoachOption's fields). An "error" event
+    means the core phase itself never produced anything usable; a stream
+    that ends after "core" with no "translations" just means that part
+    wasn't ready - that's not itself an error (see coach_draft_stream's
+    docstring)."""
     provider = settings_store.get_settings(session).model_provider
     history_rows = session.scalars(
         select(ChatMessage)
@@ -78,40 +126,62 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     ).all()
     history = [(row.role, row.text) for row in reversed(history_rows)]
 
-    try:
-        meaning, feedback, options = llm_translate.coach_draft(
-            req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider
-        )
-    except llm_translate.TranslationUnavailableError as exc:
-        msg = f"(translation unavailable: {exc})"
-        return CoachDraftResponse(meaning=msg, feedback="", options=[CoachOption(formality="neutral", spanish=msg)])
-    return CoachDraftResponse(
-        meaning=meaning,
-        feedback=feedback,
-        options=[CoachOption(formality=f, spanish=s) for f, s in options],
-    )
+    def events():
+        core_options: list[tuple[str, str]] = []
+        try:
+            for kind, payload in llm_translate.coach_draft_stream(
+                req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider
+            ):
+                if kind == "core":
+                    core_options = payload["options"]
+                    core_event = CoachCoreEvent(
+                        meaning=payload["meaning"],
+                        feedback=payload["feedback"],
+                        options=[CoachOption(formality=f, spanish=s) for f, s in core_options],
+                    )
+                    yield _sse("core", core_event.model_dump_json())
+                elif kind == "translations":
+                    options = []
+                    for i, (formality, spanish) in enumerate(core_options):
+                        per_option = payload[i] if i < len(payload) else {"english": "", "spans": []}
+                        spans = _build_draft_spans(spanish, per_option["spans"])
+                        options.append(
+                            CoachOption(formality=formality, spanish=spanish, english=per_option["english"], spans=spans)
+                        )
+                    translations_event = CoachTranslationsEvent(options=options)
+                    yield _sse("translations", translations_event.model_dump_json())
+        except llm_translate.TranslationUnavailableError as exc:
+            yield _sse("error", CoachErrorEvent(message=str(exc)).model_dump_json())
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @router.post("/tag-input", response_model=TagInputResponse)
 def tag_input(req: TagInputRequest, session: Session = Depends(get_session)) -> TagInputResponse:
-    """Two independent passes over the same draft text: `tokens` is a
-    cheap, synchronous, LLM-free per-word classification (spaCy +
-    lemmatizer.py's is_spanish heuristic) the frontend needs on every call
-    for reward-event tracking and its phrase-selection direction vote;
-    `spans` is the slower LLM-backed word/group glossing (app.translate.
-    llm_translate.tag_draft) that drives the hover-to-translate UI,
-    matched back to exact offsets via app.translate.span_matching. Kept in
-    one response so the frontend only has one request to debounce, even
-    though the two halves serve different purposes. On an LLM failure,
-    `spans` comes back empty - no dictionary/MT fallback - but `tokens` is
-    unaffected."""
-    provider = settings_store.get_settings(session).model_provider
-
+    """Cheap, synchronous, LLM-free per-word classification (spaCy +
+    lemmatizer.py's is_spanish heuristic) - fast enough to call on every
+    keystroke (debounced). Needed for reward-event tracking
+    (userTypedSpanishWord) and the phrase-selection direction vote. The
+    slower LLM-backed word/group glossing that drives the hover-to-
+    translate UI lives separately in /translate/gloss-spans below, fetched
+    lazily on interaction rather than on every edit."""
     tokens = [
         DraftToken(surface=tok.surface, lemma=tok.lemma, is_spanish=tok.is_spanish, start=tok.start, end=tok.end)
         for tok in analyze(req.text)
         if tok.surface.isalpha() and len(tok.surface) > 1
     ]
+    return TagInputResponse(tokens=tokens)
+
+
+@router.post("/gloss-spans", response_model=GlossSpansResponse)
+def gloss_spans(req: GlossSpansRequest, session: Session = Depends(get_session)) -> GlossSpansResponse:
+    """The slower, LLM-backed half of what used to be /translate/tag-input:
+    app.translate.llm_translate.tag_draft's word/group glossing, matched
+    back to exact offsets via app.translate.span_matching. Fetched lazily
+    (on hover/click/tap of a word), not on every keystroke, since this is a
+    real LLM call. On failure, returns an empty span list - no dictionary/
+    MT fallback."""
+    provider = settings_store.get_settings(session).model_provider
 
     try:
         _translation, raw_spans = llm_translate.tag_draft(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider)
@@ -119,8 +189,8 @@ def tag_input(req: TagInputRequest, session: Session = Depends(get_session)) -> 
         logger.warning("tag_draft unavailable for %r: %s", req.text, exc)
         raw_spans = []
 
-    matched = match_spans(req.text, raw_spans)
-    if raw_spans and not matched:
+    spans = _build_draft_spans(req.text, raw_spans)
+    if raw_spans and not spans:
         # The call succeeded, but every span's surface text failed to
         # locate in the draft (a hallucinated/paraphrased span, or a
         # normalization mismatch span_matching doesn't handle) - visible
@@ -128,19 +198,4 @@ def tag_input(req: TagInputRequest, session: Session = Depends(get_session)) -> 
         # otherwise indistinguishable from the LLM call failing outright.
         logger.warning("tag_draft returned %d span(s) but none matched %r: %r", len(raw_spans), req.text, raw_spans)
 
-    spans: list[DraftSpan] = []
-    for m in matched:
-        candidate_text = m.translation.strip() or m.gloss.strip()
-        if not candidate_text:
-            continue  # nothing usable to show for this span - drop it
-        spans.append(
-            DraftSpan(
-                surface=m.surface,
-                start=m.start,
-                end=m.end,
-                clickable=bool(m.translation.strip()),
-                candidates=[TranslateCandidate(translation=candidate_text, description=m.note)],
-            )
-        )
-
-    return TagInputResponse(tokens=tokens, spans=spans)
+    return GlossSpansResponse(spans=spans)

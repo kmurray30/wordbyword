@@ -3,7 +3,8 @@
 .word-candidates-popover {
   z-index: 20;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: flex-start;
   width: 100%;
   background: #1f2430;
   color: #f2f2f2;
@@ -12,6 +13,32 @@
   padding: 6px 6px 10px;
   font-size: 0.85rem;
   line-height: 1.3;
+  gap: 4px;
+}
+
+.word-candidates-popover__loading {
+  padding: 2px 4px;
+  color: #a9adba;
+  font-style: italic;
+}
+
+/* Low-profile - a small text toggle, not a prominent control, since the
+   cross-language-cognate case (e.g. "once") this covers is rare. */
+.word-candidates-popover__alt-toggle {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid #3a3f4d;
+  color: #a9adba;
+  border-radius: 5px;
+  font-size: 0.65rem;
+  line-height: 1;
+  padding: 3px 5px;
+  cursor: pointer;
+}
+
+.word-candidates-popover__alt-toggle:hover {
+  color: #f2f2f2;
+  border-color: #5a6072;
 }
 
 

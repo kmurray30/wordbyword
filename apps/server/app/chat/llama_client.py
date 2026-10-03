@@ -12,7 +12,9 @@ messages array automatically, so we don't have to hand-format prompts for
 Qwen3 ourselves.
 """
 
+import json
 import time
+from collections.abc import Iterator
 
 import httpx
 
@@ -99,3 +101,50 @@ def chat(
     if not choices:
         return ""
     return choices[0].get("message", {}).get("content", "").strip()
+
+
+def chat_stream(
+    messages: list[dict[str, str]],
+    logit_bias: dict[int, float],
+    timeout: float = 120.0,
+    max_tokens: int | None = None,
+) -> Iterator[str]:
+    """Same request as chat() above, but with `stream: true` - yields each
+    content delta as it arrives over llama-server's SSE response instead of
+    waiting for the whole completion. No retry-on-transient-failure here
+    (unlike chat()): a failure after streaming has already started can't be
+    cleanly retried mid-generation, so this only guards the initial
+    connection attempt."""
+    payload = {
+        "messages": messages,
+        "stream": True,
+        "logit_bias": {str(token_id): bias for token_id, bias in logit_bias.items()},
+        "chat_template_kwargs": {"enable_thinking": False},
+        "max_tokens": max_tokens if max_tokens is not None else MAX_REPLY_TOKENS,
+    }
+    try:
+        with httpx.stream(
+            "POST", f"{MODEL_SERVER_BASE_URL}/v1/chat/completions", json=payload, timeout=timeout
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[len("data:") :].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                content = choices[0].get("delta", {}).get("content")
+                if content:
+                    yield content
+    except httpx.HTTPError as exc:
+        raise ModelServerUnavailableError(
+            f"Could not reach the model server at {MODEL_SERVER_BASE_URL}. "
+            "Make sure llama-server is running (see README)."
+        ) from exc

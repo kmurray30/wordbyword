@@ -173,7 +173,17 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
   };
 
   const handleTogglePin = () => {
-    setIsPinned((pinned) => !pinned);
+    setIsPinned((pinned) => {
+      const next = !pinned;
+      // A real click always lands while the mouse is still physically
+      // over the button - onMouseEnter already fired and won't fire
+      // again until the pointer actually leaves and comes back, so
+      // showTranslation = isHovering || isPinned stays true from the
+      // lingering hover alone, masking the toggle: a second click looked
+      // like it did nothing. An explicit close should win over that.
+      if (!next) setIsHovering(false);
+      return next;
+    });
     fetchTranslation();
   };
 
@@ -253,6 +263,18 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
           ) : (
             message.text
           )}
+          {openWordIndex !== null && message.tokens?.[openWordIndex] && (
+            <DockedPopover position="right" onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
+              <TranslatePopover
+                candidates={[
+                  {
+                    translation: message.tokens[openWordIndex].gloss,
+                    description: message.tokens[openWordIndex].note || undefined,
+                  },
+                ]}
+              />
+            </DockedPopover>
+          )}
         </div>
         <div className="chat-message__actions">
           <button
@@ -301,18 +323,6 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
               </>
             )}
           </div>
-        )}
-        {openWordIndex !== null && message.tokens?.[openWordIndex] && (
-          <DockedPopover position="below" onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
-            <TranslatePopover
-              candidates={[
-                {
-                  translation: message.tokens[openWordIndex].gloss,
-                  description: message.tokens[openWordIndex].note || undefined,
-                },
-              ]}
-            />
-          </DockedPopover>
         )}
       </div>
     </div>

@@ -8,8 +8,11 @@ interface DockedPopoverProps {
   // parent - used for the input's word/phrase lookups, which need to stay
   // near the draft being edited. "below" docks flush against its bottom
   // edge instead - used for the help button's suggestion, which reads
-  // better out of the way of the draft itself.
-  position?: "above" | "below";
+  // better out of the way of the draft itself. "right" docks flush
+  // against the right edge instead of growing the layout vertically -
+  // used for the chat bubble's per-word gloss, which otherwise stacked
+  // underneath the bubble's own full-message translation rows.
+  position?: "above" | "below" | "right";
   // For a hover-triggered popover (the word-tap one, which still opens on
   // desktop hover): docking it away from the hovered word/bubble means the
   // mouse now has to travel there, almost always leaving the original
@@ -41,7 +44,7 @@ export function DockedPopover({ children, position = "above", onMouseEnter, onMo
   // popover only mounts once per open), so this doesn't fight the user if
   // they scroll away afterward.
   useEffect(() => {
-    if (position === "below") wrapRef.current?.scrollIntoView({ block: "nearest" });
+    if (position === "below" || position === "right") wrapRef.current?.scrollIntoView({ block: "nearest" });
   }, [position]);
 
   return (

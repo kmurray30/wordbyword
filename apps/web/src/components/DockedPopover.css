@@ -1,15 +1,20 @@
-/* Wrap is the full-width positioning shell (so centering math is simple);
-   pointer-events:none on it keeps it from blocking anything to its sides,
-   with the actual popover box opting back into pointer-events. Needs its
-   nearest position:relative ancestor to be whatever it should dock
-   against (.chat-input, a .chat-message__bubble, ...). */
+/* pointer-events:none on the wrap keeps it from blocking anything to its
+   sides, with the actual popover box opting back into pointer-events.
+   Needs its nearest position:relative ancestor to be whatever it should
+   dock against (.chat-input, a .chat-message__bubble, ...). */
 .docked-popover-wrap {
   position: absolute;
+  pointer-events: none;
+}
+
+/* Full-width shell (so centering math is simple) for the two variants
+   that grow the layout vertically. */
+.docked-popover-wrap--above,
+.docked-popover-wrap--below {
   left: 0;
   right: 0;
   display: flex;
   justify-content: center;
-  pointer-events: none;
 }
 
 .docked-popover-wrap--above {
@@ -20,9 +25,27 @@
   top: 100%;
 }
 
+/* Grows sideways off the anchor's own right edge instead - compact and
+   low-profile, since it's meant to sit beside a single word/short phrase
+   rather than spanning anything. */
+.docked-popover-wrap--right {
+  top: 0;
+  left: 100%;
+  padding-left: 8px;
+}
+
 .docked-popover {
   pointer-events: auto;
+}
+
+.docked-popover-wrap--above .docked-popover,
+.docked-popover-wrap--below .docked-popover {
   width: 100%;
   max-width: 420px;
   margin: 0 12px;
+}
+
+.docked-popover-wrap--right .docked-popover {
+  width: max-content;
+  max-width: 240px;
 }

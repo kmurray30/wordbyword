@@ -113,6 +113,19 @@ export interface paths {
          *     phrasing actually fits the tone of what's been said so far, and returns
          *     feedback on the attempt plus phrasing options at a few formality
          *     levels rather than a single flat correction.
+         *
+         *     Streamed as Server-Sent Events, one event per phase of the SAME
+         *     underlying LLM call (app.translate.llm_translate.coach_draft_stream):
+         *     a "core" event the moment the feedback + options themselves are ready
+         *     (usable immediately - the frontend shows these without waiting on
+         *     anything else), then a "translations" event once each option's own
+         *     English translation + word-by-word breakdown finishes streaming
+         *     afterward (for pre-populating the chat input's gloss cache the instant
+         *     an option is picked - see CoachOption's fields). An "error" event
+         *     means the core phase itself never produced anything usable; a stream
+         *     that ends after "core" with no "translations" just means that part
+         *     wasn't ready - that's not itself an error (see coach_draft_stream's
+         *     docstring).
          */
         post: operations["coach_draft_translate_coach_post"];
         delete?: never;
@@ -132,19 +145,40 @@ export interface paths {
         put?: never;
         /**
          * Tag Input
-         * @description Two independent passes over the same draft text: `tokens` is a
-         *     cheap, synchronous, LLM-free per-word classification (spaCy +
-         *     lemmatizer.py's is_spanish heuristic) the frontend needs on every call
-         *     for reward-event tracking and its phrase-selection direction vote;
-         *     `spans` is the slower LLM-backed word/group glossing (app.translate.
-         *     llm_translate.tag_draft) that drives the hover-to-translate UI,
-         *     matched back to exact offsets via app.translate.span_matching. Kept in
-         *     one response so the frontend only has one request to debounce, even
-         *     though the two halves serve different purposes. On an LLM failure,
-         *     `spans` comes back empty - no dictionary/MT fallback - but `tokens` is
-         *     unaffected.
+         * @description Cheap, synchronous, LLM-free per-word classification (spaCy +
+         *     lemmatizer.py's is_spanish heuristic) - fast enough to call on every
+         *     keystroke (debounced). Needed for reward-event tracking
+         *     (userTypedSpanishWord) and the phrase-selection direction vote. The
+         *     slower LLM-backed word/group glossing that drives the hover-to-
+         *     translate UI lives separately in /translate/gloss-spans below, fetched
+         *     lazily on interaction rather than on every edit.
          */
         post: operations["tag_input_translate_tag_input_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/translate/gloss-spans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gloss Spans
+         * @description The slower, LLM-backed half of what used to be /translate/tag-input:
+         *     app.translate.llm_translate.tag_draft's word/group glossing, matched
+         *     back to exact offsets via app.translate.span_matching. Fetched lazily
+         *     (on hover/click/tap of a word), not on every keystroke, since this is a
+         *     real LLM call. On failure, returns an empty span list - no dictionary/
+         *     MT fallback.
+         */
+        post: operations["gloss_spans_translate_gloss_spans_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -327,22 +361,6 @@ export interface components {
             /** Session Id */
             session_id: string;
         };
-        /** CoachDraftResponse */
-        CoachDraftResponse: {
-            /** Meaning */
-            meaning: string;
-            /** Feedback */
-            feedback: string;
-            /** Options */
-            options: components["schemas"]["CoachOption"][];
-        };
-        /** CoachOption */
-        CoachOption: {
-            /** Formality */
-            formality: string;
-            /** Spanish */
-            spanish: string;
-        };
         /** DraftSpan */
         DraftSpan: {
             /** Surface */
@@ -355,6 +373,11 @@ export interface components {
             clickable: boolean;
             /** Candidates */
             candidates: components["schemas"]["TranslateCandidate"][];
+            /**
+             * Alternate Gloss
+             * @default
+             */
+            alternate_gloss: string;
         };
         /** DraftToken */
         DraftToken: {
@@ -368,6 +391,16 @@ export interface components {
             start: number;
             /** End */
             end: number;
+        };
+        /** GlossSpansRequest */
+        GlossSpansRequest: {
+            /** Text */
+            text: string;
+        };
+        /** GlossSpansResponse */
+        GlossSpansResponse: {
+            /** Spans */
+            spans: components["schemas"]["DraftSpan"][];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -444,8 +477,6 @@ export interface components {
         TagInputResponse: {
             /** Tokens */
             tokens: components["schemas"]["DraftToken"][];
-            /** Spans */
-            spans: components["schemas"]["DraftSpan"][];
         };
         /** TokenAnnotation */
         TokenAnnotation: {
@@ -704,7 +735,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CoachDraftResponse"];
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -738,6 +769,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TagInputResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    gloss_spans_translate_gloss_spans_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GlossSpansRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GlossSpansResponse"];
                 };
             };
             /** @description Validation Error */

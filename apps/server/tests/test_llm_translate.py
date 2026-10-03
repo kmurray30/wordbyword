@@ -5,7 +5,7 @@ import pytest
 from app.chat.llama_client import ModelServerUnavailableError
 from app.translate.llm_translate import (
     TranslationUnavailableError,
-    coach_draft,
+    coach_draft_stream,
     gloss_reply,
     interpret_user_input,
     tag_draft,
@@ -272,8 +272,14 @@ def test_tag_draft_parses_translation_and_ordered_spans():
 
     assert translation == "Quiero ir a la playa."
     assert spans == [
-        {"surface": "quiero", "gloss": "I want", "note": "", "translation": ""},
-        {"surface": "ir to", "gloss": "to go to", "note": "mixed English/Spanish", "translation": "ir a"},
+        {"surface": "quiero", "gloss": "I want", "note": "", "translation": "", "alternate_gloss": ""},
+        {
+            "surface": "ir to",
+            "gloss": "to go to",
+            "note": "mixed English/Spanish",
+            "translation": "ir a",
+            "alternate_gloss": "",
+        },
     ]
     (messages,), kwargs = mock_chat.call_args
     assert kwargs["logit_bias"] == {}
@@ -297,6 +303,27 @@ def test_tag_draft_returns_duplicate_surface_spans_as_an_ordered_list():
     assert [s["gloss"] for s in spans] == ["a", "b"]
 
 
+def test_tag_draft_parses_alternate_gloss():
+    reply = (
+        '{"translation": "once veces", "spans": ['
+        '{"surface": "once", "gloss": "eleven", "note": "", "translation": "", '
+        '"alternate_gloss": "once (as in \\"at once\\") - an English word too"}'
+        "]}"
+    )
+    with patch("app.translate.llm_translate.model_chat", return_value=reply):
+        _translation, spans = tag_draft("once veces", "en", "es")
+
+    assert spans[0]["alternate_gloss"] == 'once (as in "at once") - an English word too'
+
+
+def test_tag_draft_alternate_gloss_defaults_to_empty():
+    reply = '{"translation": "hola", "spans": [{"surface": "hola", "gloss": "hi", "note": "", "translation": ""}]}'
+    with patch("app.translate.llm_translate.model_chat", return_value=reply):
+        _translation, spans = tag_draft("hola", "en", "es")
+
+    assert spans[0]["alternate_gloss"] == ""
+
+
 def test_tag_draft_drops_spans_with_no_surface_text():
     reply = '{"translation": "hola", "spans": [{"surface": "", "gloss": "x", "note": "", "translation": ""}]}'
     with patch("app.translate.llm_translate.model_chat", return_value=reply):
@@ -312,7 +339,7 @@ def test_tag_draft_retries_once_on_unparseable_reply():
         translation, spans = tag_draft("hola", "en", "es")
 
     assert translation == "Hi"
-    assert spans == [{"surface": "hola", "gloss": "hi", "note": "", "translation": ""}]
+    assert spans == [{"surface": "hola", "gloss": "hi", "note": "", "translation": "", "alternate_gloss": ""}]
     assert mock_chat.call_count == 2
 
 
@@ -351,77 +378,120 @@ def test_interpret_user_input_falls_back_to_translate_text_on_garbled_reply():
     assert mock_chat.call_count == 3
 
 
-def test_coach_draft_empty_input_short_circuits():
-    with patch("app.translate.llm_translate.model_chat") as mock_chat:
-        assert coach_draft("   ", [], "en", "es") == ("", "", [])
-    mock_chat.assert_not_called()
+def test_coach_draft_stream_empty_input_short_circuits():
+    with patch("app.translate.llm_translate.model_chat_stream") as mock_stream:
+        events = list(coach_draft_stream("   ", [], "en", "es"))
+    assert events == []
+    mock_stream.assert_not_called()
 
 
-def test_coach_draft_parses_meaning_feedback_and_options():
-    reply = (
+def test_coach_draft_stream_yields_core_then_translations():
+    core_json = (
         '{"meaning": "I want to go to the beach tomorrow.", '
         '"feedback": "Good attempt - just a word order slip.", '
         '"options": ['
         '{"formality": "neutral", "spanish": "Quiero ir a la playa mañana."}, '
-        '{"formality": "casual", "spanish": "Quiero ir a la playa mañana, ¿sí?"}, '
-        '{"formality": "formal", "spanish": "Me gustaría ir a la playa mañana."}'
+        '{"formality": "casual", "spanish": "Quiero ir a la playa mañana, ¿sí?"}'
         "]}"
     )
-    with patch("app.translate.llm_translate.model_chat", return_value=reply) as mock_chat:
-        meaning, feedback, options = coach_draft("quiero playa mañana ir", [], "en", "es")
+    translations_json = (
+        '{"options": ['
+        '{"english": "I want to go to the beach tomorrow.", '
+        '"spans": [{"surface": "Quiero", "gloss": "I want", "note": "", "translation": ""}]}, '
+        '{"english": "I want to go to the beach tomorrow, yeah?", "spans": []}'
+        "]}"
+    )
+    chunks = [core_json, "<<<TRANSLATIONS>>>", translations_json]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)) as mock_stream:
+        events = list(coach_draft_stream("quiero playa mañana ir", [], "en", "es"))
 
-    assert meaning == "I want to go to the beach tomorrow."
-    assert feedback == "Good attempt - just a word order slip."
-    assert options == [
+    assert [kind for kind, _ in events] == ["core", "translations"]
+    core = events[0][1]
+    assert core["meaning"] == "I want to go to the beach tomorrow."
+    assert core["feedback"] == "Good attempt - just a word order slip."
+    assert core["options"] == [
         ("neutral", "Quiero ir a la playa mañana."),
         ("casual", "Quiero ir a la playa mañana, ¿sí?"),
-        ("formal", "Me gustaría ir a la playa mañana."),
     ]
-    (messages,), kwargs = mock_chat.call_args
+    translations = events[1][1]
+    assert translations[0]["english"] == "I want to go to the beach tomorrow."
+    assert translations[0]["spans"] == [
+        {"surface": "Quiero", "gloss": "I want", "note": "", "translation": "", "alternate_gloss": ""}
+    ]
+    assert translations[1] == {"english": "I want to go to the beach tomorrow, yeah?", "spans": []}
+
+    (messages,), kwargs = mock_stream.call_args
     assert kwargs["logit_bias"] == {}
     assert messages[-1] == {"role": "user", "content": "quiero playa mañana ir"}
 
 
-def test_coach_draft_includes_recent_history_in_prompt():
-    reply = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
-    history = [("assistant", "¿Qué planes tienes para el fin de semana?"), ("user", "quiero ir playa")]
-    with patch("app.translate.llm_translate.model_chat", return_value=reply) as mock_chat:
-        coach_draft("mañana quiero ir", history, "en", "es")
+def test_coach_draft_stream_marker_split_across_chunks():
+    # The marker can land anywhere relative to chunk boundaries - the
+    # buffer accumulates across chunks regardless, so this must behave
+    # identically to the marker arriving in one whole chunk.
+    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    marker = "<<<TRANSLATIONS>>>"
+    translations_json = '{"options": [{"english": "z", "spans": []}]}'
+    full = core_json + marker + translations_json
+    chunks = [full[i : i + 7] for i in range(0, len(full), 7)]  # arbitrary small chunks
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
 
-    (messages,), _ = mock_chat.call_args
+    assert [kind for kind, _ in events] == ["core", "translations"]
+    assert events[0][1]["options"] == [("neutral", "y")]
+    assert events[1][1] == [{"english": "z", "spans": []}]
+
+
+def test_coach_draft_stream_core_only_when_marker_never_arrives():
+    # Token budget pressure (or the model just not getting that far) can
+    # leave PART 2 - and the marker - entirely unwritten. The whole buffer
+    # should still work as PART 1 on its own.
+    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter([core_json])):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    assert [kind for kind, _ in events] == ["core"]
+    assert events[0][1]["options"] == [("neutral", "y")]
+
+
+def test_coach_draft_stream_defaults_unknown_formality_to_neutral():
+    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "sarcastic", "spanish": "y"}]}'
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter([core_json])):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    assert events[0][1]["options"] == [("neutral", "y")]
+
+
+def test_coach_draft_stream_translations_missing_is_not_fatal():
+    # PART 2 garbled/missing shouldn't take PART 1 down with it - the
+    # caller already has (and may have acted on) the core event.
+    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    chunks = [core_json, "<<<TRANSLATIONS>>>", "not json at all"]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    assert [kind for kind, _ in events] == ["core"]
+
+
+def test_coach_draft_stream_raises_when_core_itself_never_parses():
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(["not json at all"])):
+        with pytest.raises(TranslationUnavailableError):
+            list(coach_draft_stream("hola", [], "en", "es"))
+
+
+def test_coach_draft_stream_includes_recent_history_in_prompt():
+    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    history = [("assistant", "¿Qué planes tienes para el fin de semana?"), ("user", "quiero ir playa")]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter([core_json])) as mock_stream:
+        list(coach_draft_stream("mañana quiero ir", history, "en", "es"))
+
+    (messages,), _ = mock_stream.call_args
     prompt = messages[0]["content"]
     assert "¿Qué planes tienes para el fin de semana?" in prompt
     assert "quiero ir playa" in prompt
 
 
-def test_coach_draft_defaults_unknown_formality_to_neutral():
-    reply = '{"meaning": "x", "feedback": "", "options": [{"formality": "sarcastic", "spanish": "y"}]}'
-    with patch("app.translate.llm_translate.model_chat", return_value=reply):
-        _, _, options = coach_draft("algo", [], "en", "es")
-
-    assert options == [("neutral", "y")]
-
-
-def test_coach_draft_falls_back_when_model_omits_options():
-    # Garbled on the first pass, well-formed but with no "options" on the
-    # second - exhausts both attempts, so falls back to interpret_user_input
-    # (a plain, context-free but still usable correction) rather than
-    # raising over a structured-output miss.
-    with patch(
-        "app.translate.llm_translate.model_chat",
-        side_effect=["not json at all", '{"meaning": "x", "feedback": "", "options": []}'],
-    ), patch(
-        "app.translate.llm_translate.interpret_user_input", return_value=("I want water", "Quiero agua")
-    ) as mock_interpret:
-        meaning, feedback, options = coach_draft("quiero water", [], "en", "es")
-
-    assert meaning == "I want water"
-    assert feedback == ""
-    assert options == [("neutral", "Quiero agua")]
-    mock_interpret.assert_called_once_with("quiero water", "en", "es", provider=None)
-
-
-def test_coach_draft_wraps_model_server_error():
-    with patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")):
+def test_coach_draft_stream_wraps_model_server_error():
+    with patch("app.translate.llm_translate.model_chat_stream", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError, match="down"):
-            coach_draft("hola", [], "en", "es")
+            list(coach_draft_stream("hola", [], "en", "es"))

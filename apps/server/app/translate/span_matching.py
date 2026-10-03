@@ -22,6 +22,7 @@ class MatchedSpan:
     gloss: str
     note: str
     translation: str
+    alternate_gloss: str = ""
 
 
 def _normalize(text: str) -> str:
@@ -67,6 +68,7 @@ def match_spans(text: str, spans: list[dict[str, str]]) -> list[MatchedSpan]:
                 gloss=raw.get("gloss", ""),
                 note=raw.get("note", ""),
                 translation=raw.get("translation", ""),
+                alternate_gloss=raw.get("alternate_gloss", ""),
             )
         )
         cursor = end
