@@ -328,6 +328,16 @@ async function checkBrowserEndToEnd() {
     // bubble - just check it shows up on the page at all.
     const wordToken = page.locator(".chat-message--assistant .word-token").first();
     if ((await wordToken.count()) > 0) {
+      // No word should carry a persistent highlight at rest (e.g. a "new
+      // vocabulary" tint) - only the click-to-pin/hover state below should
+      // ever color a word, and only while it's actually open.
+      const restBackground = await wordToken.evaluate((el) => getComputedStyle(el).backgroundColor);
+      if (restBackground !== "rgba(0, 0, 0, 0)" && restBackground !== "transparent") {
+        fail(`word token has a persistent background at rest: ${restBackground}`);
+      } else {
+        console.log("  OK - word tokens carry no persistent highlight at rest");
+      }
+
       await wordToken.hover();
       await page.waitForSelector(".translate-popover", { timeout: 8_000 });
       console.log("  OK - hover translation popover works");
@@ -670,6 +680,18 @@ async function checkBrowserEndToEnd() {
         if (tapPopoverVisible && stillFocused) {
           console.log('  OK - tapping "amigo" in the input (real touch emulation) opens its popover and keeps the textarea focused');
         }
+        // Docked flush against the input bar (DockedPopover), not floating
+        // off wherever the tapped word happened to sit.
+        if (tapPopoverVisible) {
+          const tapPopoverBox = await touchPage.locator(".word-candidates-popover").first().boundingBox();
+          const touchInputBarBox = await touchPage.locator(".chat-input").boundingBox();
+          const dockGap = touchInputBarBox.y - (tapPopoverBox.y + tapPopoverBox.height);
+          if (Math.abs(dockGap) > 2) {
+            fail(`word-tap popover isn't flush against the input bar (gap=${dockGap.toFixed(1)}px)`);
+          } else {
+            console.log("  OK - word-tap popover sits flush against the input bar, not floating");
+          }
+        }
       } else {
         fail('"amigo" was not flagged as hoverable in the input - cannot test tap-to-translate');
       }
@@ -690,6 +712,15 @@ async function checkBrowserEndToEnd() {
     const viewport = page.viewportSize();
     if (coachBox.y < 0 || coachBox.y + coachBox.height > viewport.height) {
       fail(`coach popover rendered out of bounds: y=${coachBox.y} height=${coachBox.height} viewport=${viewport.height}`);
+    }
+    // Docked flush against the input bar's own top edge, not floating
+    // somewhere else on screen based on where the help button sits.
+    const coachInputBarBox = await page.locator(".chat-input").boundingBox();
+    const coachDockGap = coachInputBarBox.y - (coachBox.y + coachBox.height);
+    if (Math.abs(coachDockGap) > 2) {
+      fail(`coach popover isn't flush against the input bar (gap=${coachDockGap.toFixed(1)}px)`);
+    } else {
+      console.log("  OK - coach popover sits flush against the input bar, not floating");
     }
     const coachText = await page.locator(".coach-popover").innerText();
     console.log(`  OK - help button opened coach popover: ${JSON.stringify(coachText)}`);

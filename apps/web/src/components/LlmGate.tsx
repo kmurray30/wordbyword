@@ -4,6 +4,12 @@ import { api } from "../api/client";
 import "./LlmGate.css";
 
 const POLL_INTERVAL_MS = 3000;
+// Only show the "waking up" screen if the very first check hasn't resolved
+// by this point - a backend that's already warm (the common case) answers
+// within a normal network round trip, well under this, so the real app
+// just renders directly with no flash at all. A genuine cold start still
+// shows the message promptly; this only hides the flash for the fast case.
+const SHOW_DELAY_MS = 300;
 
 // Blocks rendering of the real app until the model server is confirmed
 // ready. Nearly every interactive feature here (chat, translation, hover
@@ -17,10 +23,15 @@ const POLL_INTERVAL_MS = 3000;
 // separate "start it up" call is needed.
 export function LlmGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
+  const [showLoading, setShowLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const showTimer = setTimeout(() => {
+      if (!cancelled) setShowLoading(true);
+    }, SHOW_DELAY_MS);
 
     const poll = () => {
       api
@@ -30,22 +41,26 @@ export function LlmGate({ children }: { children: ReactNode }) {
           if (res.ready) {
             setReady(true);
           } else {
-            timer = setTimeout(poll, POLL_INTERVAL_MS);
+            pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
           }
         })
         .catch(() => {
-          if (!cancelled) timer = setTimeout(poll, POLL_INTERVAL_MS);
+          if (!cancelled) pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
         });
     };
     poll();
 
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      clearTimeout(pollTimer);
+      clearTimeout(showTimer);
     };
   }, []);
 
   if (!ready) {
+    // Still within the grace window - render nothing rather than flash the
+    // loading screen for what's usually about to resolve immediately.
+    if (!showLoading) return null;
     return (
       <div className="llm-gate">
         <div className="llm-gate__spinner" aria-hidden="true" />

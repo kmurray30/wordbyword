@@ -190,7 +190,6 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
                   surface={tok.surface}
                   gloss={tok.gloss}
                   note={tok.note}
-                  isNew={tok.is_new}
                   onHover={() => handleHover(tok.lemma)}
                 />
               </span>

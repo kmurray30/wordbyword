@@ -1,12 +1,11 @@
-/* Positioned by FloatingPopover - this class only carries appearance. See
-   WordCandidatesPopover.css for why max-width is viewport-relative. */
+/* Positioned by DockedPopover, which governs sizing - this class only
+   carries appearance. */
 .coach-popover {
   z-index: 20;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 260px;
-  max-width: min(420px, calc(100vw - 24px));
+  width: 100%;
   background: #1f2430;
   color: #f2f2f2;
   border-radius: 8px;

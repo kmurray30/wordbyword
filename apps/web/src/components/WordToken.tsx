@@ -7,11 +7,10 @@ interface WordTokenProps {
   surface: string;
   gloss: string;
   note?: string;
-  isNew: boolean;
   onHover?: () => void;
 }
 
-export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenProps) {
+export function WordToken({ surface, gloss, note, onHover }: WordTokenProps) {
   const [hovering, setHovering] = useState(false);
   // Tapping (as opposed to hovering) pins the popover open - a tap has no
   // "leave" event to close it on the way a mouse does, so it needs its own
@@ -20,13 +19,6 @@ export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenPro
   const open = hovering || pinned;
   const anchorRef = useRef<HTMLSpanElement | null>(null);
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
-  // Whatever text field had focus right before this tap, if any - captured
-  // in onPointerDown (before the browser's own "tapping somewhere else
-  // blurs the current field" behavior takes it away), so a quick check of
-  // a word's meaning mid-draft doesn't cost the user their keyboard. Not
-  // done by preventing default on the touch/click events themselves - that
-  // would also suppress the click this component itself depends on.
-  const focusedBeforeRef = useRef<HTMLElement | null>(null);
 
   // The chat feed (App.css's .app__chat) scrolls and stacks many sibling
   // message bubbles, each its own stacking context - an absolutely
@@ -64,17 +56,12 @@ export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenPro
   return (
     <span
       ref={anchorRef}
-      className={`word-token${isNew ? " word-token--new" : ""}${open ? " word-token--active" : ""}`}
+      className={`word-token${open ? " word-token--active" : ""}`}
       onMouseEnter={() => {
         setHovering(true);
         onHover?.();
       }}
       onMouseLeave={() => setHovering(false)}
-      onPointerDown={() => {
-        const active = document.activeElement;
-        focusedBeforeRef.current =
-          active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement ? active : null;
-      }}
       onClick={(e) => {
         // Tapping on mobile never fires onMouseEnter at all, and even on
         // desktop a click explicitly pinning it open (rather than just
@@ -83,7 +70,6 @@ export function WordToken({ surface, gloss, note, isNew, onHover }: WordTokenPro
         e.stopPropagation();
         setPinned((p) => !p);
         onHover?.();
-        focusedBeforeRef.current?.focus();
       }}
     >
       {surface}

@@ -10,10 +10,6 @@
   transition: background-color 0.1s ease;
 }
 
-.word-token--new {
-  background: rgba(125, 211, 252, 0.18);
-}
-
 /* Open (hovered or tapped-pinned) - a light highlight instead of an
    underline/color change, which read as a hyperlink. */
 .word-token--active {

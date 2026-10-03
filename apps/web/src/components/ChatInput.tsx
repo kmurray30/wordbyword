@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { InputTokenAnnotation } from "../api/client";
 import { CoachPopover } from "./CoachPopover";
-import { FloatingPopover } from "./FloatingPopover";
+import { DockedPopover } from "./DockedPopover";
 import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import "./ChatInput.css";
 
@@ -12,6 +12,13 @@ const SPANISH_WORD_RE = /^[a-zA-Zñáéíóúü]+$/i;
 // How far a touch can drift between start and end before it's treated as a
 // drag/scroll/selection rather than a tap.
 const TAP_MOVE_TOLERANCE_PX = 10;
+// Grace period before closing the word-tap popover on mouseleave - it's
+// now docked flush against the input bar rather than floating right next
+// to the hovered word, so the pointer has to travel there to click a
+// candidate, leaving the word's own bounds along the way. Without this,
+// that departure closes (unmounts) the popover before the click ever
+// lands on it.
+const HOVER_CLOSE_DELAY_MS = 200;
 
 interface Segment {
   text: string;
@@ -43,6 +50,8 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   const dragAnchorRef = useRef<number | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const touchMovedRef = useRef(false);
+  const wasFocusedRef = useRef(false);
+  const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [value, setValue] = useState("");
   const [tags, setTags] = useState<InputTokenAnnotation[]>([]);
   const [openTokenKey, setOpenTokenKey] = useState<string | null>(null);
@@ -66,9 +75,6 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   // Mirrors the per-word popover's two column types, decided per-selection
   // below from the majority language of the words it covers.
   const [phraseDirection, setPhraseDirection] = useState<"es" | "en">("es");
-  const [phraseCoords, setPhraseCoords] = useState<{ top: number; left: number } | null>(null);
-  const [openTokenAnchor, setOpenTokenAnchor] = useState<{ top: number; left: number } | null>(null);
-  const [coachAnchor, setCoachAnchor] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     if (!value.trim()) return;
@@ -81,10 +87,54 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     return () => clearTimeout(handle);
   }, [value]);
 
+  // Tapping virtually anything else on the page while this textarea is
+  // focused - a chat-bubble word, the clear-chat button, a message's audio
+  // button, empty space in the feed - was blurring it and taking the
+  // mobile keyboard down with it, since that's a real text input and
+  // losing focus is the browser's normal behavior for a tap elsewhere.
+  // Checking a word's meaning or reading a past message mid-draft doesn't
+  // need to end the draft, so this puts focus right back once the tap
+  // resolves - unless it landed on a genuine different form control
+  // (another input/textarea/select), which should keep its own focus.
+  // Done by restoring focus afterward rather than preventing default on
+  // the pointerdown/click themselves, which would also risk suppressing
+  // whatever click the tapped element itself depends on.
+  useEffect(() => {
+    const handlePointerDown = () => {
+      wasFocusedRef.current = document.activeElement === textareaRef.current;
+    };
+    const handleClick = (e: MouseEvent) => {
+      if (!wasFocusedRef.current) return;
+      const textarea = textareaRef.current;
+      if (!textarea || document.activeElement === textarea) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select")) return;
+      textarea.focus();
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("click", handleClick, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("click", handleClick, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (hoverCloseTimerRef.current !== null) clearTimeout(hoverCloseTimerRef.current);
+    };
+  }, []);
+
   // Derived rather than synced via effect: avoids a stale word-candidate
   // popover surviving a moment after the user clears the input.
   const effectiveTags = value.trim() ? tags : [];
   const segments = buildSegments(value, effectiveTags);
+  // Suppressed while a real (multi-char) selection is active - a drag can
+  // end with the pointer resting over a word, which would otherwise leave
+  // this open at the same time as the phrase popover.
+  const openToken = !phraseSelection
+    ? effectiveTags.find((t) => `${t.start}-${t.end}` === openTokenKey)
+    : undefined;
 
   const handleValueChange = (next: string) => {
     setValue(next);
@@ -167,32 +217,6 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phraseSelection?.text]);
-
-  // Positions the phrase popover near the end of the selection, using the
-  // same segment spans rendered for word-hover - finds whichever one the
-  // selection's end offset falls in and anchors there. Anchored at the
-  // span's top edge, centered horizontally, because the popover itself
-  // (WordCandidatesPopover, the same widget word-hover uses) always opens
-  // upward - see WordCandidatesPopover.css for why.
-  useEffect(() => {
-    if (!phraseSelection || !highlightRef.current) {
-      setPhraseCoords(null);
-      return;
-    }
-    const endOffset = phraseSelection.end;
-    const spans = highlightRef.current.querySelectorAll<HTMLElement>("[data-start]");
-    let anchorRect: DOMRect | null = null;
-    for (const span of spans) {
-      const start = Number(span.dataset.start);
-      const end = Number(span.dataset.end);
-      if (endOffset > start && endOffset <= end) {
-        anchorRect = span.getBoundingClientRect();
-        break;
-      }
-    }
-    setPhraseCoords(anchorRect ? { top: anchorRect.top, left: anchorRect.left + anchorRect.width / 2 } : null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phraseSelection?.start, phraseSelection?.end, segments.length]);
 
   // charOffsetAtPoint() below needs every segment's rendered position, so
   // every span (not just hoverable ones) carries its own [start, end) as
@@ -303,13 +327,26 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     if (offset === null) return;
     const token = effectiveTags.find((t) => t.columns.length > 0 && offset >= t.start && offset <= t.end);
     if (!token) return;
-    const span = highlightRef.current?.querySelector<HTMLElement>(
-      `[data-start="${token.start}"][data-end="${token.end}"]`,
-    );
-    if (!span) return;
-    const rect = span.getBoundingClientRect();
-    setOpenTokenAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
+    setShowCoach(false);
     setOpenTokenKey(`${token.start}-${token.end}`);
+  };
+
+  const cancelHoverClose = () => {
+    if (hoverCloseTimerRef.current !== null) {
+      clearTimeout(hoverCloseTimerRef.current);
+      hoverCloseTimerRef.current = null;
+    }
+  };
+
+  // See HOVER_CLOSE_DELAY_MS - a grace period rather than closing on the
+  // spot, so the pointer has time to reach the docked popover (now flush
+  // against the input bar, not right next to the word) before it unmounts.
+  const scheduleHoverClose = () => {
+    cancelHoverClose();
+    hoverCloseTimerRef.current = setTimeout(() => {
+      hoverCloseTimerRef.current = null;
+      setOpenTokenKey(null);
+    }, HOVER_CLOSE_DELAY_MS);
   };
 
   const handleSend = () => {
@@ -347,14 +384,14 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       .catch(() => setCoachState("error"));
   };
 
-  const handleToggleCoach = (e: React.MouseEvent<HTMLSpanElement>) => {
+  const handleToggleCoach = () => {
     if (!value.trim()) return;
     const next = !showCoach;
     setShowCoach(next);
     if (next) {
       fetchCoach();
-      const rect = e.currentTarget.getBoundingClientRect();
-      setCoachAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
+      setOpenTokenKey(null);
+      setPhraseSelection(null);
     }
     // This button is tabIndex-focusable (for keyboard/a11y use), which
     // blurs the textarea on tap - checking a draft shouldn't cost the
@@ -373,26 +410,15 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
                 className="chat-input__hoverable"
                 data-start={seg.start}
                 data-end={seg.end}
-                onMouseEnter={(e) => {
+                onMouseEnter={() => {
+                  cancelHoverClose();
                   setOpenTokenKey(`${seg.token!.start}-${seg.token!.end}`);
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  setOpenTokenAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
+                  setShowCoach(false);
                 }}
-                onMouseLeave={() => setOpenTokenKey(null)}
+                onMouseLeave={scheduleHoverClose}
                 onMouseDown={(e) => handleWordMouseDown(e, seg.token!)}
               >
                 {seg.text}
-                {/* Suppressed while a real (multi-char) selection is active - a drag
-                    can end with the pointer resting over a word, which would otherwise
-                    leave this open at the same time as the phrase popover below. */}
-                {openTokenKey === `${seg.token.start}-${seg.token.end}` && !phraseSelection && openTokenAnchor && (
-                  <FloatingPopover anchor={openTokenAnchor} direction="up">
-                    <WordCandidatesPopover
-                      columns={seg.token.columns}
-                      onSelect={(translation) => handleReplace(seg.token!, translation)}
-                    />
-                  </FloatingPopover>
-                )}
               </span>
             ) : (
               <span key={i} data-start={seg.start} data-end={seg.end}>
@@ -429,38 +455,24 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
         title="What am I trying to say, and how should I actually say it?"
       >
         {coachState === "loading" ? "⏳" : "🪄"}
-        {showCoach && coachResult && coachAnchor && (
-          <FloatingPopover anchor={coachAnchor} direction="up">
-            <CoachPopover
-              meaning={coachResult.meaning}
-              feedback={coachResult.feedback}
-              options={coachResult.options}
-              loading={false}
-              error={false}
-              onSelect={(spanish) => {
-                handleValueChange(spanish);
-                setShowCoach(false);
-                textareaRef.current?.focus();
-              }}
-            />
-          </FloatingPopover>
-        )}
-        {showCoach && coachState === "loading" && coachAnchor && (
-          <FloatingPopover anchor={coachAnchor} direction="up">
-            <CoachPopover meaning="" feedback="" options={[]} loading error={false} onSelect={() => {}} />
-          </FloatingPopover>
-        )}
-        {showCoach && coachState === "error" && coachAnchor && (
-          <FloatingPopover anchor={coachAnchor} direction="up">
-            <CoachPopover meaning="" feedback="" options={[]} loading={false} error onSelect={() => {}} />
-          </FloatingPopover>
-        )}
       </span>
       <button type="button" onClick={handleSend} disabled={!value.trim()}>
         Send
       </button>
-      {phraseSelection && phraseCoords && (
-        <FloatingPopover anchor={phraseCoords} direction="up">
+      {/* Docked flush against the input bar's own top edge (see
+          DockedPopover) rather than floating next to whatever word/button
+          triggered it - a single, predictable, always-on-screen spot
+          regardless of where in the draft that word or selection sits. */}
+      {openToken && (
+        <DockedPopover onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
+          <WordCandidatesPopover
+            columns={openToken.columns}
+            onSelect={(translation) => handleReplace(openToken, translation)}
+          />
+        </DockedPopover>
+      )}
+      {phraseSelection && (
+        <DockedPopover>
           <WordCandidatesPopover
             columns={[
               {
@@ -486,7 +498,33 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
               textareaRef.current?.focus();
             }}
           />
-        </FloatingPopover>
+        </DockedPopover>
+      )}
+      {showCoach && coachResult && (
+        <DockedPopover>
+          <CoachPopover
+            meaning={coachResult.meaning}
+            feedback={coachResult.feedback}
+            options={coachResult.options}
+            loading={false}
+            error={false}
+            onSelect={(spanish) => {
+              handleValueChange(spanish);
+              setShowCoach(false);
+              textareaRef.current?.focus();
+            }}
+          />
+        </DockedPopover>
+      )}
+      {showCoach && coachState === "loading" && (
+        <DockedPopover>
+          <CoachPopover meaning="" feedback="" options={[]} loading error={false} onSelect={() => {}} />
+        </DockedPopover>
+      )}
+      {showCoach && coachState === "error" && (
+        <DockedPopover>
+          <CoachPopover meaning="" feedback="" options={[]} loading={false} error onSelect={() => {}} />
+        </DockedPopover>
       )}
     </div>
   );
