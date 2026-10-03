@@ -9,15 +9,9 @@ import "./ChatInput.css";
 const TAG_DEBOUNCE_MS = 350;
 const PHRASE_DEBOUNCE_MS = 300;
 const SPANISH_WORD_RE = /^[a-zA-Zñáéíóúü]+$/i;
-// How long a touch has to hold still before it opens a word's translation,
-// and how far it can drift during that hold before being treated as a drag/
-// scroll instead. The hoverable overlay spans are pointer-events:none on
-// touch (see ChatInput.css) so taps reach the textarea for native cursor
-// placement/selection - a long-press is detected here, on the textarea
-// itself, instead of the overlay, specifically so it never competes with
-// that for a plain tap or a native text-selection drag.
-const LONG_PRESS_MS = 450;
-const LONG_PRESS_MOVE_TOLERANCE_PX = 10;
+// How far a touch can drift between start and end before it's treated as a
+// drag/scroll/selection rather than a tap.
+const TAP_MOVE_TOLERANCE_PX = 10;
 
 interface Segment {
   text: string;
@@ -47,8 +41,8 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   const dragAnchorRef = useRef<number | null>(null);
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const touchMovedRef = useRef(false);
   const [value, setValue] = useState("");
   const [tags, setTags] = useState<InputTokenAnnotation[]>([]);
   const [openTokenKey, setOpenTokenKey] = useState<string | null>(null);
@@ -106,6 +100,10 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     const next = value.slice(0, token.start) + translation + value.slice(token.end);
     handleValueChange(next);
     setOpenTokenKey(null);
+    // The candidate button just taken focus (it's a real <button>, inside a
+    // portal) blurred the textarea and would otherwise take the keyboard
+    // down with it right as the user's about to keep editing.
+    textareaRef.current?.focus();
   };
 
   // Highlighting (selecting) a run of text - possibly several words - shows
@@ -257,53 +255,61 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     document.addEventListener("mouseup", handleMouseUp);
   };
 
-  const clearLongPressTimer = () => {
-    if (longPressTimerRef.current !== null) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-    longPressStartRef.current = null;
-  };
-
   // Touch's equivalent of hover: the overlay spans can't receive touch
   // events at all here (pointer-events:none on touch, see ChatInput.css -
   // required so a plain tap reaches the textarea underneath for cursor
   // placement), so this listens on the textarea itself instead, which
-  // always gets every touch. A quick tap or a drag both fall through to the
-  // textarea's native behavior untouched; only a hold past LONG_PRESS_MS
-  // with no significant movement opens the word's popover, the same one
-  // desktop hover does, anchored the same way the phrase popover already
-  // computes its own anchor (via the matching overlay span's own rect).
+  // always gets every touch.
+  //
+  // This used to wait for a ~450ms hold (a long-press) before opening the
+  // popover, on the theory that a plain tap should be left alone for
+  // cursor placement. In practice that collided with iOS's OWN long-press-
+  // on-a-text-field gesture (the selection magnifier + callout menu), which
+  // engages on a very similar timescale - racing our timer against it
+  // produced exactly the reported symptoms (translation not showing up,
+  // odd focus/keyboard behavior) rather than a clean popover. A plain tap
+  // never approaches that threshold at all, so resolving on touchend
+  // (only if the touch didn't move - see TAP_MOVE_TOLERANCE_PX - so an
+  // actual drag-to-select still reaches the textarea's native selection
+  // untouched) sidesteps the conflict entirely: native caret placement AND
+  // the popover both happen from the same tap, same as clicking a word in
+  // a chat bubble already does.
   const handleTextareaTouchStart = (e: React.TouchEvent<HTMLTextAreaElement>) => {
     if (openTokenKey) setOpenTokenKey(null);
-    clearLongPressTimer();
     const touch = e.touches[0];
+    touchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+    touchMovedRef.current = false;
+  };
+
+  const handleTextareaTouchMove = (e: React.TouchEvent<HTMLTextAreaElement>) => {
+    const start = touchStartRef.current;
+    const touch = e.touches[0];
+    if (!start || !touch || touchMovedRef.current) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.hypot(dx, dy) > TAP_MOVE_TOLERANCE_PX) touchMovedRef.current = true;
+  };
+
+  const handleTextareaTouchEnd = (e: React.TouchEvent<HTMLTextAreaElement>) => {
+    const hadStart = touchStartRef.current !== null;
+    const moved = touchMovedRef.current;
+    touchStartRef.current = null;
+    touchMovedRef.current = false;
+    if (!hadStart || moved) return;
+
+    const touch = e.changedTouches[0];
     if (!touch) return;
     const offset = charOffsetAtPoint(touch.clientX, touch.clientY);
     if (offset === null) return;
     const token = effectiveTags.find((t) => t.columns.length > 0 && offset >= t.start && offset <= t.end);
     if (!token) return;
-
-    longPressStartRef.current = { x: touch.clientX, y: touch.clientY };
-    longPressTimerRef.current = setTimeout(() => {
-      longPressTimerRef.current = null;
-      const span = highlightRef.current?.querySelector<HTMLElement>(
-        `[data-start="${token.start}"][data-end="${token.end}"]`,
-      );
-      if (!span) return;
-      const rect = span.getBoundingClientRect();
-      setOpenTokenAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
-      setOpenTokenKey(`${token.start}-${token.end}`);
-    }, LONG_PRESS_MS);
-  };
-
-  const handleTextareaTouchMove = (e: React.TouchEvent<HTMLTextAreaElement>) => {
-    const start = longPressStartRef.current;
-    const touch = e.touches[0];
-    if (!start || !touch) return;
-    const dx = touch.clientX - start.x;
-    const dy = touch.clientY - start.y;
-    if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE_PX) clearLongPressTimer();
+    const span = highlightRef.current?.querySelector<HTMLElement>(
+      `[data-start="${token.start}"][data-end="${token.end}"]`,
+    );
+    if (!span) return;
+    const rect = span.getBoundingClientRect();
+    setOpenTokenAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
+    setOpenTokenKey(`${token.start}-${token.end}`);
   };
 
   const handleSend = () => {
@@ -350,6 +356,10 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       const rect = e.currentTarget.getBoundingClientRect();
       setCoachAnchor({ top: rect.top, left: rect.left + rect.width / 2 });
     }
+    // This button is tabIndex-focusable (for keyboard/a11y use), which
+    // blurs the textarea on tap - checking a draft shouldn't cost the
+    // keyboard when you're about to go right back to editing.
+    textareaRef.current?.focus();
   };
 
   return (
@@ -395,12 +405,12 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
           ref={textareaRef}
           className="chat-input__textarea"
           value={value}
-          placeholder="Escribe en español... (hover, long-press, or select text for a translation)"
+          placeholder="Escribe en español... (hover, tap, or select text for a translation)"
           onChange={(e) => handleValueChange(e.target.value)}
           onSelect={handleTextareaSelect}
           onTouchStart={handleTextareaTouchStart}
           onTouchMove={handleTextareaTouchMove}
-          onTouchEnd={clearLongPressTimer}
+          onTouchEnd={handleTextareaTouchEnd}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -430,6 +440,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
               onSelect={(spanish) => {
                 handleValueChange(spanish);
                 setShowCoach(false);
+                textareaRef.current?.focus();
               }}
             />
           </FloatingPopover>
@@ -472,6 +483,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
               const next = value.slice(0, phraseSelection.start) + translation + value.slice(phraseSelection.end);
               handleValueChange(next);
               setPhraseSelection(null);
+              textareaRef.current?.focus();
             }}
           />
         </FloatingPopover>

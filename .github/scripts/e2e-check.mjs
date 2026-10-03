@@ -340,7 +340,13 @@ async function checkBrowserEndToEnd() {
 
       // Clicking (not just hovering) should pin it open with a highlight -
       // the mobile equivalent of hover, since a tap never fires mouseenter
-      // on a real touch device.
+      // on a real touch device. Focus a draft in the input FIRST, so this
+      // same click also confirms checking a word's meaning mid-draft
+      // doesn't cost the mobile keyboard - clicking a bubble word must
+      // hand focus right back to the draft rather than leaving it blurred.
+      const draftTextarea = page.locator("textarea.chat-input__textarea");
+      await draftTextarea.fill("un borrador sin terminar");
+      await draftTextarea.focus();
       await wordToken.click();
       await page.waitForTimeout(100);
       const pinnedActive = await wordToken.evaluate((el) => el.classList.contains("word-token--active"));
@@ -353,6 +359,19 @@ async function checkBrowserEndToEnd() {
         fail(`word token still has a border-bottom (${borderBottom}) - looks like a hyperlink`);
       }
       console.log("  OK - clicking a word token pins it open with a highlight, no underline");
+
+      const activeAfterWordClick = await page.evaluate(() => document.activeElement?.tagName);
+      if (activeAfterWordClick !== "TEXTAREA") {
+        fail(`clicking a chat-bubble word left focus on ${activeAfterWordClick}, not the input textarea - the keyboard would drop`);
+      } else {
+        console.log("  OK - clicking a bubble word returns focus to the draft (keyboard stays up)");
+      }
+      const draftStillThere = await draftTextarea.inputValue();
+      if (draftStillThere !== "un borrador sin terminar") {
+        fail(`in-progress draft was lost/changed: ${JSON.stringify(draftStillThere)}`);
+      }
+      await draftTextarea.fill("");
+
       // Pinning is sticky by design (stays open after the mouse leaves,
       // same pattern as ChatMessage's own translate-pin) - unpin it again
       // explicitly so it doesn't sit open and overlap later steps below it
@@ -605,6 +624,57 @@ async function checkBrowserEndToEnd() {
       fail('could not find "gusta"/"negro" as hoverable words to test drag-selection');
     }
     await textarea.fill("");
+
+    // A real tap on a word in the input (not a drag/scroll) should open its
+    // translation popover, same as desktop hover - and must NOT cost the
+    // textarea its focus (the mobile keyboard staying up depends on this).
+    // The hoverable overlay is pointer-events:none ONLY on a touch/coarse-
+    // pointer device (see ChatInput.css's `@media (hover: hover) and
+    // (pointer: fine)` gate - so a tap reaches the textarea underneath for
+    // native caret placement on a real phone) - the shared `page` above has
+    // no touch emulation, so that media query reads as a normal mouse-
+    // capable desktop there and the overlay legitimately intercepts
+    // (desktop hover behavior). Testing the touch path for real needs its
+    // own touch-enabled context, same as a real mobile browser.
+    {
+      const touchContext = await browser.newContext({ viewport: { width: 390, height: 700 }, hasTouch: true });
+      const touchPage = await touchContext.newPage();
+      await touchPage.goto(FRONTEND_URL, { waitUntil: "load", timeout: 30_000 });
+      const touchTextarea = touchPage.locator("textarea.chat-input__textarea");
+      await touchTextarea.waitFor({ timeout: 15_000 });
+      const tagResponsePromise2 = touchPage.waitForResponse(
+        (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
+        { timeout: 10_000 },
+      );
+      await touchTextarea.fill("Hola amigo");
+      await tagResponsePromise2;
+      await touchPage.waitForTimeout(150);
+      const amigoSpan = touchPage.locator(".chat-input__hoverable", { hasText: "amigo" }).first();
+      if ((await amigoSpan.count()) > 0) {
+        const box = await amigoSpan.boundingBox();
+        await touchPage.evaluate(
+          ({ x, y }) => {
+            const el = document.elementFromPoint(x, y);
+            const touch = new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
+            const opts = { touches: [touch], targetTouches: [touch], changedTouches: [touch], bubbles: true, cancelable: true };
+            el.dispatchEvent(new TouchEvent("touchstart", opts));
+            el.dispatchEvent(new TouchEvent("touchend", { ...opts, touches: [] }));
+          },
+          { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+        );
+        await touchPage.waitForSelector(".word-candidates-popover", { timeout: 3_000 }).catch(() => {});
+        const tapPopoverVisible = await touchPage.locator(".word-candidates-popover").first().isVisible().catch(() => false);
+        if (!tapPopoverVisible) fail('a tap on "amigo" in the input did not open its translation popover');
+        const stillFocused = await touchPage.evaluate(() => document.activeElement?.tagName === "TEXTAREA");
+        if (!stillFocused) fail("tapping a word in the input lost focus on the textarea (keyboard would drop)");
+        if (tapPopoverVisible && stillFocused) {
+          console.log('  OK - tapping "amigo" in the input (real touch emulation) opens its popover and keeps the textarea focused');
+        }
+      } else {
+        fail('"amigo" was not flagged as hoverable in the input - cannot test tap-to-translate');
+      }
+      await touchContext.close();
+    }
 
     // The input's help button (replaces the old hover-only globe) - click-
     // toggled, so this also exercises that toggle actually opens/closes it
