@@ -33,6 +33,17 @@ def test_chat_returns_content_and_sends_configured_model():
     assert kwargs["headers"]["Authorization"] == "Bearer sk-fake"
 
 
+def test_chat_model_override_takes_precedence_over_configured_model():
+    with (
+        patch("app.chat.openai_client.OPENAI_API_KEY", "sk-fake"),
+        patch("app.chat.openai_client.OPENAI_CHAT_MODEL", "gpt-6-luna"),
+        patch("httpx.post", return_value=_response("hola")) as mock_post,
+    ):
+        chat([{"role": "user", "content": "hi"}], model="gpt-6-mini")
+
+    assert mock_post.call_args.kwargs["json"]["model"] == "gpt-6-mini"
+
+
 def test_chat_sends_max_completion_tokens_not_max_tokens():
     # Real bug, caught live against the actual OpenAI API: "max_tokens" is
     # rejected outright by newer models ("Unsupported parameter: 'max_tokens'

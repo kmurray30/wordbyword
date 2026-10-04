@@ -48,7 +48,8 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENAI_API_KEY` | *(none)* | API key for the chat backend; chat/translation calls return 503 if unset |
-| `OPENAI_CHAT_MODEL` | `gpt-6-luna` | model id sent to the API - change this if that id isn't valid for your account |
+| `OPENAI_CHAT_MODEL` | `gpt-6-luna` | model id sent to the API for chat replies (and coaching) - change this if that id isn't valid for your account |
+| `OPENAI_TRANSLATE_MODEL` | same as `OPENAI_CHAT_MODEL` | model id used for the pure translation/glossing calls (whole-message translation, per-word hover glosses, the learner-input interpreter) - override with a smaller/faster model if translation latency matters more than matching the chat model's quality for these short, simple tasks |
 | `MAX_REPLY_TOKENS` | `300` | hard cap on tokens per generation (chat + translation calls alike) |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
 | `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |

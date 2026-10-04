@@ -15,16 +15,27 @@ import logging
 import re
 
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
+from app.config import OPENAI_TRANSLATE_MODEL
 from app.translate.lemmatizer import analyze
 
 logger = logging.getLogger(__name__)
 
 _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 
-# gloss_reply's JSON response needs room for a translation plus one entry
-# per distinct word in the source text - structurally larger than a plain
-# translate_text call, which only ever returns a single short string.
-_GLOSS_REPLY_MAX_TOKENS = 700
+# gloss_reply's JSON response needs room for a translation plus one span
+# per TOKEN in the source text (not per distinct word, unlike the old
+# dict-keyed word_map this replaced - full-coverage spans don't dedupe a
+# repeated word like "y" or "el" across its occurrences). A short 2-3
+# sentence reply can still run 20+ words once every function word is
+# counted, each needing its own {"surface", "gloss", "note"} entry - sized
+# well above tag_draft's per-span budget (1400 for a 5-field span) despite
+# gloss_reply's spans only having 3 fields, since this one can have more
+# spans in total. Too tight a budget truncates the JSON mid-generation,
+# which reads identically to the model just failing (unparseable after
+# retries) - and since there's no per-token fallback, that silently drops
+# every gloss in the WHOLE message, not just one word - exactly the
+# "lots of words aren't clickable" symptom this sizing fixes.
+_GLOSS_REPLY_MAX_TOKENS = 1400
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -66,7 +77,7 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     last_result = ""
     for _attempt in range(2):
         try:
-            last_result = model_chat(messages).strip()
+            last_result = model_chat(messages, model=OPENAI_TRANSLATE_MODEL).strip()
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not _looks_garbled(last_result):
@@ -133,18 +144,26 @@ def gloss_reply(text: str, source_lang: str, target_lang: str) -> tuple[str, lis
 
     last_reply = ""
     last_error: Exception | None = None
-    for _attempt in range(2):
+    # 3 attempts, not 2 - same reasoning as tag_draft's own retry count:
+    # this is the other call in this file with a large, multi-field-per-
+    # span JSON payload, so it's worth the same extra insurance against an
+    # occasional truncated/empty completion.
+    for attempt in range(3):
         try:
-            last_reply = model_chat(messages, max_tokens=_GLOSS_REPLY_MAX_TOKENS)
+            last_reply = model_chat(messages, max_tokens=_GLOSS_REPLY_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if _looks_garbled(last_reply):
-            last_error = ValueError("garbled reply")
+        if not last_reply.strip() or _looks_garbled(last_reply):
+            last_error = ValueError("empty or garbled reply")
+            logger.warning("gloss_reply attempt %d/3 for %r: empty or garbled reply (len=%d)", attempt + 1, text, len(last_reply))
             continue
         try:
             return _extract_span_list_json(last_reply)
         except (ValueError, json.JSONDecodeError, KeyError) as exc:
             last_error = exc
+            logger.warning(
+                "gloss_reply attempt %d/3 for %r: unparseable reply (len=%d): %s", attempt + 1, text, len(last_reply), exc
+            )
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
 
 
@@ -238,7 +257,7 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
     reply = ""
     for _attempt in range(2):
         try:
-            reply = model_chat(messages)
+            reply = model_chat(messages, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not _looks_garbled(reply):
@@ -444,7 +463,7 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
     # for a third try.
     for attempt in range(3):
         try:
-            last_reply = model_chat(messages, max_tokens=_TAG_DRAFT_MAX_TOKENS)
+            last_reply = model_chat(messages, max_tokens=_TAG_DRAFT_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not last_reply.strip() or _looks_garbled(last_reply):

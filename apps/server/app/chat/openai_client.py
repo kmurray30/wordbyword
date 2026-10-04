@@ -24,12 +24,13 @@ def chat(
     messages: list[dict[str, str]],
     timeout: float = 60.0,
     max_tokens: int | None = None,
+    model: str | None = None,
 ) -> str:
     if not OPENAI_API_KEY:
         raise ModelServerUnavailableError("OPENAI_API_KEY is not configured on the server")
 
     payload = {
-        "model": OPENAI_CHAT_MODEL,
+        "model": model or OPENAI_CHAT_MODEL,
         "messages": messages,
         # Newer OpenAI models (confirmed live against gpt-6-luna) reject the
         # classic "max_tokens" field outright ("Unsupported parameter...
@@ -60,6 +61,7 @@ def chat_stream(
     messages: list[dict[str, str]],
     timeout: float = 60.0,
     max_tokens: int | None = None,
+    model: str | None = None,
 ) -> Iterator[str]:
     """Same request as chat() above, but with `stream: true` - yields each
     content delta as it arrives over the SSE response. No mid-stream retry:
@@ -69,7 +71,7 @@ def chat_stream(
         raise ModelServerUnavailableError("OPENAI_API_KEY is not configured on the server")
 
     payload = {
-        "model": OPENAI_CHAT_MODEL,
+        "model": model or OPENAI_CHAT_MODEL,
         "messages": messages,
         "stream": True,
         "max_completion_tokens": max_tokens if max_tokens is not None else MAX_REPLY_TOKENS,

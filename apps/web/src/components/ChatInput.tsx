@@ -80,11 +80,15 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   // The real, LLM-backed word/group glossing (app.translate.llm_translate.
   // tag_draft via /translate/gloss-spans) for one specific past value of
   // the draft - fetched lazily (see ensureGlossSpans), not on a typing
-  // timer, since unlike `tokens` above this is a real LLM call. `trimmedKey`
-  // is that snapshot's trimmed text - trailing/leading whitespace changes
-  // since the fetch don't invalidate it (see glossCacheValid below), but
-  // any other content change does.
-  const [glossCache, setGlossCache] = useState<{ trimmedKey: string; spans: DraftSpan[] } | null>(null);
+  // timer, since unlike `tokens` above this is a real LLM call. `sourceText`
+  // is the exact draft text this was fetched for - used both to tell
+  // whether the FULL set is still current (glossCacheValid below) and,
+  // per word, whether an individual stale span is still trustworthy even
+  // when it isn't (see findStickySpan) - continuing to type further down
+  // the draft shouldn't make hovering an earlier, untouched word reglow
+  // with a loading spinner for a word it already has a perfectly good
+  // answer for.
+  const [glossCache, setGlossCache] = useState<{ sourceText: string; spans: DraftSpan[] } | null>(null);
   const [glossState, setGlossState] = useState<"idle" | "loading" | "error">("idle");
   const glossSeqRef = useRef(0);
   // The exact trimmed text a gloss-spans request is currently in flight
@@ -161,10 +165,32 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     return () => clearTimeout(handle);
   }, [value]);
 
-  // The trimmed text glossCache's `spans` actually cover - an extra
-  // leading/trailing space since that fetch is still the SAME instance
-  // (no refetch needed), but any other content change makes it stale.
-  const glossCacheValid = glossCache !== null && glossCache.trimmedKey === value.trim();
+  // Whether glossCache's `spans` cover the CURRENT draft in full - an extra
+  // leading/trailing space since that fetch is still the same instance (no
+  // refetch needed), but any other content change makes it stale. Used
+  // only for the highlight overlay's all-or-nothing naive-vs-real choice
+  // (hoverRanges below) - the popover itself uses the more forgiving
+  // per-word findStickySpan instead, so a stale full set doesn't block an
+  // individual word that's still perfectly valid.
+  const glossCacheValid = glossCache !== null && glossCache.sourceText.trim() === value.trim();
+
+  // A word/group hovered before stays showable from the stale cache - with
+  // no loading flash and no refetch - as long as nothing from the start of
+  // the draft through the END of that span has changed since it was
+  // fetched: that's suficient to guarantee this span's offsets still point
+  // at the same word, even though something LATER in the draft (which this
+  // check doesn't look past) has since changed and made the FULL cached
+  // set stale. This is exactly the common case of continuing to type
+  // further on, then hovering back over an earlier word - that word's own
+  // text hasn't moved at all, so there's no real reason to block on (or
+  // even fire) a fresh LLM call just to re-confirm what's already known.
+  const findStickySpan = (offset: number): DraftSpan | undefined => {
+    if (!glossCache) return undefined;
+    const candidate = glossCache.spans.find((s) => offset >= s.start && offset < s.end);
+    if (!candidate) return undefined;
+    if (value.slice(0, candidate.end) !== glossCache.sourceText.slice(0, candidate.end)) return undefined;
+    return candidate;
+  };
 
   // Fetches the real, LLM-backed word/group glossing for the CURRENT
   // draft, but only if it isn't already cached (or in flight) for this
@@ -173,7 +199,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   const ensureGlossSpans = () => {
     const trimmedKey = value.trim();
     if (!trimmedKey) return;
-    if (glossCache?.trimmedKey === trimmedKey) return;
+    if (glossCache?.sourceText.trim() === trimmedKey) return;
     if (glossPendingKeyRef.current === trimmedKey) return;
     glossPendingKeyRef.current = trimmedKey;
     setGlossState("loading");
@@ -184,7 +210,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       .then((res) => {
         if (seq !== glossSeqRef.current) return;
         glossPendingKeyRef.current = null;
-        setGlossCache({ trimmedKey, spans: res.spans });
+        setGlossCache({ sourceText: textSnapshot, spans: res.spans });
         setGlossState("idle");
         setAltToggles({});
       })
@@ -247,16 +273,14 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   const segments = buildSegments(value, hoverRanges);
   // Suppressed while a real (multi-char) selection is active - a drag can
   // end with the pointer resting over a word, which would otherwise leave
-  // this open at the same time as the phrase popover. Re-resolved every
-  // render against whichever range set is authoritative (see hoverRanges
-  // above) - this is what lets a naively-opened single word upgrade to a
-  // wider real multi-word group once its gloss fetch lands, without the
-  // popover's "open" identity ever changing.
-  const openSpan =
-    !phraseSelection && openOffset !== null && glossCacheValid
-      ? glossCache!.spans.find((s) => openOffset >= s.start && openOffset < s.end)
-      : undefined;
-  const openPending = !phraseSelection && openOffset !== null && !glossCacheValid;
+  // this open at the same time as the phrase popover. Resolved via
+  // findStickySpan rather than requiring the FULL cache to be current
+  // (glossCacheValid) - this is what lets a naively-opened single word
+  // upgrade to a wider real multi-word group once its gloss fetch lands,
+  // AND lets an already-resolved earlier word keep showing instantly even
+  // after a later edit has made the rest of the cache stale.
+  const openSpan = !phraseSelection && openOffset !== null ? findStickySpan(openOffset) : undefined;
+  const openPending = !phraseSelection && openOffset !== null && !openSpan;
   const popoverState: "none" | "loading" | "error" | "ready" = phraseSelection
     ? "none"
     : openOffset === null
@@ -265,9 +289,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
         ? glossState === "error"
           ? "error"
           : "loading"
-        : openSpan
-          ? "ready"
-          : "none";
+        : "ready";
 
   // Shared base for anything that changes the draft text - just the value
   // itself and clearing a stale phrase selection. Used directly (bypassing
@@ -582,7 +604,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     applyValue(option.spanish);
     setSelectedCoachOptionIndex(index);
     if (option.english || option.spans.length > 0) {
-      setGlossCache({ trimmedKey: option.spanish.trim(), spans: option.spans });
+      setGlossCache({ sourceText: option.spanish, spans: option.spans });
       setAltToggles({});
     }
     textareaRef.current?.focus();

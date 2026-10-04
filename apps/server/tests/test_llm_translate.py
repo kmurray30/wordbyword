@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from app.chat.openai_client import ModelServerUnavailableError
+from app.config import OPENAI_TRANSLATE_MODEL
 from app.translate.llm_translate import (
     TranslationUnavailableError,
     coach_draft_stream,
@@ -28,6 +29,7 @@ def test_translate_text_calls_llm_with_language_names():
     assert messages[-1] == {"role": "user", "content": "Hola, ¿cómo estás?"}
     assert "Spanish" in messages[0]["content"]
     assert "English" in messages[0]["content"]
+    assert kwargs["model"] == OPENAI_TRANSLATE_MODEL
 
 
 def test_translate_text_strips_whitespace():
