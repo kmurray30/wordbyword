@@ -77,7 +77,15 @@ def get_history(session_id: str, session: Session = Depends(get_session)) -> Cha
             role=row.role,
             text=row.text,
             tokens=[
-                TokenAnnotation(surface=t.surface, lemma=t.lemma, pos=t.pos, gloss=t.gloss, is_new=t.is_new)
+                TokenAnnotation(
+                    surface=t.surface,
+                    lemma=t.lemma,
+                    pos=t.pos,
+                    gloss=t.gloss,
+                    is_new=t.is_new,
+                    note=t.note,
+                    literal=t.literal,
+                )
                 for t in row.tokens
             ],
         )
@@ -158,6 +166,8 @@ def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str)
                 pos=tok.pos,
                 gloss=word_gloss,
                 is_new=is_new,
+                note=word_note,
+                literal=word_literal,
             )
         )
 

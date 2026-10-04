@@ -93,6 +93,34 @@ def test_punctuation_survives_a_history_reload():
     assert "?" in surfaces
 
 
+def test_note_and_literal_survive_a_history_reload():
+    # note/literal used to only ever exist in the live ChatTurnResponse
+    # (annotations) - not persisted on the MessageToken row - so GET
+    # /chat/history (which rebuilds tokens purely from those rows) silently
+    # flattened a reloaded message's words back down to their bare gloss,
+    # dropping any disambiguation note and idiom word-by-word breakdown.
+    session = _session()
+    reply = "Tenlo en cuenta."
+    gloss_json = (
+        '{"translation": "Keep it in mind.", "spans": ['
+        '{"surface": "Tenlo en cuenta", "gloss": "keep it in mind", "note": "imperative form", '
+        '"literal": "ten (have) + lo (it) + en cuenta (in mind)"}]}'
+    )
+    with (
+        patch("app.routes.chat.model_chat", return_value=reply),
+        patch("app.translate.llm_translate.model_chat", return_value=gloss_json),
+    ):
+        take_turn(ChatTurnRequest(session_id="t7", message="hola"), session=session)
+
+    history = get_history(session_id="t7", session=session)
+    assistant_message = next(m for m in history.messages if m.role == "assistant")
+    by_surface = {t.surface.lower(): t for t in assistant_message.tokens}
+    assert by_surface["tenlo"].note == "imperative form"
+    assert by_surface["tenlo"].literal == "ten (have) + lo (it) + en cuenta (in mind)"
+    assert by_surface["cuenta"].note == "imperative form"
+    assert by_surface["cuenta"].literal == "ten (have) + lo (it) + en cuenta (in mind)"
+
+
 def test_word_missing_from_llm_spans_gets_empty_gloss():
     reply = "El gato es grande."
     # The LLM's span list only covers one of the two content words - the

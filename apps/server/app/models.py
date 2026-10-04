@@ -67,5 +67,12 @@ class MessageToken(Base):
     pos: Mapped[str] = mapped_column(String(32), default="")
     gloss: Mapped[str] = mapped_column(String(256), default="")
     is_new: Mapped[bool] = mapped_column(default=False)
+    # Same disambiguation-note/word-by-word-breakdown fields TokenAnnotation
+    # carries live (see app/schemas.py) - persisted too, not just returned
+    # in the moment, so GET /chat/history (which rebuilds tokens purely
+    # from these rows) doesn't silently flatten a reloaded message's words
+    # back down to their bare gloss on the very next page load.
+    note: Mapped[str] = mapped_column(String(512), default="")
+    literal: Mapped[str] = mapped_column(String(512), default="")
 
     message: Mapped[ChatMessage] = relationship(back_populates="tokens")
