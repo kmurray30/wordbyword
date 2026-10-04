@@ -441,13 +441,21 @@ def tag_draft(
 
     last_reply = ""
     last_error: Exception | None = None
-    for _attempt in range(2):
+    # Observed live (Railway logs, both before and after this round's own
+    # changes - not a regression this round introduced): this call
+    # occasionally comes back completely empty for a longer/more complex
+    # draft, back to back, exhausting the usual 2 attempts other LLM-
+    # backed helpers here use. One extra attempt is cheap insurance - this
+    # has the biggest, most complex JSON payload of any call in this
+    # file (5 string fields per span), so it's the one most worth paying
+    # for a third try.
+    for _attempt in range(3):
         try:
             last_reply = model_chat(messages, logit_bias={}, max_tokens=_TAG_DRAFT_MAX_TOKENS, provider=provider)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if _looks_garbled(last_reply):
-            last_error = ValueError("garbled reply")
+        if not last_reply.strip() or _looks_garbled(last_reply):
+            last_error = ValueError("empty or garbled reply")
             continue
         try:
             return _extract_span_list_json(last_reply)

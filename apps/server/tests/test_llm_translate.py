@@ -344,9 +344,32 @@ def test_tag_draft_retries_once_on_unparseable_reply():
 
 
 def test_tag_draft_raises_after_exhausting_retries():
-    with patch("app.translate.llm_translate.model_chat", return_value="not json at all"):
+    with patch("app.translate.llm_translate.model_chat", return_value="not json at all") as mock_chat:
         with pytest.raises(TranslationUnavailableError):
             tag_draft("hola", "en", "es")
+    assert mock_chat.call_count == 3
+
+
+def test_tag_draft_retries_on_empty_reply():
+    # Observed live: the model occasionally returns a fully empty
+    # completion for a longer/more complex draft - not "garbled" (no
+    # unexpected script), just blank, so this needs its own check rather
+    # than relying on _looks_garbled to catch it.
+    with patch(
+        "app.translate.llm_translate.model_chat",
+        side_effect=["", '{"translation": "Hi", "spans": [{"surface": "hola", "gloss": "hi"}]}'],
+    ) as mock_chat:
+        translation, spans = tag_draft("hola", "en", "es")
+
+    assert translation == "Hi"
+    assert mock_chat.call_count == 2
+
+
+def test_tag_draft_raises_after_repeated_empty_replies():
+    with patch("app.translate.llm_translate.model_chat", return_value="") as mock_chat:
+        with pytest.raises(TranslationUnavailableError):
+            tag_draft("hola", "en", "es")
+    assert mock_chat.call_count == 3
 
 
 def test_tag_draft_raises_on_garbled_reply():
