@@ -350,9 +350,20 @@ async function checkEnglishInputAndTranslation() {
   console.log(`  feedback: ${JSON.stringify(coachCore.feedback)}`);
   console.log(`  options (core): ${JSON.stringify(coachCore.options)}`);
 
+  // When the draft is judged already correct (empty feedback, exactly one
+  // "neutral" option - see coach_draft_stream's own "Speed" docs and
+  // ChatInput.tsx's coachClean), PART 2's breakdown is intentionally
+  // skipped - the backend still emits one placeholder option with empty
+  // english/spans for that single core option (see app/routes/
+  // translate.py's coach_draft, which always builds one CoachOption per
+  // core option), not a product bug to assert against.
+  const coachIsClean = coachCore.feedback.trim() === "" && coachCore.options.length === 1;
+
   const coachTranslations = coachEvents.find((e) => e.event === "translations")?.data;
   if (!coachTranslations) {
     console.log('  (eyeball) no "translations" event this run - PART 2 can be skipped under token pressure, not a hard failure');
+  } else if (coachIsClean) {
+    console.log('  OK - draft judged already correct, PART 2\'s breakdown intentionally skipped (see coach_draft_stream)');
   } else {
     for (const opt of coachTranslations.options) {
       if (!opt.english) fail(`/translate/coach "translations" option missing english text: ${JSON.stringify(opt)}`);
