@@ -38,8 +38,14 @@ _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 # (unparseable after retries) - and since there's no per-token fallback,
 # that silently drops every gloss in the WHOLE message, not just one word
 # - exactly the "lots of words aren't clickable" symptom this sizing
-# fixes.
-_GLOSS_REPLY_MAX_TOKENS = 1700
+# fixes. Raised again, 1700->2800, alongside the same bump to
+# tag_draft's own budget - see _TAG_DRAFT_MAX_TOKENS's comment: against a
+# reasoning-style model, a live failure there came back completely empty
+# (reasoning tokens alone exhausted a 1600 budget), and this call shares
+# the same model and the same new `literal` field, so the same generous
+# headroom applies here too, before it gets caught by the exact same
+# failure mode on some longer/idiom-heavy reply.
+_GLOSS_REPLY_MAX_TOKENS = 2800
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -328,7 +334,7 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
     return native_text, target_text
 
 
-_TAG_DRAFT_MAX_TOKENS = 1600  # each span here carries 6 string fields
+_TAG_DRAFT_MAX_TOKENS = 3000  # each span here carries 6 string fields
 # (surface/gloss/note/translation/alternate_gloss/literal) - most of them
 # empty for a given span (alternate_gloss nearly always, literal unless
 # that span is a multi-word group), but all 6 still need room in the cap.
@@ -341,6 +347,18 @@ _TAG_DRAFT_MAX_TOKENS = 1600  # each span here carries 6 string fields
 # asks the model to generate per call - see tag_draft's docstring on
 # dropping the unused whole-draft `translation` field for exactly that
 # reason.
+#
+# Raised from 1600 after a live failure (all 3 attempts came back
+# completely empty, len=0, not just truncated) on a draft combining ALL
+# THREE of tag_draft's asks at once - cognate detection
+# (`alternate_gloss`), an idiom ("miss you"), and this round's new
+# `literal` breakdown - against OPENAI_TRANSLATE_MODEL, which (per
+# openai_client.py's own comment on requiring max_completion_tokens) is a
+# reasoning-style model: its internal reasoning tokens count against this
+# same budget before any visible output, and a heavier combined-task
+# prompt can burn through a tight budget on reasoning alone, leaving
+# nothing for the actual JSON. Chosen generously since, per above, this
+# cap costs nothing when unused.
 
 
 def _coerce_spans(raw_spans: list) -> list[dict[str, str]]:
@@ -528,11 +546,16 @@ _COACH_CORE_MAX_TOKENS = 600
 # live, non-deterministically: the same kind of draft got usable
 # translations one run and none (truncated/unparseable) the next, purely
 # from how much of the shared budget PART 1 happened to use that time.
-_COACH_TRANSLATIONS_MAX_TOKENS = 1250
-# Raised from 1100 to make room for each span's new `literal` field (a
+_COACH_TRANSLATIONS_MAX_TOKENS = 2200
+# Raised 1100->1250 to make room for each span's new `literal` field (a
 # word-by-word breakdown, non-empty only for a multi-word idiom/phrasal-
 # verb group) - most spans leave it empty, but an option with a couple of
-# such groups needs the extra headroom across up to 3 options.
+# such groups needs the extra headroom across up to 3 options. Raised
+# again, 1250->2200: a live failure in tag_draft (same model, same new
+# `literal` field - see _TAG_DRAFT_MAX_TOKENS's comment) came back
+# completely empty because the model's own reasoning tokens alone
+# exhausted a budget in this same range, before any visible output - this
+# call is at just as much risk, so it gets the same generous headroom.
 _COACH_STREAM_MAX_TOKENS = _COACH_CORE_MAX_TOKENS + _COACH_TRANSLATIONS_MAX_TOKENS
 _COACH_HISTORY_TURNS = 8
 _VALID_FORMALITIES = {"neutral", "casual", "formal"}
