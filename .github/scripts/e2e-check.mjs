@@ -24,11 +24,11 @@
 //     dictionary/Argos fallback anywhere - a miss just means no gloss),
 //     and whether it grouped multiple words into one span (e.g. "miss
 //     you") is eyeballed, not asserted, since that varies run to run with
-//     a small model. Finally streams /translate/coach (the input's help
-//     button's backend - Server-Sent Events, not a single JSON response,
-//     so the "core" and "translations" phases of one underlying LLM call
-//     are checked separately) using this session's own recent history for
-//     context.
+//     a small model. Finally streams /translate/coach (the combined Send
+//     button's "check first" mode backend - Server-Sent Events, not a
+//     single JSON response, so the "core" and "translations" phases of one
+//     underlying LLM call are checked separately) using this session's own
+//     recent history for context.
 //  3. Confirm GET /chat/history reflects what stages 1/2 just sent, and
 //     that POST /chat/history/clear actually empties it.
 //  4. If those pass, drive the real site with Playwright end to end: confirm
@@ -48,14 +48,17 @@
 //     word, not just in a gap between them) and confirm it shows one
 //     phrase translation (in whichever direction the selected words'
 //     majority language calls for) rather than a leftover single-word
-//     popover, click the help button (replaces the old hover-only globe)
-//     and confirm its streaming coach popover renders docked below the
-//     input bar (not above - moved there so it reads out of the way of the
-//     draft), that its ✕ button closes it and returns focus to the draft,
-//     and that applying an option updates the draft WITHOUT closing the
-//     popover (so another option can still be compared afterward) - all
-//     of that before touching TTS at all, same reasoning as stages 1-2
-//     before 5-6 - then play the assistant message's audio, switch the
+//     popover, switch the combined Send button into "check first" mode
+//     (press-and-hold it, see setSendMode below) and confirm clicking it
+//     on a rough draft opens a streaming coach popover docked below the
+//     input bar (not above - reads out of the way of the draft), that its
+//     ✕ button closes it and returns focus to the draft while leaving the
+//     Send button primed to just send (the check already completed), that
+//     applying an option updates the draft WITHOUT closing the popover (so
+//     another option can still be compared afterward), and that clicking
+//     Send afterward actually sends rather than re-checking - all of that
+//     before touching TTS at all, same reasoning as stages 1-2 before 5-6
+//     - then play the assistant message's audio, switch the
 //     voice picker (a button-based SegmentedControl, not a native <select>
 //     - see SegmentedControl.tsx) and confirm that request carries the
 //     chosen voice, confirm the chat textarea is the only native form
@@ -87,6 +90,28 @@ const TEST_SESSION_ID = `e2e-${crypto.randomUUID()}`;
 function fail(message) {
   console.error(`FAIL: ${message}`);
   process.exit(1);
+}
+
+// Switches the combined Send button's mode via its press-and-hold bubble
+// (see ChatInput.tsx) - requires some non-empty draft in the textarea
+// first, since the button is disabled (and so can't start the hold) on an
+// empty one. A plain .click() is too fast to trigger the hold timer, so
+// this does a real mousedown -> wait past the threshold -> mouseup, which
+// (like a genuine user gesture) still fires a native click on mouseup -
+// the app's own long-press-vs-tap detection (sendLongPressFiredRef) relies
+// on exactly that ordering to tell the two apart.
+async function setSendMode(page, mode) {
+  const sendButton = page.locator(".chat-input__send");
+  const box = await sendButton.boundingBox();
+  if (!box) fail("Send button not found/visible - can't switch send mode");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(650); // past ChatInput.tsx's SEND_LONG_PRESS_MS (500ms)
+  await page.mouse.up();
+  await page.waitForSelector(".send-mode-picker", { timeout: 3_000 });
+  const label = mode === "direct" ? "Send directly" : "Check first";
+  await page.locator(".send-mode-picker .segmented-control__option", { hasText: label }).click();
+  await page.waitForSelector(".send-mode-picker", { state: "hidden", timeout: 3_000 });
 }
 
 async function chatTurn(message) {
@@ -419,6 +444,23 @@ async function checkBrowserEndToEnd() {
     console.log("  OK - LLM gate isn't blocking the page once the model server is warm");
     await page.waitForSelector("textarea", { timeout: 15_000 });
     await page.screenshot({ path: "e2e-1-loaded.png" });
+
+    // The combined Send button (see ChatInput.tsx) defaults to "check
+    // first" mode for a learner who's never set a preference - confirmed
+    // here by typing something and seeing the button itself offer to
+    // check rather than just send. Switched to "direct" right after for
+    // the rest of this script's otherwise-unrelated checks, which all
+    // assume Enter/Send fires the real /chat/turn call immediately; the
+    // dedicated section below switches back to specifically exercise
+    // "check first" mode.
+    await page.fill("textarea", "x");
+    const defaultSendLabel = await page.locator(".chat-input__send").innerText();
+    if (!defaultSendLabel.includes("Check")) {
+      fail(`default send mode should be "check first" (expected the button to offer a check, got ${JSON.stringify(defaultSendLabel)})`);
+    }
+    console.log('  OK - the Send button defaults to "check first" mode');
+    await setSendMode(page, "direct");
+    await page.fill("textarea", "");
 
     await page.fill("textarea", "Hola");
     await page.keyboard.press("Enter");
@@ -883,12 +925,14 @@ async function checkBrowserEndToEnd() {
       await touchContext.close();
     }
 
-    // The input's help button (replaces the old hover-only globe) - click-
-    // toggled, so this also exercises that toggle actually opens/closes it
-    // rather than relying on hover (which never fires on a real tap).
+    // The combined Send button's "check first" mode (replaces the old
+    // standalone help button) - switch into it via the press-and-hold
+    // bubble, same as a real learner would.
+    await textarea.fill("x");
+    await setSendMode(page, "checkFirst");
     await textarea.fill("quiero ir playa manana");
-    const helpButton = page.locator(".chat-input__help");
-    await helpButton.click();
+    const sendButton = page.locator(".chat-input__send");
+    await sendButton.click();
     await page.waitForSelector(".coach-popover", { timeout: 10_000 });
     await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
       timeout: 10_000,
@@ -905,7 +949,7 @@ async function checkBrowserEndToEnd() {
     // Docked flush against the input bar's own BOTTOM edge (moved below the
     // draft so it reads out of the way of the text being edited - see
     // ChatInput.tsx), not above it and not floating somewhere else on
-    // screen based on where the help button sits.
+    // screen based on where the Send button sits.
     const coachInputBarBox = await page.locator(".chat-input").boundingBox();
     const coachDockGap = coachBox.y - (coachInputBarBox.y + coachInputBarBox.height);
     if (Math.abs(coachDockGap) > 2) {
@@ -914,35 +958,15 @@ async function checkBrowserEndToEnd() {
       console.log("  OK - coach popover sits flush below the input bar, not above or floating");
     }
     const coachText = await page.locator(".coach-popover").innerText();
-    console.log(`  OK - help button opened coach popover: ${JSON.stringify(coachText)}`);
+    console.log(`  OK - Send button (check-first mode) opened coach popover on a rough draft: ${JSON.stringify(coachText)}`);
     await page.screenshot({ path: "e2e-debug-coach-popover.png" });
 
-    // Explicit close (✕) button - unlike a quick word lookup, this can sit
-    // open a while reading options, so it needs its own way out besides
-    // toggling the help button again.
-    const coachCloseButton = page.locator(".coach-popover__close");
-    if ((await coachCloseButton.count()) === 0) {
-      fail("coach popover has no visible close (✕) button");
-    }
-    await coachCloseButton.click();
-    const closedByX = (await page.locator(".coach-popover").count()) === 0;
-    if (!closedByX) fail("coach popover's ✕ button did not close it");
-    const focusAfterCoachClose = await page.evaluate(() => document.activeElement?.className ?? "");
-    if (!focusAfterCoachClose.includes("chat-input__textarea")) {
-      fail(`closing the coach popover via ✕ left focus on ${JSON.stringify(focusAfterCoachClose)}, not the draft textarea`);
-    }
-    console.log("  OK - the ✕ button closes the coach popover and returns focus to the draft");
-
-    // Re-open it (shows the SAME cached result instantly, no refetch,
-    // since the draft hasn't changed since it was closed) to confirm
-    // applying an option updates the draft WITHOUT closing the popover -
+    // Picking an option updates the draft WITHOUT closing the popover -
     // the whole point of #9 is that it stays up so another option can
     // still be compared, until explicitly closed (✕) or regenerated (↻).
-    await helpButton.click();
-    await page.waitForSelector(".coach-popover", { timeout: 10_000 });
-    await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
-      timeout: 10_000,
-    });
+    // Done BEFORE closing (unlike the old help-button flow) since closing
+    // now leaves the Send button primed to just send (see below) rather
+    // than re-opening on another click - there's no "reopen" step anymore.
     const firstOption = page.locator(".coach-popover__option").first();
     const optionText = await firstOption.locator(".coach-popover__option-text").innerText();
     await firstOption.locator(".coach-popover__option-main").click();
@@ -1001,12 +1025,64 @@ async function checkBrowserEndToEnd() {
     });
     console.log("  OK - the regenerate button re-runs the coaching call");
 
+    // Closing (✕) now leaves this draft's check result in place - it's
+    // still just as verified as it was a moment ago, so the Send button
+    // should read "Send" (not "💡 Check") rather than needing another
+    // check on the next click.
     const coachCloseButton2 = page.locator(".coach-popover__close");
     await coachCloseButton2.click();
     const closedAfterRegenerate = (await page.locator(".coach-popover").count()) === 0;
     if (!closedAfterRegenerate) fail("coach popover's ✕ button did not close it after regenerating");
-    console.log("  OK - the ✕ button still closes the popover after regenerating");
-    await textarea.fill("");
+    const focusAfterClose = await page.evaluate(() => document.activeElement?.className ?? "");
+    if (!focusAfterClose.includes("chat-input__textarea")) {
+      fail(`closing the coach popover left focus on ${JSON.stringify(focusAfterClose)}, not the draft textarea`);
+    }
+    const sendLabelAfterClose = await sendButton.innerText();
+    if (!sendLabelAfterClose.includes("Send") || sendLabelAfterClose.includes("Check")) {
+      fail(`Send button should read "Send" once this draft is already checked, got ${JSON.stringify(sendLabelAfterClose)}`);
+    }
+    console.log('  OK - the ✕ button closes the popover, returns focus to the draft, and leaves Send primed to just send');
+
+    // Clicking Send now should send the CURRENT draft text directly - no
+    // re-check - since it's already been verified. This is the actual
+    // point of combining the two buttons: "clicking one text replaces it
+    // into your box. The send button at this point is just send."
+    const assistantCountBeforeSend = await page.locator(".chat-message--assistant").count();
+    const draftBeforeDirectSend = await textarea.inputValue();
+    await sendButton.click();
+    await page.waitForFunction((count) => document.querySelectorAll(".chat-message--assistant").length > count, assistantCountBeforeSend, {
+      timeout: CHAT_TIMEOUT_MS,
+    });
+    const draftAfterDirectSend = await textarea.inputValue();
+    if (draftAfterDirectSend !== "") fail(`draft should be cleared after sending, still has ${JSON.stringify(draftAfterDirectSend)}`);
+    console.log(`  OK - clicking an already-checked Send button sent ${JSON.stringify(draftBeforeDirectSend)} directly, no re-check`);
+
+    // The OTHER branch: a draft the model judges basically already correct
+    // (empty feedback) shows a compact "looks good" confirmation instead
+    // of the full suggestions list - best-effort/eyeballed since "clean"
+    // vs. "needs correction" is the model's own call, not asserted on for
+    // a specific phrase, but a simple, plainly correct greeting should
+    // reliably land here.
+    await textarea.fill("Hola, ¿cómo estás?");
+    await sendButton.click();
+    await page.waitForSelector(".coach-popover", { timeout: 10_000 });
+    await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
+      timeout: 10_000,
+    });
+    const confirmSendButton = page.locator(".coach-popover__confirm-send");
+    if ((await confirmSendButton.count()) > 0) {
+      const assistantCountBeforeConfirm = await page.locator(".chat-message--assistant").count();
+      await confirmSendButton.click();
+      await page.waitForFunction(
+        (count) => document.querySelectorAll(".chat-message--assistant").length > count,
+        assistantCountBeforeConfirm,
+        { timeout: CHAT_TIMEOUT_MS },
+      );
+      console.log('  OK - a clean draft showed the compact "looks good" confirmation, and its Send button sent it');
+    } else {
+      console.log('  (eyeball) "Hola, ¿cómo estás?" got full suggestions instead of the clean confirmation - not failing, model-dependent');
+      await textarea.fill("");
+    }
 
     // Click the speaker button and confirm the browser's own /tts/speak
     // request (not just our direct fetch earlier) actually succeeds and the

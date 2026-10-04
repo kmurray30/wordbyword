@@ -79,6 +79,33 @@
   font-size: 0.8rem;
 }
 
+.coach-popover__confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.coach-popover__confirm-text {
+  font-size: 0.88rem;
+}
+
+.coach-popover__confirm-send {
+  all: unset;
+  flex-shrink: 0;
+  cursor: pointer;
+  padding: 5px 12px;
+  border-radius: 8px;
+  background: #3b6ef0;
+  color: white;
+  font-weight: 600;
+  font-size: 0.82rem;
+}
+
+.coach-popover__confirm-send:hover {
+  background: #4c7bf5;
+}
+
 .coach-popover__options {
   display: flex;
   flex-direction: column;

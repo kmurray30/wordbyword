@@ -108,19 +108,40 @@
   cursor: default;
 }
 
-.chat-input__help {
+/* The press-and-hold bubble for choosing the Send button's mode. */
+.send-mode-picker {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  background: #1f2430;
+  color: #f2f2f2;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  padding: 10px 36px 10px 12px;
+  font-size: 0.85rem;
+}
+
+.send-mode-picker__label {
+  font-weight: 700;
+  opacity: 0.6;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.send-mode-picker__close {
+  all: unset;
+  position: absolute;
+  top: 6px;
+  right: 6px;
   cursor: pointer;
   opacity: 0.6;
-  padding-bottom: 10px;
-  font-size: 1.1em;
+  font-size: 0.8rem;
+  padding: 4px;
 }
 
-.chat-input__help:hover,
-.chat-input__help--active {
+.send-mode-picker__close:hover {
   opacity: 1;
-}
-
-.chat-input__help--error {
-  opacity: 0.9;
 }

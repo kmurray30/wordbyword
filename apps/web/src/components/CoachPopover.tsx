@@ -20,6 +20,12 @@ interface CoachPopoverProps {
   onSelect: (option: CoachOption, index: number) => void;
   onClose: () => void;
   onRegenerate: () => void;
+  // True when the model judged the draft basically already correct
+  // (empty `feedback`) - shows a compact "looks good, send as typed?"
+  // confirmation instead of the full meaning/feedback/options breakdown,
+  // since there's nothing to correct and no real choice to make.
+  clean: boolean;
+  onConfirmSend: () => void;
 }
 
 const FORMALITY_LABEL: Record<string, string> = { neutral: "Natural", casual: "Casual", formal: "Formal" };
@@ -35,6 +41,8 @@ export function CoachPopover({
   onSelect,
   onClose,
   onRegenerate,
+  clean,
+  onConfirmSend,
 }: CoachPopoverProps) {
   return (
     <div className="coach-popover" role="tooltip">
@@ -55,7 +63,17 @@ export function CoachPopover({
       </div>
       {loading && <div className="coach-popover__status">Thinking…</div>}
       {error && <div className="coach-popover__status coach-popover__status--error">Couldn't get suggestions - try again</div>}
-      {!loading && !error && (
+      {!loading && !error && clean && (
+        <div className="coach-popover__confirm">
+          <span className="coach-popover__confirm-text">
+            Looks good. You meant to say <em>"{meaning}"</em>?
+          </span>
+          <button type="button" className="coach-popover__confirm-send" onClick={onConfirmSend}>
+            Send
+          </button>
+        </div>
+      )}
+      {!loading && !error && !clean && (
         <>
           {meaning && (
             <div className="coach-popover__row">
