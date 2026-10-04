@@ -24,10 +24,27 @@ OPENAI_TRANSLATE_MODEL = os.environ.get("OPENAI_TRANSLATE_MODEL", OPENAI_CHAT_MO
 
 # Hard cap on tokens per generation (chat replies AND translation calls, both
 # go through openai_client.chat). Without this, a generation that never hits
-# a stop token runs until it exhausts the model's context window. 300 is
-# generous for the "short, 1-3 sentence" replies/translations this app
-# actually needs - it bounds the failure mode, not normal output.
-MAX_REPLY_TOKENS = int(os.environ.get("MAX_REPLY_TOKENS", "300"))
+# a stop token runs until it exhausts the model's context window.
+#
+# Raised from 300 after a live failure: OPENAI_CHAT_MODEL is a reasoning-
+# style model (confirmed by openai_client.py's own comment on requiring
+# max_completion_tokens over the classic max_tokens field) whose internal
+# reasoning tokens count against this SAME budget before any visible output
+# - see llm_translate.py's _TAG_DRAFT_MAX_TOKENS/_GLOSS_REPLY_MAX_TOKENS/
+# _COACH_TRANSLATIONS_MAX_TOKENS comments for the first time this bit:
+# those calls' heavier structured-JSON prompts needed a much bigger budget
+# (1600-3000) for the exact same reason. 300 mostly worked for a plain
+# conversational reply (much lower reasoning overhead than a multi-part
+# JSON-extraction prompt) - "mostly" being the problem: on a harder turn,
+# reasoning alone could exhaust it, leaving ZERO visible content tokens.
+# Over /chat/turn/stream that shows up as literally nothing: no "chunk"
+# events ever arrive (the frontend's "…" placeholder never fills in), and
+# the final "done" event carries an empty `text` - a visibly blank chat
+# bubble, not an error. 1200 is still "generous for short replies," not a
+# real ceiling on them - a short reply still stops on its own well under
+# this - it just gives a harder turn's reasoning phase room to finish
+# before any visible tokens are expected.
+MAX_REPLY_TOKENS = int(os.environ.get("MAX_REPLY_TOKENS", "1200"))
 
 TARGET_LANGUAGE = "es"
 NATIVE_LANGUAGE = "en"

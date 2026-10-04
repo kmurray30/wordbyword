@@ -1,10 +1,13 @@
 from unittest.mock import patch
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.chat.openai_client import ModelServerUnavailableError
 from app.db import Base
+from app.models import ChatMessage
 from app.routes.chat import get_history, take_turn
 from app.schemas import ChatTurnRequest
 
@@ -33,6 +36,25 @@ def test_gloss_reply_failure_leaves_every_word_with_no_gloss():
     assert by_surface["tormenta"].gloss == ""
     assert by_surface["mío"].gloss == ""
     assert result.translation == ""
+
+
+def test_empty_model_reply_raises_502_instead_of_a_blank_bubble():
+    # Live bug: a reasoning-style model can burn its whole generation
+    # budget on invisible reasoning tokens and return a 200 with literally
+    # no content - not an exception. Previously this silently persisted a
+    # vacant assistant turn (empty text, no tokens) with nothing telling
+    # the learner anything went wrong.
+    session = _session()
+    with (
+        patch("app.routes.chat.model_chat", return_value="   "),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            take_turn(ChatTurnRequest(session_id="t-empty", message="hola"), session=session)
+
+    assert exc_info.value.status_code == 502
+    # Nothing persisted at all - not even the user's own turn.
+    assert session.query(ChatMessage).count() == 0
 
 
 def test_punctuation_still_gets_no_gloss():

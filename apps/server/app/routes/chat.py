@@ -189,6 +189,17 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
     except ModelServerUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    if not reply_text.strip():
+        # The model returned a 200 with literally no content - seen live
+        # against a reasoning-style model whose internal reasoning tokens
+        # can exhaust the whole generation budget before any visible
+        # output, on a harder turn (see MAX_REPLY_TOKENS's comment in
+        # config.py). Surfacing this as a real error rather than silently
+        # persisting a blank assistant turn - a vacant chat bubble the
+        # learner can't tell apart from an actual (empty) reply, sitting
+        # in history forever once saved.
+        raise HTTPException(status_code=502, detail="Model returned an empty reply")
+
     session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
 
     return _gloss_and_persist_reply(session, req.session_id, reply_text)
@@ -219,6 +230,17 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
             return
 
         reply_text = "".join(chunks).strip()
+        if not reply_text:
+            # Same empty-reply case take_turn guards against (see its own
+            # comment) - here it shows up as a stream with zero "chunk"
+            # events at all (the frontend's "…" placeholder never fills
+            # in), so surface it the same way: an "error" event instead of
+            # silently persisting (and then "done"-ing with) a blank
+            # assistant turn. The pending user-message add above is never
+            # committed in this branch, so it doesn't leave a dangling
+            # user-only turn in history either.
+            yield _sse("error", ChatTurnErrorEvent(message="Model returned an empty reply").model_dump_json())
+            return
         result = _gloss_and_persist_reply(session, req.session_id, reply_text)
         yield _sse("done", result.model_dump_json())
 
