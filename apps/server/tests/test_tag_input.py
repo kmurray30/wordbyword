@@ -1,32 +1,20 @@
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from app.db import Base
 from app.routes.translate import gloss_spans, tag_input
 from app.schemas import GlossSpansRequest, TagInputRequest
 from app.translate.llm_translate import TranslationUnavailableError
 
 
-def _session():
-    engine = create_engine("sqlite:///:memory:")
-    from app import models  # noqa: F401  (register tables on Base)
-
-    Base.metadata.create_all(bind=engine)
-    return sessionmaker(bind=engine)()
-
-
 def test_tokens_are_populated_independent_of_llm_success():
     # tag_input is the cheap spaCy-only pass now - no LLM call at all.
-    response = tag_input(TagInputRequest(text="Quiero comer pan"), session=_session())
+    response = tag_input(TagInputRequest(text="Quiero comer pan"))
     surfaces = {t.surface for t in response.tokens}
     assert surfaces == {"Quiero", "comer", "pan"}
 
 
 def _run_gloss(text: str, raw_spans: list[dict[str, str]], translation: str = ""):
     with patch("app.routes.translate.llm_translate.tag_draft", return_value=(translation, raw_spans)):
-        return gloss_spans(GlossSpansRequest(text=text), session=_session())
+        return gloss_spans(GlossSpansRequest(text=text))
 
 
 def test_clickable_span_when_llm_gives_a_replacement():
@@ -73,7 +61,7 @@ def test_unmatchable_span_is_dropped_not_crashed_on():
 
 def test_llm_failure_yields_no_spans():
     with patch("app.routes.translate.llm_translate.tag_draft", side_effect=TranslationUnavailableError("down")):
-        response = gloss_spans(GlossSpansRequest(text="Quiero comer pan"), session=_session())
+        response = gloss_spans(GlossSpansRequest(text="Quiero comer pan"))
     assert response.spans == []
 
 

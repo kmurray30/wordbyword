@@ -2,9 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import settings_store
-from app.chat.model_client import ModelServerUnavailableError, chat as model_chat
-from app.chat.logit_bias import build_logit_bias
+from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat
 from app.chat.prompt_builder import build_messages
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
@@ -18,12 +16,34 @@ from app.schemas import (
     TokenAnnotation,
 )
 from app.translate import llm_translate
-from app.translate.lemmatizer import analyze
+from app.translate.lemmatizer import Token, analyze
+from app.translate.span_matching import MatchedSpan, match_spans
 from app.wordbank import store
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 HISTORY_TURNS = 10
+
+
+def _match_token_glosses(tokens: list[Token], matched_spans: list[MatchedSpan]) -> list[tuple[str, str]]:
+    """Both `tokens` (spaCy, left-to-right) and `matched_spans` (left-to-
+    right, non-overlapping - see span_matching.match_spans) are ordered by
+    position, so a single left-to-right walk finds each token's covering
+    span, if any, without re-scanning from the start each time. A
+    multi-word span (e.g. "el tuyo") covers more than one token - every
+    token inside it gets that same span's gloss/note, rather than only the
+    first one or splitting the group across two separate glosses."""
+    result: list[tuple[str, str]] = []
+    span_idx = 0
+    for tok in tokens:
+        while span_idx < len(matched_spans) and matched_spans[span_idx].end <= tok.start:
+            span_idx += 1
+        if span_idx < len(matched_spans) and matched_spans[span_idx].start <= tok.start < matched_spans[span_idx].end:
+            span = matched_spans[span_idx]
+            result.append((span.gloss, span.note))
+        else:
+            result.append(("", ""))
+    return result
 
 
 def _recent_history(session: Session, session_id: str) -> list[tuple[str, str]]:
@@ -68,41 +88,34 @@ def clear_history(session_id: str, session: Session = Depends(get_session)) -> C
 
 @router.post("/turn", response_model=ChatTurnResponse)
 def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
-    settings = settings_store.get_settings(session)
-    provider = settings.model_provider
-    reinforce_lemmas, new_lemmas, reinforce_urgency = store.pick_turn_vocabulary_if_enabled(
-        session, settings_store.weighting_active(settings)
-    )
     history = _recent_history(session, req.session_id)
-    messages = build_messages(history, reinforce_lemmas, new_lemmas, req.message)
-    logit_bias = build_logit_bias(reinforce_lemmas, new_lemmas, reinforce_urgency)
+    messages = build_messages(history, req.message)
 
     try:
-        reply_text = model_chat(messages, logit_bias, provider=provider)
+        reply_text = model_chat(messages)
     except ModelServerUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
 
-    # One LLM call glosses every word in the reply using its meaning IN
-    # CONTEXT, and returns the whole-sentence translation from that exact
-    # same pass - one consistent source for both. No dictionary/MT fallback
-    # for a word it missed or a failed call - that word just gets no gloss
-    # until a later turn supplies one (see store.record_exposure below).
+    # One LLM call glosses every word/group in the reply using its meaning
+    # IN CONTEXT, and returns the whole-sentence translation from that
+    # exact same pass - one consistent source for both. No dictionary/MT
+    # fallback for a word it missed or a failed call - that word just gets
+    # no gloss until a later turn supplies one (see store.record_exposure
+    # below).
     try:
-        translation, word_map = llm_translate.gloss_reply(
-            reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE, provider=provider
-        )
+        translation, raw_spans = llm_translate.gloss_reply(reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE)
     except llm_translate.TranslationUnavailableError:
-        translation, word_map = "", {}
-    empty_gloss = ("", "")
+        translation, raw_spans = "", []
 
-    new_lemma_set = set(new_lemmas)
     tokens = analyze(reply_text)
+    matched_spans = match_spans(reply_text, raw_spans)
+    token_glosses = _match_token_glosses(tokens, matched_spans)
     annotations: list[TokenAnnotation] = []
     token_rows: list[MessageToken] = []
 
-    for position, tok in enumerate(tokens):
+    for position, (tok, (word_gloss, word_note)) in enumerate(zip(tokens, token_glosses)):
         # tok.is_spanish is a heuristic built for the learner's own possibly-
         # English-mixed input (see lemmatizer.py); it's gated on a small
         # ~300-word frequency list, so applying it here to the agent's own
@@ -122,11 +135,9 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
             token_rows.append(MessageToken(position=position, surface=tok.surface, lemma=tok.lemma, pos=tok.pos))
             continue
 
-        llm_gloss, llm_note = word_map.get(tok.surface.lower()) or word_map.get(tok.lemma.lower()) or empty_gloss
-        word_gloss = llm_gloss
-        word_note = llm_note if llm_gloss else ""
+        word_note = word_note if word_gloss else ""
         entry = store.record_exposure(session, tok.lemma, pos=tok.pos, translation=word_gloss)
-        is_new = tok.lemma in new_lemma_set or entry.exposure_count == 1
+        is_new = entry.exposure_count == 1
 
         annotations.append(
             TokenAnnotation(

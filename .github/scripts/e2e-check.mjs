@@ -123,22 +123,12 @@ async function checkBackendDirect() {
   if (!health.ok) fail(`/health returned ${health.status}`);
   console.log("  health OK");
 
-  // Printed up front, not asserted on - whichever provider is actually
-  // active live determines whether a slow /chat/turn below (or the
-  // frontend's "waking up" gate) is expected (a sleeping/cold "local"
-  // model server) or a real problem (anything slow under "openai").
-  console.log(`[1/6] Checking the live model_provider setting ...`);
-  const settingsRes = await fetch(`${BACKEND_URL}/settings`);
-  if (!settingsRes.ok) fail(`/settings returned ${settingsRes.status}`);
-  const settingsData = await settingsRes.json();
-  console.log(`  model_provider=${JSON.stringify(settingsData.model_provider)}`);
-
   console.log(`[1/6] Sending a direct /chat/turn request (session ${TEST_SESSION_ID}, up to ${CHAT_TIMEOUT_MS / 1000}s) ...`);
   const { elapsed, text, tokenCount } = await chatTurn("Hola");
   console.log(`  OK in ${elapsed}ms - reply: ${JSON.stringify(text)}`);
   console.log(`  tokens: ${tokenCount}`);
-  if (settingsData.model_provider === "openai" && elapsed > 6000) {
-    console.log(`  (!) model_provider is "openai" but /chat/turn still took ${elapsed}ms - that's NOT expected for a hosted API call`);
+  if (elapsed > 6000) {
+    console.log(`  (!) /chat/turn took ${elapsed}ms - that's NOT expected for a hosted API call`);
   }
 
   // The chat turn above only succeeds if the model server is actually up -
@@ -1064,8 +1054,7 @@ async function checkBrowserEndToEnd() {
 
     // Regression check for the iOS keyboard accessory bar fix: the chat
     // textarea should be the only native form control left on the page
-    // (see SegmentedControl.tsx/ToggleSwitch.tsx - voice picker, model
-    // provider, and word-weighting are all button-based now).
+    // (see SegmentedControl.tsx - the voice picker is button-based).
     const formControlTagNames = await page.evaluate(() =>
       [...document.querySelectorAll("input, select, textarea")].map((el) => el.tagName),
     );

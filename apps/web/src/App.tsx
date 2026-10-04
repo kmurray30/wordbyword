@@ -3,7 +3,6 @@ import { api } from "./api/client";
 import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
-import { SettingsPanel } from "./components/SettingsPanel";
 import { SegmentedControl } from "./components/SegmentedControl";
 import { getSessionId } from "./lib/session";
 import "./App.css";
@@ -113,7 +112,6 @@ function App() {
         <h1>wordbyword</h1>
         <p>Chat in Spanish. Hover any word for a translation.</p>
         <div className="app__header-controls">
-          <SettingsPanel />
           {voices.length > 0 && voice && (
             <div className="app__voice-picker">
               Voice:{" "}
@@ -141,11 +139,7 @@ function App() {
           <ChatMessage key={m.id} message={m} voice={voice ?? undefined} />
         ))}
         {sending && <p className="app__typing">…</p>}
-        {error && (
-          <p className="app__error">
-            {error}. Is the backend running, and is Ollama up at the configured URL?
-          </p>
-        )}
+        {error && <p className="app__error">{error}. Is the backend running and configured correctly?</p>}
       </main>
 
       <ChatInput onSend={handleSend} sessionId={sessionId} />

@@ -1,8 +1,8 @@
-"""The word-bank weighting algorithm.
+"""The word-bank familiarity/exposure scoring algorithm.
 
-This is the "RL-ish" piece: every lemma has a `familiarity` score that decays
-over time (a forgetting curve) and is nudged up or down by reward events tied
-directly to the hover-translation feature:
+Every lemma has a `familiarity` score that decays over time (a forgetting
+curve) and is nudged up or down by reward events tied directly to the
+hover-translation feature:
 
   - the agent uses a word and the user does NOT hover it   -> small boost
     (passive recognition)
@@ -11,19 +11,14 @@ directly to the hover-translation feature:
   - the user correctly types the word themselves            -> larger boost
     (active recall is stronger evidence of mastery)
 
-On each turn we (a) pick a weighted-random sample of words that are "due" for
-reinforcement, biased toward low-familiarity / overdue words, and (b) pick a
-capped number of brand-new words to introduce. Both lists feed the prompt
-builder; nothing here talks to the LLM or the DB directly, so it's cheap to
-unit test in isolation.
+Nothing here talks to the LLM or the DB directly, so it's cheap to unit
+test in isolation.
 """
 
 from __future__ import annotations
 
-import math
-import random
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 
 from app.config import (
     ACTIVE_RECALL_BOOST,
@@ -102,78 +97,3 @@ def apply_active_recall(word: WordState, now: datetime) -> WordState:
     )
 
 
-def _reinforce_weight(word: WordState, now: datetime) -> float:
-    familiarity = effective_familiarity(word, now)
-    days_since = _days_between(now, word.last_reviewed_at)
-    overdue_ratio = days_since / max(word.review_interval_days, MIN_REVIEW_INTERVAL_DAYS)
-    # +epsilon so a fully-mastered, not-yet-due word still has a small chance
-    # of being sampled (keeps review from feeling purely mechanical).
-    return max(overdue_ratio, 0.01) * (1.0 - familiarity + 0.05)
-
-
-def reinforce_urgency(words: list[WordState], now: datetime) -> dict[str, float]:
-    """Per-lemma urgency in [0, 1], normalized across `words` by the same
-    signal used for reinforce sampling weights. Used to scale how strongly
-    each word's logit_bias nudges generation - a word that's barely overdue
-    gets a gentle nudge, a badly-overdue one gets a strong one, rather than
-    every selected word getting an identical flat bias."""
-    if not words:
-        return {}
-    raw = {w.lemma: _reinforce_weight(w, now) for w in words}
-    max_weight = max(raw.values()) or 1.0
-    return {lemma: weight / max_weight for lemma, weight in raw.items()}
-
-
-def weighted_sample_without_replacement(
-    items: list[str], weights: list[float], k: int, rng: random.Random | None = None
-) -> list[str]:
-    """Efraimidis-Spirakis weighted sampling without replacement: draw a key
-    key_i = U_i ** (1 / weight_i) for each item and take the top k by key.
-    Equivalent to sequential weighted sampling but doesn't require mutating
-    the candidate set."""
-
-    rng = rng or random
-    if k <= 0 or not items:
-        return []
-    keyed = []
-    for item, weight in zip(items, weights):
-        weight = max(weight, 1e-9)
-        u = rng.random()
-        key = u ** (1.0 / weight)
-        keyed.append((key, item))
-    keyed.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in keyed[:k]]
-
-
-def select_reinforce_words(
-    words: list[WordState], now: datetime, k: int, rng: random.Random | None = None
-) -> list[str]:
-    """Pick up to k lemmas to steer the agent toward this turn, biased
-    toward low-familiarity / overdue words but not deterministic top-N."""
-
-    if not words:
-        return []
-    weights = [_reinforce_weight(w, now) for w in words]
-    lemmas = [w.lemma for w in words]
-    return weighted_sample_without_replacement(lemmas, weights, k, rng=rng)
-
-
-def select_new_words(
-    frequency_ranked_candidates: list[str],
-    known_lemmas: set[str],
-    k: int,
-    rng: random.Random | None = None,
-    jitter_window: int = 8,
-) -> list[str]:
-    """Pick up to k brand-new lemmas to introduce, drawn from a small window
-    at the front of the frequency-ranked candidate list (so introduction
-    order roughly follows word frequency but isn't perfectly deterministic)."""
-
-    rng = rng or random
-    unseen = [w for w in frequency_ranked_candidates if w not in known_lemmas]
-    if not unseen or k <= 0:
-        return []
-    window = unseen[: max(jitter_window, k)]
-    chosen = window[:]
-    rng.shuffle(chosen)
-    return chosen[:k]

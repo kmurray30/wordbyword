@@ -1,5 +1,5 @@
-// Ad hoc sampler for comparing chat quality across WORD_WEIGHTING_ENABLED
-// on/off - sends several distinct conversational turns in one session (a
+// Ad hoc sampler for eyeballing chat reply quality (e.g. after a prompt
+// change) - sends several distinct conversational turns in one session (a
 // real back-and-forth, not isolated one-shots) and prints every reply so a
 // human can eyeball them side by side. Deliberately skips the browser/TTS
 // checks in e2e-check.mjs - this only cares about reply quality, and the
@@ -18,14 +18,12 @@ const messages = [
 ];
 
 async function chatTurn(message) {
-  // A push to this branch rebuilds all 3 Railway services. Either
-  // model-server can be mid-reload (our own app returns a clean 503 in
-  // that case) or the `server` container itself can still be restarting,
-  // in which case Railway's edge returns a 502 "Application failed to
-  // respond" instead - seen live: a run failed on its very first request
-  // because `server`'s own redeploy hadn't finished yet. Retry through any
-  // 5xx rather than just 503, since both are "not ready yet", not real
-  // application errors.
+  // A push to this branch rebuilds the Railway services. The `server`
+  // container itself can still be restarting, in which case Railway's edge
+  // returns a 502 "Application failed to respond" - seen live: a run
+  // failed on its very first request because `server`'s own redeploy
+  // hadn't finished yet. Retry through any 5xx, since that's "not ready
+  // yet", not a real application error.
   const maxAttempts = 18;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const res = await fetch(`${BACKEND_URL}/chat/turn`, {

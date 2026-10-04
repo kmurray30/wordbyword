@@ -1,19 +1,9 @@
-"""Hosted chat-completion backend - an alternative to the self-hosted
-llama-server (app/chat/llama_client.py) for when the MODEL_PROVIDER setting
-(app/config.py, live-overridable via app/settings_store.py) is "openai".
-Routed to by app/chat/model_client.py, which both chat.py's take_turn and
-translate/llm_translate.py's helpers call through rather than either
-provider module directly, so call sites don't need to know which backend
-is active.
+"""Hosted chat-completion backend - the only chat backend this app talks to.
 
-The tradeoff for not having to run/pay for a model server at all: no
-word-bank vocabulary steering. `logit_bias` is accepted (for the same call
-signature as llama_client.chat) but ignored - it's keyed to tokens from
-the local model's own tokenizer (see logit_bias.py), which are meaningless
-against this API's own, different tokenizer. Callers are responsible for
-not computing it in the first place when this provider is active (see
-app.settings_store.weighting_active) - this module ignoring it is a second
-line of defense, not the primary one.
+Historically this was one of two providers (the other being a self-hosted
+llama-server), selected per-request via a live DB setting - that local-model
+path has since been removed entirely, so this module is now the single,
+unconditional dispatch target for every chat/translation call.
 """
 
 import json
@@ -21,22 +11,22 @@ from collections.abc import Iterator
 
 import httpx
 
-from app.chat.llama_client import ModelServerUnavailableError
 from app.config import MAX_REPLY_TOKENS, OPENAI_API_KEY, OPENAI_CHAT_MODEL
 
 _OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
 
+class ModelServerUnavailableError(RuntimeError):
+    pass
+
+
 def chat(
     messages: list[dict[str, str]],
-    logit_bias: dict[int, float] | None = None,
     timeout: float = 60.0,
     max_tokens: int | None = None,
 ) -> str:
     if not OPENAI_API_KEY:
-        raise ModelServerUnavailableError(
-            "OPENAI_API_KEY is not configured on the server, but the active model provider is \"openai\""
-        )
+        raise ModelServerUnavailableError("OPENAI_API_KEY is not configured on the server")
 
     payload = {
         "model": OPENAI_CHAT_MODEL,
@@ -68,17 +58,15 @@ def chat(
 
 def chat_stream(
     messages: list[dict[str, str]],
-    logit_bias: dict[int, float] | None = None,
     timeout: float = 60.0,
     max_tokens: int | None = None,
 ) -> Iterator[str]:
     """Same request as chat() above, but with `stream: true` - yields each
-    content delta as it arrives over the SSE response. See llama_client.
-    chat_stream's docstring for why there's no mid-stream retry."""
+    content delta as it arrives over the SSE response. No mid-stream retry:
+    a failure after streaming has already started can't be cleanly retried
+    mid-generation, so this only guards the initial connection attempt."""
     if not OPENAI_API_KEY:
-        raise ModelServerUnavailableError(
-            "OPENAI_API_KEY is not configured on the server, but the active model provider is \"openai\""
-        )
+        raise ModelServerUnavailableError("OPENAI_API_KEY is not configured on the server")
 
     payload = {
         "model": OPENAI_CHAT_MODEL,

@@ -49,20 +49,6 @@ def test_chat_sends_max_completion_tokens_not_max_tokens():
     assert "max_tokens" not in payload
 
 
-def test_chat_ignores_logit_bias_without_erroring():
-    # logit_bias is accepted for a uniform call signature with
-    # llama_client.chat (see model_client.py) but is meaningless against
-    # this API's own tokenizer - just silently not sent.
-    with (
-        patch("app.chat.openai_client.OPENAI_API_KEY", "sk-fake"),
-        patch("httpx.post", return_value=_response("hola")) as mock_post,
-    ):
-        result = chat([{"role": "user", "content": "hi"}], logit_bias={123: 1.0})
-
-    assert result == "hola"
-    assert "logit_bias" not in mock_post.call_args.kwargs["json"]
-
-
 def test_chat_wraps_http_status_error():
     request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
     response = httpx.Response(401, text="invalid api key", request=request)

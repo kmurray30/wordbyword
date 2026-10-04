@@ -1,9 +1,9 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.config import DEFAULT_REVIEW_INTERVAL_DAYS, MODEL_PROVIDER, WORD_WEIGHTING_ENABLED
+from app.config import DEFAULT_REVIEW_INTERVAL_DAYS
 from app.db import Base
 
 
@@ -51,21 +51,6 @@ class ChatMessage(Base):
     tokens: Mapped[list["MessageToken"]] = relationship(
         back_populates="message", cascade="all, delete-orphan", order_by="MessageToken.position"
     )
-
-
-class AppSettings(Base):
-    """Single global row (id always 1) for settings a user can flip live
-    from the UI - without redeploying - unlike MODEL_PROVIDER/
-    WORD_WEIGHTING_ENABLED's env-var BOOT defaults in config.py, which only
-    take effect on container start. Single-user/no-auth app (see README),
-    so one row for the whole app is enough; see app/settings_store.py for
-    the get-or-seed/update logic."""
-
-    __tablename__ = "app_settings"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    model_provider: Mapped[str] = mapped_column(String(32), default=MODEL_PROVIDER)
-    word_weighting_enabled: Mapped[bool] = mapped_column(Boolean, default=WORD_WEIGHTING_ENABLED)
 
 
 class MessageToken(Base):

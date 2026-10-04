@@ -1,20 +1,20 @@
-"""Whole-message translation via the same local llama-server chat model
-used for conversation (app/chat/llama_client.py), not Argos Translate.
+"""Whole-message translation via the same chat model used for conversation
+(app/chat/openai_client.py).
 
-Argos's offline MT produced noticeably rough, sometimes just-plain-wrong
-translations on short/informal Spanish (e.g. rendering a simple "¿Qué
-hobbies te gustan?" as "What do you care about?"). The LLM is already
-running for chat anyway, so reusing it for this one-shot translation task
-is free infrastructure-wise, just slower per call - callers are expected to
-fetch this in the background after already showing the untranslated text,
-not block the UI on it.
+Argos's offline MT (long since removed) produced noticeably rough,
+sometimes just-plain-wrong translations on short/informal Spanish (e.g.
+rendering a simple "¿Qué hobbies te gustan?" as "What do you care about?").
+The LLM is already running for chat anyway, so reusing it for this one-shot
+translation task is free infrastructure-wise, just slower per call -
+callers are expected to fetch this in the background after already showing
+the untranslated text, not block the UI on it.
 """
 
 import json
 import logging
 import re
 
-from app.chat.model_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
+from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.translate.lemmatizer import analyze
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def _looks_garbled(text: str) -> bool:
     return bool(_UNEXPECTED_SCRIPT_RE.search(text))
 
 
-def translate_text(text: str, source_lang: str, target_lang: str, provider: str | None = None) -> str:
+def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     if not text.strip():
         return ""
 
@@ -66,7 +66,7 @@ def translate_text(text: str, source_lang: str, target_lang: str, provider: str 
     last_result = ""
     for _attempt in range(2):
         try:
-            last_result = model_chat(messages, logit_bias={}, provider=provider).strip()
+            last_result = model_chat(messages).strip()
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not _looks_garbled(last_result):
@@ -74,45 +74,25 @@ def translate_text(text: str, source_lang: str, target_lang: str, provider: str 
     raise TranslationUnavailableError(f"Model returned a garbled reply: {last_result!r}")
 
 
-def _extract_word_map_json(reply: str) -> tuple[str, dict[str, tuple[str, str]]]:
-    match = _JSON_OBJECT_RE.search(reply)
-    if not match:
-        raise ValueError(f"no JSON object found in reply: {reply!r}")
-    data = json.loads(match.group(0))
-    translation = data["translation"]
-    words = data["words"]
-    if not isinstance(translation, str) or not isinstance(words, dict):
-        raise ValueError(f"unexpected JSON shape: {data!r}")
-
-    parsed: dict[str, tuple[str, str]] = {}
-    for word, value in words.items():
-        if isinstance(value, dict):
-            gloss_text, note = str(value.get("gloss", "")), str(value.get("note", ""))
-        else:
-            # Tolerate a plain string too, in case the model drops the
-            # {"gloss": ..., "note": ...} wrapper for a word with nothing to
-            # note - still a usable gloss, just without a description.
-            gloss_text, note = str(value), ""
-        parsed[str(word)] = (gloss_text, note)
-    return translation, parsed
-
-
-def gloss_reply(
-    text: str, source_lang: str, target_lang: str, provider: str | None = None
-) -> tuple[str, dict[str, tuple[str, str]]]:
-    """Translates `text` and, in the same call, glosses every distinct word
-    in it using its meaning IN THIS SENTENCE - one consistent source for
-    both, instead of a separately-fetched whole-sentence translation and
-    per-word glosses that could each land on a different sense of an
-    ambiguous word. Returns (translation, word_map), where word_map keys
-    are the words as they literally appear in `text` and values are
-    (gloss, note) - note is a short explanation for a word whose sense
-    here might not be the obvious one (empty string otherwise). Raises
-    TranslationUnavailableError if the model's reply isn't parseable JSON
-    even after a retry - callers get no gloss for that turn rather than a
-    dictionary/MT fallback."""
+def gloss_reply(text: str, source_lang: str, target_lang: str) -> tuple[str, list[dict[str, str]]]:
+    """Translates `text` (the assistant's own reply) and, in the same call,
+    glosses it word-by-word using each word's/group's meaning IN THIS
+    SENTENCE - one consistent source for both, instead of a separately-
+    fetched whole-sentence translation and per-word glosses that could each
+    land on a different sense of an ambiguous word. Returns
+    (translation, raw_spans), the exact same ordered-span-list shape
+    tag_draft returns (ready for app.translate.span_matching.match_spans) -
+    deliberately NOT a dict keyed by surface text like this function used
+    to return: a dict can't represent a multi-word group (e.g. "el tuyo")
+    without one of its words winning and the other vanishing, and also
+    silently collapses a repeated surface form's second occurrence onto
+    the first. Spans must cover EVERY word, including short function words
+    (y, mi, el, la, de, que, ...) - skipping those was the original bug
+    this shape change fixes. Raises TranslationUnavailableError if the
+    model's reply isn't parseable JSON even after a retry - callers get no
+    gloss for that turn rather than a dictionary/MT fallback."""
     if not text.strip():
-        return "", {}
+        return "", []
 
     source_name = _LANGUAGE_NAMES.get(source_lang, source_lang)
     target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
@@ -121,20 +101,31 @@ def gloss_reply(
             "role": "system",
             "content": (
                 f"Translate the following {source_name} text to {target_name}, "
-                f"and also give a short {target_name} gloss for every distinct "
-                f"word in it, based on what that word means IN THIS SENTENCE - "
-                f"not a generic dictionary definition, since the same word can "
-                f"mean different things in different sentences. Skip "
-                f"punctuation. Reply with ONLY a single JSON object and "
-                f"nothing else - no markdown code fences, no explanation - in "
-                f'exactly this shape: {{"translation": "<the full {target_name} '
-                f'translation>", "words": {{"<word as it appears in the text>": '
-                f'{{"gloss": "<its {target_name} meaning in this sentence>", '
-                f'"note": "<in {target_name}: if this word could easily be '
-                f"confused with a different sense or word, one short phrase "
-                f'explaining why this sense applies here - otherwise an empty '
-                f'string>"}}, '
-                f"...}}}}"
+                f"and also break it into a list of words or short word-groups, "
+                f"IN THE SAME ORDER THEY APPEAR IN THE TEXT (left to right, "
+                f"earliest first), that together cover EVERY word in it - "
+                f"including short function words like y, mi, el, la, de, que, "
+                f"and the like. Do not skip any word. Skip only pure "
+                f"punctuation. Group a few words together ONLY when they form "
+                f"a fixed expression that doesn't translate word-by-word (for "
+                f'example "el tuyo" meaning "yours" should be ONE span, not '
+                f'"el" and "tuyo" separately) - most spans should be a single '
+                f"word. Copy each span's `surface` EXACTLY as it appears in "
+                f"the text - same spelling, same case, same accents. For each "
+                f"span, give a short {target_name} gloss of what it means "
+                f"IN THIS SENTENCE - not a generic dictionary definition, "
+                f"since the same word/group can mean different things in "
+                f"different sentences. Reply with ONLY a single JSON object "
+                f"and nothing else - no markdown code fences, no explanation "
+                f"- in exactly this shape: "
+                f'{{"translation": "<the full {target_name} translation>", '
+                f'"spans": [{{"surface": "<exact text from the source, one '
+                f'word or a short fixed-expression group>", "gloss": "<its '
+                f'{target_name} meaning in this sentence>", "note": "<in '
+                f"{target_name}: if this word could easily be confused with "
+                f"a different sense or word, one short phrase explaining why "
+                f'this sense applies here - otherwise an empty string>"}}, '
+                f"...]}}"
             ),
         },
         {"role": "user", "content": text},
@@ -144,14 +135,14 @@ def gloss_reply(
     last_error: Exception | None = None
     for _attempt in range(2):
         try:
-            last_reply = model_chat(messages, logit_bias={}, max_tokens=_GLOSS_REPLY_MAX_TOKENS, provider=provider)
+            last_reply = model_chat(messages, max_tokens=_GLOSS_REPLY_MAX_TOKENS)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if _looks_garbled(last_reply):
             last_error = ValueError("garbled reply")
             continue
         try:
-            return _extract_word_map_json(last_reply)
+            return _extract_span_list_json(last_reply)
         except (ValueError, json.JSONDecodeError, KeyError) as exc:
             last_error = exc
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
@@ -204,9 +195,7 @@ def _looks_spanish(text: str) -> bool:
     return sum(1 for t in words if t.is_spanish) > len(words) / 2
 
 
-def interpret_user_input(
-    text: str, native_lang: str, target_lang: str, provider: str | None = None
-) -> tuple[str, str]:
+def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
     """Given raw learner input that may mix native_lang and target_lang, and
     may have grammar/spelling mistakes in either, return (corrected_native_
     text, target_language_translation) - the model infers intent across both
@@ -249,7 +238,7 @@ def interpret_user_input(
     reply = ""
     for _attempt in range(2):
         try:
-            reply = model_chat(messages, logit_bias={}, provider=provider)
+            reply = model_chat(messages)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not _looks_garbled(reply):
@@ -259,10 +248,8 @@ def interpret_user_input(
         # directly on the raw input rather than trying to parse garbage.
         # translate_text has its own retry, so this is a genuinely
         # independent second chance, not just repeating the same failure.
-        target_text = translate_text(text, native_lang, target_lang, provider=provider)
-        native_text = (
-            translate_text(text, target_lang, native_lang, provider=provider) if _looks_spanish(text) else text
-        )
+        target_text = translate_text(text, native_lang, target_lang)
+        native_text = translate_text(text, target_lang, native_lang) if _looks_spanish(text) else text
         return native_text, target_text
 
     native_text, target_text = _parse_labeled_lines(reply, native_name, target_name)
@@ -273,10 +260,8 @@ def interpret_user_input(
         # anyway. Falls back to a plain, literal translate_text pass, which
         # has no "conversation" framing for the model to go off-script
         # with.
-        target_text = translate_text(text, native_lang, target_lang, provider=provider)
-        native_text = (
-            translate_text(text, target_lang, native_lang, provider=provider) if _looks_spanish(text) else text
-        )
+        target_text = translate_text(text, native_lang, target_lang)
+        native_text = translate_text(text, target_lang, native_lang) if _looks_spanish(text) else text
         return native_text, target_text
 
     # A small model can label its two lines correctly but swap which
@@ -296,16 +281,16 @@ def interpret_user_input(
             # catches the line never being translated at all by forcing a
             # real translation rather than surfacing English where Spanish
             # was asked for.
-            target_text = translate_text(native_text, native_lang, target_lang, provider=provider)
+            target_text = translate_text(native_text, native_lang, target_lang)
 
     # _parse_labeled_lines already guarantees native_text is non-empty
     # unless the model's reply itself was blank (native_text falls back to
     # the whole raw reply when no labels matched at all) - so only one of
     # these two branches can actually fire for non-empty input.
     if not target_text and native_text:
-        target_text = translate_text(native_text, native_lang, target_lang, provider=provider)
+        target_text = translate_text(native_text, native_lang, target_lang)
     elif not native_text and target_text:
-        native_text = translate_text(target_text, target_lang, native_lang, provider=provider)
+        native_text = translate_text(target_text, target_lang, native_lang)
     return native_text, target_text
 
 
@@ -362,9 +347,7 @@ def _extract_span_list_json(reply: str) -> tuple[str, list[dict[str, str]]]:
     return translation, _coerce_spans(raw_spans)
 
 
-def tag_draft(
-    draft: str, native_lang: str, target_lang: str, provider: str | None = None
-) -> tuple[str, list[dict[str, str]]]:
+def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list[dict[str, str]]]:
     """For text the learner is still typing (not sent yet) - possibly mixing
     native_lang/target_lang, with grammar/spelling mistakes in either (same
     messy-input framing as coach_draft/interpret_user_input, but with NO
@@ -461,7 +444,7 @@ def tag_draft(
     # for a third try.
     for attempt in range(3):
         try:
-            last_reply = model_chat(messages, logit_bias={}, max_tokens=_TAG_DRAFT_MAX_TOKENS, provider=provider)
+            last_reply = model_chat(messages, max_tokens=_TAG_DRAFT_MAX_TOKENS)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not last_reply.strip() or _looks_garbled(last_reply):
@@ -553,7 +536,6 @@ def coach_draft_stream(
     history: list[tuple[str, str]],
     native_lang: str,
     target_lang: str,
-    provider: str | None = None,
 ):
     """For a message the learner is still drafting (not yet sent): infers
     what they're trying to say, gives brief feedback on how apt that
@@ -656,9 +638,7 @@ def coach_draft_stream(
     buffer = ""
     core_yielded = False
     try:
-        for chunk in model_chat_stream(
-            messages, logit_bias={}, max_tokens=_COACH_STREAM_MAX_TOKENS, provider=provider
-        ):
+        for chunk in model_chat_stream(messages, max_tokens=_COACH_STREAM_MAX_TOKENS):
             buffer += chunk
             if core_yielded:
                 continue

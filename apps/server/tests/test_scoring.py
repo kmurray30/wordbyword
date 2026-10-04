@@ -1,4 +1,3 @@
-import random
 from datetime import datetime, timedelta, timezone
 
 from app.wordbank.scoring import (
@@ -7,10 +6,6 @@ from app.wordbank.scoring import (
     apply_hover_penalty,
     apply_passive_exposure,
     effective_familiarity,
-    reinforce_urgency,
-    select_new_words,
-    select_reinforce_words,
-    weighted_sample_without_replacement,
 )
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -73,76 +68,3 @@ def test_familiarity_never_goes_negative():
     for _ in range(20):
         w = apply_hover_penalty(w, NOW)
     assert w.familiarity >= 0.0
-
-
-def test_weighted_sample_prefers_higher_weight_items_over_many_trials():
-    rng = random.Random(42)
-    items = ["low", "high"]
-    weights = [1.0, 20.0]
-    high_count = 0
-    trials = 500
-    for _ in range(trials):
-        picked = weighted_sample_without_replacement(items, weights, k=1, rng=rng)
-        if picked == ["high"]:
-            high_count += 1
-    # "high" has 20x the weight, so it should win the large majority of draws.
-    assert high_count / trials > 0.85
-
-
-def test_weighted_sample_without_replacement_no_duplicates():
-    rng = random.Random(7)
-    items = ["a", "b", "c", "d"]
-    weights = [1.0, 2.0, 3.0, 4.0]
-    picked = weighted_sample_without_replacement(items, weights, k=4, rng=rng)
-    assert sorted(picked) == items
-
-
-def test_select_reinforce_words_prioritizes_overdue_low_familiarity():
-    rng = random.Random(1)
-    words = [
-        word(familiarity=0.95, days_since_review=0.0, interval=10.0, lemma="mastered"),
-        word(familiarity=0.1, days_since_review=10.0, interval=1.0, lemma="weak_and_overdue"),
-    ]
-    counts = {"mastered": 0, "weak_and_overdue": 0}
-    for _ in range(200):
-        picked = select_reinforce_words(words, NOW, k=1, rng=rng)
-        counts[picked[0]] += 1
-    assert counts["weak_and_overdue"] > counts["mastered"]
-
-
-def test_select_reinforce_words_respects_k_and_empty_input():
-    words = [word(lemma=f"w{i}") for i in range(5)]
-    picked = select_reinforce_words(words, NOW, k=3)
-    assert len(picked) == 3
-    assert select_reinforce_words([], NOW, k=3) == []
-
-
-def test_select_new_words_excludes_known_and_respects_cap():
-    candidates = ["ser", "estar", "tener", "hacer", "poder"]
-    known = {"ser", "estar"}
-    chosen = select_new_words(candidates, known, k=2, rng=random.Random(3))
-    assert len(chosen) == 2
-    assert not (set(chosen) & known)
-    assert set(chosen) <= {"tener", "hacer", "poder"}
-
-
-def test_select_new_words_returns_empty_when_all_known():
-    candidates = ["ser", "estar"]
-    known = {"ser", "estar"}
-    assert select_new_words(candidates, known, k=2) == []
-
-
-def test_reinforce_urgency_normalizes_to_zero_one_and_ranks_correctly():
-    words = [
-        word(familiarity=0.95, days_since_review=0.0, interval=10.0, lemma="mastered"),
-        word(familiarity=0.1, days_since_review=10.0, interval=1.0, lemma="weak_and_overdue"),
-    ]
-    urgency = reinforce_urgency(words, NOW)
-    assert set(urgency.keys()) == {"mastered", "weak_and_overdue"}
-    assert all(0.0 <= v <= 1.0 for v in urgency.values())
-    assert urgency["weak_and_overdue"] > urgency["mastered"]
-    assert urgency["weak_and_overdue"] == 1.0  # the max gets normalized to exactly 1.0
-
-
-def test_reinforce_urgency_empty_input():
-    assert reinforce_urgency([], NOW) == {}

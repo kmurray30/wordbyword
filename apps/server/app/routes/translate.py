@@ -5,7 +5,6 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import settings_store
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
 from app.models import ChatMessage
@@ -69,27 +68,23 @@ def _sse(event: str, data: str) -> str:
 
 
 @router.post("/text", response_model=TranslateTextResponse)
-def translate_text(req: TranslateTextRequest, session: Session = Depends(get_session)) -> TranslateTextResponse:
-    provider = settings_store.get_settings(session).model_provider
+def translate_text(req: TranslateTextRequest) -> TranslateTextResponse:
     try:
-        translation = llm_translate.translate_text(req.text, req.source_lang, req.target_lang, provider=provider)
+        translation = llm_translate.translate_text(req.text, req.source_lang, req.target_lang)
     except llm_translate.TranslationUnavailableError as exc:
         return TranslateTextResponse(translation=f"(translation unavailable: {exc})")
     return TranslateTextResponse(translation=translation)
 
 
 @router.post("/interpret", response_model=InterpretInputResponse)
-def interpret_input(req: InterpretInputRequest, session: Session = Depends(get_session)) -> InterpretInputResponse:
+def interpret_input(req: InterpretInputRequest) -> InterpretInputResponse:
     """For the learner's own message: infers what they meant across a
     possible mix of English/Spanish and grammar mistakes, returning a
     corrected English restatement alongside its Spanish translation - used
     to show both under the user's chat bubble rather than a single literal
     (and possibly nonsensical) pass."""
-    provider = settings_store.get_settings(session).model_provider
     try:
-        native, target = llm_translate.interpret_user_input(
-            req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider
-        )
+        native, target = llm_translate.interpret_user_input(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE)
     except llm_translate.TranslationUnavailableError as exc:
         msg = f"(translation unavailable: {exc})"
         return InterpretInputResponse(native=msg, target=msg)
@@ -117,7 +112,6 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     that ends after "core" with no "translations" just means that part
     wasn't ready - that's not itself an error (see coach_draft_stream's
     docstring)."""
-    provider = settings_store.get_settings(session).model_provider
     history_rows = session.scalars(
         select(ChatMessage)
         .where(ChatMessage.session_id == req.session_id)
@@ -129,9 +123,7 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     def events():
         core_options: list[tuple[str, str]] = []
         try:
-            for kind, payload in llm_translate.coach_draft_stream(
-                req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider
-            ):
+            for kind, payload in llm_translate.coach_draft_stream(req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE):
                 if kind == "core":
                     core_options = payload["options"]
                     core_event = CoachCoreEvent(
@@ -157,7 +149,7 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
 
 
 @router.post("/tag-input", response_model=TagInputResponse)
-def tag_input(req: TagInputRequest, session: Session = Depends(get_session)) -> TagInputResponse:
+def tag_input(req: TagInputRequest) -> TagInputResponse:
     """Cheap, synchronous, LLM-free per-word classification (spaCy +
     lemmatizer.py's is_spanish heuristic) - fast enough to call on every
     keystroke (debounced). Needed for reward-event tracking
@@ -174,17 +166,15 @@ def tag_input(req: TagInputRequest, session: Session = Depends(get_session)) -> 
 
 
 @router.post("/gloss-spans", response_model=GlossSpansResponse)
-def gloss_spans(req: GlossSpansRequest, session: Session = Depends(get_session)) -> GlossSpansResponse:
+def gloss_spans(req: GlossSpansRequest) -> GlossSpansResponse:
     """The slower, LLM-backed half of what used to be /translate/tag-input:
     app.translate.llm_translate.tag_draft's word/group glossing, matched
     back to exact offsets via app.translate.span_matching. Fetched lazily
     (on hover/click/tap of a word), not on every keystroke, since this is a
     real LLM call. On failure, returns an empty span list - no dictionary/
     MT fallback."""
-    provider = settings_store.get_settings(session).model_provider
-
     try:
-        _translation, raw_spans = llm_translate.tag_draft(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE, provider=provider)
+        _translation, raw_spans = llm_translate.tag_draft(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE)
     except llm_translate.TranslationUnavailableError as exc:
         logger.warning("tag_draft unavailable for %r: %s", req.text, exc)
         raw_spans = []

@@ -1,8 +1,8 @@
 """Text-to-speech via DeepInfra's OpenAI-compatible /v1/audio/speech endpoint.
 
-A separate provider from the chat model (app/chat/llama_client.py talks to
-our own self-hosted llama-server): DeepInfra is a hosted API, keyed by its
-own bearer token, so it gets its own client and its own failure mode.
+A separate provider from the chat model (app/chat/openai_client.py talks to
+OpenAI's API instead): DeepInfra is a hosted API, keyed by its own bearer
+token, so it gets its own client and its own failure mode.
 """
 
 import logging
