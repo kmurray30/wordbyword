@@ -16,13 +16,18 @@
 //     /translate/text - prints both for a human to eyeball (semantic
 //     correctness isn't something a script can assert), but at least
 //     confirms the LLM-backed translation path actually returns something.
-//     Also checks /translate/tag-input directly on an idiom-bearing draft -
+//     Also checks /translate/tag-input (the cheap, LLM-free per-word pass)
+//     and /translate/gloss-spans (the slower LLM-backed word/group
+//     glossing, fetched lazily by the frontend rather than on every
+//     keystroke - see ChatInput.tsx) directly on an idiom-bearing draft -
 //     every returned span must carry a usable gloss/translation (no more
 //     dictionary/Argos fallback anywhere - a miss just means no gloss),
 //     and whether it grouped multiple words into one span (e.g. "miss
 //     you") is eyeballed, not asserted, since that varies run to run with
-//     a small model. Finally hits /translate/coach (the input's help
-//     button's backend) using this session's own recent history for
+//     a small model. Finally streams /translate/coach (the input's help
+//     button's backend - Server-Sent Events, not a single JSON response,
+//     so the "core" and "translations" phases of one underlying LLM call
+//     are checked separately) using this session's own recent history for
 //     context.
 //  3. Confirm GET /chat/history reflects what stages 1/2 just sent, and
 //     that POST /chat/history/clear actually empties it.
@@ -31,20 +36,25 @@
 //     already known warm by this point), send a message, hover AND click a
 //     word gloss (click should pin it open with a highlight, no underline -
 //     the only way it ever shows on a real tap, which never fires hover;
-//     hovering should dock the popover flush to the bottom of that
-//     message's own bubble, not float near the word), toggle both
-//     messages' translation rows open and closed, confirm the user message
-//     gets two rows (EN+ES), hover a cognate word in the input box for its
-//     dual-column candidates, drag-select a multi-word phrase in the input
-//     (starting the drag ON a hoverable word, not just in a gap between
-//     them) and confirm it shows one phrase translation (in whichever
-//     direction the selected words' majority language calls for) rather
-//     than a leftover single-word popover, click the help button (replaces
-//     the old hover-only globe) and confirm its coach popover renders
-//     docked below the input bar (not above - moved there so it reads out
-//     of the way of the draft), that its ✕ button closes it and returns
-//     focus to the draft, and that applying an option updates the draft -
-//     all of that before touching TTS at all, same reasoning as stages 1-2
+//     hovering should dock the popover flush to the RIGHT of that
+//     message's own bubble, not stack underneath its full translation),
+//     toggle both messages' translation rows open and closed (including
+//     confirming the globe toggle actually closes on a second click, not
+//     just opens), confirm the user message gets two rows (EN+ES), hover
+//     words in the input box (every word is hoverable immediately from the
+//     cheap per-keystroke pass, showing a "Translating…" placeholder until
+//     the slower, lazily-fetched real gloss lands), drag-select a
+//     multi-word phrase in the input (starting the drag ON a hoverable
+//     word, not just in a gap between them) and confirm it shows one
+//     phrase translation (in whichever direction the selected words'
+//     majority language calls for) rather than a leftover single-word
+//     popover, click the help button (replaces the old hover-only globe)
+//     and confirm its streaming coach popover renders docked below the
+//     input bar (not above - moved there so it reads out of the way of the
+//     draft), that its ✕ button closes it and returns focus to the draft,
+//     and that applying an option updates the draft WITHOUT closing the
+//     popover (so another option can still be compared afterward) - all
+//     of that before touching TTS at all, same reasoning as stages 1-2
 //     before 5-6 - then play the assistant message's audio, switch the
 //     voice picker (a button-based SegmentedControl, not a native <select>
 //     - see SegmentedControl.tsx) and confirm that request carries the
@@ -206,30 +216,48 @@ async function checkEnglishInputAndTranslation() {
   }
   console.log(`  "¡Hola! ¿Estás bien?" -> ${JSON.stringify(translateData.translation)}`);
 
-  // Direct backend check for the input's LLM-based word/group tagging
-  // (app.translate.llm_translate.tag_draft + span_matching, replaces the
-  // old dictionary/Argos /translate/tag-input path entirely - no more
-  // fallback, no /translate/word route either). The draft below contains
-  // "miss you", a clear single-unit idiom, specifically to exercise the
-  // model's ability to group multiple words into one span rather than
-  // only ever tagging single words - the old path never had sentence
-  // context and could never do this at all.
-  console.log(`[2/6] Checking /translate/tag-input (LLM-based word/group tagging) ...`);
+  // Direct backend check for the input's cheap, LLM-free per-word pass -
+  // /translate/tag-input now returns ONLY this (spaCy tokenize/lemmatize +
+  // the is_spanish heuristic), no LLM call and no spans at all; the
+  // slower, LLM-backed word/group glossing that used to live here moved to
+  // /translate/gloss-spans below, fetched lazily by the frontend rather
+  // than on every keystroke.
+  console.log(`[2/6] Checking /translate/tag-input (cheap per-word pass) ...`);
+  const draftText = "I want to go to the beach tomorrow, I miss you";
   const tagRes = await fetch(`${BACKEND_URL}/translate/tag-input`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: "I want to go to the beach tomorrow, I miss you" }),
+    body: JSON.stringify({ text: draftText }),
   });
   if (!tagRes.ok) fail(`/translate/tag-input returned ${tagRes.status}: ${await tagRes.text()}`);
   const tagData = await tagRes.json();
   if (!Array.isArray(tagData.tokens) || tagData.tokens.length === 0) {
     fail(`/translate/tag-input returned no tokens: ${JSON.stringify(tagData)}`);
   }
-  if (!Array.isArray(tagData.spans) || tagData.spans.length === 0) {
-    fail(`/translate/tag-input returned no spans at all: ${JSON.stringify(tagData)}`);
+  if ("spans" in tagData) {
+    fail(`/translate/tag-input returned a "spans" field - that moved to /translate/gloss-spans: ${JSON.stringify(tagData)}`);
   }
-  console.log(`  spans: ${JSON.stringify(tagData.spans.map((s) => s.surface))}`);
-  for (const span of tagData.spans) {
+  console.log(`  OK - ${tagData.tokens.length} tokens, no LLM-backed spans (moved to /translate/gloss-spans)`);
+
+  // The slower, LLM-backed half (app.translate.llm_translate.tag_draft +
+  // span_matching) - fetched lazily on hover/click/tap in the real app,
+  // but hit directly here on the same idiom-bearing draft ("miss you", a
+  // clear single-unit idiom) to exercise the model's ability to group
+  // multiple words into one span rather than only ever tagging single
+  // words.
+  console.log(`[2/6] Checking /translate/gloss-spans (LLM-based word/group glossing) ...`);
+  const glossRes = await fetch(`${BACKEND_URL}/translate/gloss-spans`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: draftText }),
+  });
+  if (!glossRes.ok) fail(`/translate/gloss-spans returned ${glossRes.status}: ${await glossRes.text()}`);
+  const glossData = await glossRes.json();
+  if (!Array.isArray(glossData.spans) || glossData.spans.length === 0) {
+    fail(`/translate/gloss-spans returned no spans at all: ${JSON.stringify(glossData)}`);
+  }
+  console.log(`  spans: ${JSON.stringify(glossData.spans.map((s) => s.surface))}`);
+  for (const span of glossData.spans) {
     if (!span.candidates?.[0]?.translation) {
       fail(`span ${JSON.stringify(span.surface)} has no usable gloss/translation: ${JSON.stringify(span)}`);
     }
@@ -239,33 +267,80 @@ async function checkEnglishInputAndTranslation() {
   // than two single-word ones) varies run to run with a small model - not
   // asserted, just eyeballed, same as this file's other free-form LLM
   // output checks (see chatTurn above).
-  const hasMultiWordGroup = tagData.spans.some((s) => s.surface.trim().includes(" "));
+  const hasMultiWordGroup = glossData.spans.some((s) => s.surface.trim().includes(" "));
   console.log(
     hasMultiWordGroup
       ? '  (eyeball) the model grouped at least one multi-word span (e.g. the "miss you" idiom)'
       : '  (eyeball) no multi-word group this run - the model tagged every word individually',
   );
 
-  // The input's "help" button - uses this session's recent history (stage
-  // 1's "Hola" and this function's own hobbies question) for context, so
-  // runs after there's actually some history to use.
-  console.log(`[2/6] Checking /translate/coach ...`);
+  // The input's "help" button - streamed as Server-Sent Events (one
+  // underlying LLM call, in two ordered phases: "core" - the feedback +
+  // options themselves, usable immediately - then "translations" - each
+  // option's own English translation + word-by-word breakdown, a bit
+  // later). Uses this session's recent history (stage 1's "Hola" and this
+  // function's own hobbies question) for context, so runs after there's
+  // actually some history to use.
+  console.log(`[2/6] Checking /translate/coach (streamed SSE) ...`);
   const coachRes = await fetch(`${BACKEND_URL}/translate/coach`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text: "me gusta mucho leer libros", session_id: TEST_SESSION_ID }),
   });
   if (!coachRes.ok) fail(`/translate/coach returned ${coachRes.status}: ${await coachRes.text()}`);
-  const coachData = await coachRes.json();
-  if (!coachData.options || coachData.options.length === 0) {
-    fail(`/translate/coach returned no options: ${JSON.stringify(coachData)}`);
+  const coachEvents = await readSseEvents(coachRes);
+  const coachCore = coachEvents.find((e) => e.event === "core")?.data;
+  if (!coachCore) fail(`/translate/coach never sent a "core" event: ${JSON.stringify(coachEvents)}`);
+  if (!coachCore.options || coachCore.options.length === 0) {
+    fail(`/translate/coach's "core" event had no options: ${JSON.stringify(coachCore)}`);
   }
-  for (const opt of coachData.options) {
+  for (const opt of coachCore.options) {
     if (!opt.spanish) fail(`/translate/coach option missing spanish text: ${JSON.stringify(opt)}`);
   }
-  console.log(`  meaning: ${JSON.stringify(coachData.meaning)}`);
-  console.log(`  feedback: ${JSON.stringify(coachData.feedback)}`);
-  console.log(`  options: ${JSON.stringify(coachData.options)}`);
+  console.log(`  meaning: ${JSON.stringify(coachCore.meaning)}`);
+  console.log(`  feedback: ${JSON.stringify(coachCore.feedback)}`);
+  console.log(`  options (core): ${JSON.stringify(coachCore.options)}`);
+
+  const coachTranslations = coachEvents.find((e) => e.event === "translations")?.data;
+  if (!coachTranslations) {
+    console.log('  (eyeball) no "translations" event this run - PART 2 can be skipped under token pressure, not a hard failure');
+  } else {
+    for (const opt of coachTranslations.options) {
+      if (!opt.english) fail(`/translate/coach "translations" option missing english text: ${JSON.stringify(opt)}`);
+    }
+    console.log(`  options (translations): ${JSON.stringify(coachTranslations.options)}`);
+  }
+}
+
+// Reads a Server-Sent Events response body to completion and parses it
+// into { event, data } pairs - used for /translate/coach, which streams
+// rather than returning a single JSON response (see coach_draft_stream in
+// app/translate/llm_translate.py and the route in app/routes/translate.py).
+async function readSseEvents(response) {
+  const text = await response.text();
+  const events = [];
+  for (const block of text.split("\n\n")) {
+    if (!block.trim()) continue;
+    const lines = block.split("\n");
+    const eventLine = lines.find((l) => l.startsWith("event:"));
+    const dataLine = lines.find((l) => l.startsWith("data:"));
+    if (!eventLine || !dataLine) continue;
+    events.push({
+      event: eventLine.slice("event:".length).trim(),
+      data: JSON.parse(dataLine.slice("data:".length).trim()),
+    });
+  }
+  return events;
+}
+
+// Hovering/tapping a word in the chat input opens its popover immediately
+// (every word is hoverable right away from the cheap per-keystroke pass),
+// but shows a "Translating…" placeholder until the slower, lazily-fetched
+// real gloss (/translate/gloss-spans, fired by that hover/tap itself, not
+// on a typing timer) resolves - see WordCandidatesPopover.tsx. Callers
+// that need to read the resolved candidate text must wait for this first.
+async function waitForGlossReady(pageOrFrame, timeout = 10_000) {
+  await pageOrFrame.waitForSelector(".word-candidates-popover__loading", { state: "hidden", timeout });
 }
 
 async function checkHistoryAndClear() {
@@ -334,14 +409,12 @@ async function checkBrowserEndToEnd() {
     console.log(`  OK - assistant replied: ${JSON.stringify(replyText)}`);
 
     // Hover a word token and confirm the translation popover appears,
-    // docked flush to the bottom of the WHOLE message column (bubble +
-    // actions row + translation rows, when open - DockedPopover anchored
-    // to .chat-message__column, not just .chat-message__bubble, so it
-    // never overlaps the actions/translation rows that sit below the
-    // bubble - see ChatMessage.tsx), not floating off wherever the hovered
-    // word happens to sit.
+    // docked flush to the RIGHT of the bubble itself (DockedPopover
+    // position="right", anchored to .chat-message__bubble - see
+    // ChatMessage.tsx) rather than stacking underneath the bubble's own
+    // full-message translation rows, which it used to overlap.
     const wordToken = page.locator(".chat-message--assistant .word-token").first();
-    const assistantColumn = page.locator(".chat-message--assistant .chat-message__column").first();
+    const assistantBubble = page.locator(".chat-message--assistant .chat-message__bubble").first();
     if ((await wordToken.count()) > 0) {
       // No word should carry a persistent highlight at rest (e.g. a "new
       // vocabulary" tint) - only the click-to-pin/hover state below should
@@ -357,17 +430,24 @@ async function checkBrowserEndToEnd() {
       await page.waitForSelector(".translate-popover", { timeout: 8_000 });
       console.log("  OK - hover translation popover works");
 
-      const columnBox = await assistantColumn.boundingBox();
+      const bubbleBox = await assistantBubble.boundingBox();
       const wordPopoverBox = await page.locator(".translate-popover").first().boundingBox();
-      const wordDockGap = wordPopoverBox.y - (columnBox.y + columnBox.height);
-      if (Math.abs(wordDockGap) > 2) {
-        fail(`chat-bubble word popover isn't flush against the bottom of its message column (gap=${wordDockGap.toFixed(1)}px)`);
+      // Allow some slack (the DockedPopover--right wrap has an 8px
+      // padding-left, and the popover's own top can shift a hair from the
+      // bubble's) - the real assertion is "to the right of the bubble",
+      // not an exact pixel gap.
+      if (wordPopoverBox.x <= bubbleBox.x + bubbleBox.width - 1) {
+        fail(
+          `chat-bubble word popover isn't docked to the right of the bubble (popover x=${wordPopoverBox.x}, bubble right edge=${bubbleBox.x + bubbleBox.width})`,
+        );
+      } else if (wordPopoverBox.y < bubbleBox.y - 2) {
+        fail(`chat-bubble word popover's top is above the bubble's own top (popover y=${wordPopoverBox.y}, bubble y=${bubbleBox.y})`);
       } else {
-        console.log("  OK - word popover docks flush to the bottom of its message column");
+        console.log("  OK - word popover docks flush to the right of the bubble, not stacked under the translation rows");
       }
 
-      // Close it before moving on - docked below the whole column, which
-      // can land right over the action row below it and intercept the
+      // Close it before moving on - docked over to the side, which can
+      // still land near the action row and intercept the
       // next step's hover on the globe button otherwise. The close is
       // delayed (HOVER_CLOSE_DELAY_MS in ChatMessage.tsx) so the pointer
       // can safely travel from the word down to the docked popover without
@@ -466,6 +546,21 @@ async function checkBrowserEndToEnd() {
     }
     console.log("  OK - clicking the toggle pins the translation row open");
 
+    // Regression check: a second click on the toggle, WITHOUT moving the
+    // mouse away first (the bug's exact trigger condition - onMouseEnter
+    // only fires once per hover, so it never refired between the two
+    // clicks and used to mask the un-pin with a lingering hover state),
+    // must close the row immediately.
+    await assistantToggle.click();
+    await page.waitForTimeout(100);
+    const closedBySecondClick = await page.locator(".chat-message--assistant .translation-row--assistant").count();
+    if (closedBySecondClick !== 0) {
+      fail("clicking the globe toggle a second time (mouse still over it) did not close the translation row");
+    }
+    console.log("  OK - a second click on the globe toggle closes the translation row, even with the mouse still over it");
+    await page.mouse.move(0, 0);
+    await page.waitForTimeout(200);
+
     // Same for the user's own message, which should get TWO rows (EN + ES).
     const userMessageCount = await page.locator(".chat-message--user").count();
     console.log(`  (debug) .chat-message--user count: ${userMessageCount}`);
@@ -499,6 +594,7 @@ async function checkBrowserEndToEnd() {
       await gatoWord.hover();
       const gatoPopover = page.locator(".word-candidates-popover").first();
       await gatoPopover.waitFor({ state: "visible", timeout: 8_000 });
+      await waitForGlossReady(page);
       const gatoBox = await gatoPopover.boundingBox();
       await page.screenshot({
         path: "e2e-debug-single-word-hover-popover.png",
@@ -527,6 +623,10 @@ async function checkBrowserEndToEnd() {
     if ((await toSpan.count()) > 0) {
       await toSpan.hover();
       await page.waitForSelector(".word-candidates-popover", { timeout: 8_000 });
+      // Hovering just fired the lazy /translate/gloss-spans fetch for this
+      // word - wait for its "Translating…" placeholder to resolve into the
+      // real candidate before reading it.
+      await waitForGlossReady(page);
       const candidateText = await page.locator(".candidate-cycler__text, .candidate-cycler__main").first().innerText();
       console.log(`  "to" candidate: ${JSON.stringify(candidateText)}`);
       // The active-highlight class (Fix 2) should show while it's open.
@@ -563,36 +663,52 @@ async function checkBrowserEndToEnd() {
     // Multi-word grouping: the model may group a clear idiom into ONE span
     // covering several words rather than tagging each word alone - the
     // old dictionary/Argos path had no sentence context and could never
-    // do this at all. Clicking such a group's candidate should replace
-    // the WHOLE group, not just one word inside it. Not asserted as a hard
-    // requirement (a small model doesn't group every time), but exercised
-    // and eyeballed, with a hard check that IF it grouped, replacement
-    // covers the whole span.
-    const idiomTagPromise = page.waitForResponse(
-      (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
-      { timeout: 15_000 }
-    );
+    // do this at all. Unlike the old /translate/tag-input path, a group
+    // can only ever come from the LAZY /translate/gloss-spans fetch (the
+    // cheap per-keystroke pass is always single-word) - so this has to
+    // actually hover a word first and wait for that fetch to resolve
+    // before it can tell whether grouping happened. Clicking such a
+    // group's candidate should replace the WHOLE group, not just one word
+    // inside it. Not asserted as a hard requirement (a small model
+    // doesn't group every time), but exercised and eyeballed, with a hard
+    // check that IF it grouped, replacement covers the whole span.
     await textarea.fill("I miss you");
-    await idiomTagPromise;
-    await page.waitForTimeout(200);
-    const groupSpan = page.locator(".chat-input__hoverable").filter({ hasText: /\s/ }).first();
-    if ((await groupSpan.count()) > 0) {
-      const groupText = await groupSpan.innerText();
-      await groupSpan.hover();
+    // The cheap per-keystroke pass debounces up to IDLE_DEBOUNCE_MS (the
+    // last character typed, "u", isn't a word boundary) before the naive
+    // hoverable spans render - wait for one to actually show up rather
+    // than a fixed delay shorter than that debounce.
+    await page.waitForSelector(".chat-input__hoverable", { timeout: 3_000 }).catch(() => {});
+    const missWord = page.locator(".chat-input__hoverable", { hasText: "miss" }).first();
+    if ((await missWord.count()) > 0) {
+      await missWord.hover();
       await page.waitForSelector(".word-candidates-popover", { timeout: 8_000 });
-      const groupButton = page.locator(".word-candidates-popover button").first();
-      if ((await groupButton.count()) > 0) {
-        await groupButton.click();
-        await page.waitForTimeout(150);
-        const afterGroupReplace = await textarea.inputValue();
-        if (afterGroupReplace.includes(groupText)) {
-          fail(`clicking the group's candidate left the original group text "${groupText}" in the draft: ${JSON.stringify(afterGroupReplace)}`);
-        } else {
-          console.log(`  OK - clicking a multi-word group ("${groupText}") replaced the whole group: ${JSON.stringify(afterGroupReplace)}`);
+      await waitForGlossReady(page);
+      // Re-reads whichever element currently matches - if the real gloss
+      // widened "miss" into a group, this now resolves to that wider span
+      // (hasText does substring matching, and "miss you" still contains
+      // "miss").
+      const hoveredText = (await missWord.innerText()).trim();
+      const isGrouped = /\s/.test(hoveredText);
+      console.log(
+        isGrouped
+          ? `  (eyeball) the model grouped a multi-word span: ${JSON.stringify(hoveredText)}`
+          : '  (eyeball) the model tagged "miss" on its own this run, not as a group - not failing, model-dependent',
+      );
+      if (isGrouped) {
+        const groupButton = page.locator(".word-candidates-popover button").first();
+        if ((await groupButton.count()) > 0) {
+          await groupButton.click();
+          await page.waitForTimeout(150);
+          const afterGroupReplace = await textarea.inputValue();
+          if (afterGroupReplace.includes(hoveredText)) {
+            fail(`clicking the group's candidate left the original group text "${hoveredText}" in the draft: ${JSON.stringify(afterGroupReplace)}`);
+          } else {
+            console.log(`  OK - clicking a multi-word group ("${hoveredText}") replaced the whole group: ${JSON.stringify(afterGroupReplace)}`);
+          }
         }
       }
     } else {
-      console.log('  (eyeball) the model tagged "I miss you" word-by-word this run, not as a group - not failing, model-dependent');
+      fail('"miss" in "I miss you" was not flagged as hoverable');
     }
     await textarea.fill("");
 
@@ -793,8 +909,11 @@ async function checkBrowserEndToEnd() {
     }
     console.log("  OK - the ✕ button closes the coach popover and returns focus to the draft");
 
-    // Re-open it to confirm applying an option still works and also closes
-    // the popover (a second, implicit way to close it).
+    // Re-open it (shows the SAME cached result instantly, no refetch,
+    // since the draft hasn't changed since it was closed) to confirm
+    // applying an option updates the draft WITHOUT closing the popover -
+    // the whole point of #9 is that it stays up so another option can
+    // still be compared, until explicitly closed (✕) or regenerated (↻).
     await helpButton.click();
     await page.waitForSelector(".coach-popover", { timeout: 10_000 });
     await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
@@ -802,15 +921,67 @@ async function checkBrowserEndToEnd() {
     });
     const firstOption = page.locator(".coach-popover__option").first();
     const optionText = await firstOption.locator(".coach-popover__option-text").innerText();
-    await firstOption.click();
+    await firstOption.locator(".coach-popover__option-main").click();
     await page.waitForTimeout(150);
     const draftAfterApply = await textarea.inputValue();
     if (draftAfterApply !== optionText) {
       fail(`clicking a coach option set the draft to ${JSON.stringify(draftAfterApply)}, expected ${JSON.stringify(optionText)}`);
     }
-    const coachStillOpen = await page.locator(".coach-popover").isVisible().catch(() => false);
-    if (coachStillOpen) fail("coach popover still open after applying an option");
-    console.log("  OK - clicking a coach option applies it to the draft and closes the popover");
+    const coachStillOpenAfterApply = await page.locator(".coach-popover").isVisible().catch(() => false);
+    if (!coachStillOpenAfterApply) fail("coach popover closed after applying an option - it should stay open (see #9)");
+    const firstOptionSelected = await firstOption.evaluate((el) => el.classList.contains("coach-popover__option--selected"));
+    if (!firstOptionSelected) fail("applied coach option isn't visually marked as selected");
+    console.log("  OK - clicking a coach option applies it to the draft and leaves the popover open, marked as selected");
+
+    // Its own English translation (from the SAME streamed call's second
+    // phase) should show up for the now-selected option - eyeballed on
+    // content (model-dependent wording) but the row itself must appear.
+    await page
+      .waitForSelector(".coach-popover__option--selected .coach-popover__option-english", { timeout: 10_000 })
+      .catch(() => {});
+    const selectedEnglish = await firstOption
+      .locator(".coach-popover__option-english")
+      .innerText()
+      .catch(() => "(none)");
+    console.log(`  (eyeball) selected option's English translation: ${JSON.stringify(selectedEnglish)}`);
+
+    // Picking a DIFFERENT option afterward should still work, with the
+    // popover still open the whole time - no need to reopen it.
+    const options = page.locator(".coach-popover__option");
+    if ((await options.count()) > 1) {
+      const secondOption = options.nth(1);
+      const secondOptionText = await secondOption.locator(".coach-popover__option-text").innerText();
+      await secondOption.locator(".coach-popover__option-main").click();
+      await page.waitForTimeout(150);
+      const draftAfterSecondApply = await textarea.inputValue();
+      if (draftAfterSecondApply !== secondOptionText) {
+        fail(`switching to a second coach option set the draft to ${JSON.stringify(draftAfterSecondApply)}, expected ${JSON.stringify(secondOptionText)}`);
+      }
+      const stillOpenAfterSwitch = await page.locator(".coach-popover").isVisible().catch(() => false);
+      if (!stillOpenAfterSwitch) fail("coach popover closed after switching to a different option");
+      console.log("  OK - picking a different option updates the draft again, still without closing the popover");
+    }
+
+    // The regenerate (↻) button is the explicit way to force a fresh
+    // streamed call for the same draft.
+    const regenerateButton = page.locator(".coach-popover__regenerate");
+    if ((await regenerateButton.count()) === 0) {
+      fail("coach popover has no visible regenerate (↻) button");
+    }
+    await regenerateButton.click();
+    await page.waitForFunction(() => document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
+      timeout: 5_000,
+    });
+    await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
+      timeout: 10_000,
+    });
+    console.log("  OK - the regenerate button re-runs the coaching call");
+
+    const coachCloseButton2 = page.locator(".coach-popover__close");
+    await coachCloseButton2.click();
+    const closedAfterRegenerate = (await page.locator(".coach-popover").count()) === 0;
+    if (!closedAfterRegenerate) fail("coach popover's ✕ button did not close it after regenerating");
+    console.log("  OK - the ✕ button still closes the popover after regenerating");
     await textarea.fill("");
 
     // Click the speaker button and confirm the browser's own /tts/speak

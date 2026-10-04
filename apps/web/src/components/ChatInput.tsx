@@ -732,7 +732,18 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
         </DockedPopover>
       )}
       {showCoach && (coachResult || coachState === "loading" || coachState === "error") && (
-        <DockedPopover position="below">
+        <DockedPopover
+          // Remounts (and so re-runs DockedPopover's scroll-into-view
+          // effect) right at the one transition that meaningfully grows
+          // this popover's height - the "core" event replacing the small
+          // "Thinking…" placeholder with the real feedback + option list.
+          // Without this, a popover that opened near the bottom of the
+          // viewport stayed scrolled to fit its small loading-state
+          // height and never scrolled further once the real content (and
+          // its real height) landed.
+          key={coachState === "loading" ? "loading" : "ready"}
+          position="below"
+        >
           <CoachPopover
             meaning={coachResult?.meaning ?? ""}
             feedback={coachResult?.feedback ?? ""}
