@@ -11,10 +11,13 @@ not block the UI on it.
 """
 
 import json
+import logging
 import re
 
 from app.chat.model_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.translate.lemmatizer import analyze
+
+logger = logging.getLogger(__name__)
 
 _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 
@@ -306,14 +309,21 @@ def interpret_user_input(
     return native_text, target_text
 
 
-_TAG_DRAFT_MAX_TOKENS = 900  # each span here carries 4 string fields
-# (surface/gloss/note/translation) vs. gloss_reply's 2 (gloss/note) per
-# word - roughly double the per-word payload, so despite a draft usually
-# being shorter than a full reply, this needs a bigger budget than
-# gloss_reply's 700, not a smaller one. Too tight a budget truncates the
-# JSON mid-generation, which reads identically to the model just failing -
-# unparseable after retries, raising TranslationUnavailableError - rather
-# than an obviously-wrong but diagnosable response.
+_TAG_DRAFT_MAX_TOKENS = 1400  # each span here carries 5 string fields
+# (surface/gloss/note/translation/alternate_gloss) vs. gloss_reply's 2
+# (gloss/note) per word - more than double the per-word payload, so
+# despite a draft usually being shorter than a full reply, this needs a
+# bigger budget than gloss_reply's 700, not a smaller one. Too tight a
+# budget truncates the JSON mid-generation, which reads identically to
+# the model just failing - unparseable after retries, raising
+# TranslationUnavailableError - rather than an obviously-wrong but
+# diagnosable response. Raised from 900 (which was itself raised from
+# 500 for the same reason, before alternate_gloss existed) after live
+# validation caught a longer, idiom-bearing draft coming back with a
+# fully empty completion 3 times in a row - a tight budget combined with
+# this call's 3-part instructions and 5-field-per-span JSON shape is the
+# most likely explanation for a small model (Qwen3-1.7B) giving up
+# entirely rather than truncating mid-object.
 
 
 def _coerce_spans(raw_spans: list) -> list[dict[str, str]]:
@@ -449,18 +459,27 @@ def tag_draft(
     # has the biggest, most complex JSON payload of any call in this
     # file (5 string fields per span), so it's the one most worth paying
     # for a third try.
-    for _attempt in range(3):
+    for attempt in range(3):
         try:
             last_reply = model_chat(messages, logit_bias={}, max_tokens=_TAG_DRAFT_MAX_TOKENS, provider=provider)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not last_reply.strip() or _looks_garbled(last_reply):
             last_error = ValueError("empty or garbled reply")
+            # Per-attempt, not just on final failure - if this keeps
+            # happening, knowing whether EVERY attempt came back truly
+            # empty (vs. some attempts returning unparseable-but-non-
+            # empty content) narrows down the cause a lot faster than
+            # re-diagnosing blind from just the last attempt's value.
+            logger.warning("tag_draft attempt %d/3 for %r: empty or garbled reply (len=%d)", attempt + 1, draft, len(last_reply))
             continue
         try:
             return _extract_span_list_json(last_reply)
         except (ValueError, json.JSONDecodeError, KeyError) as exc:
             last_error = exc
+            logger.warning(
+                "tag_draft attempt %d/3 for %r: unparseable reply (len=%d): %s", attempt + 1, draft, len(last_reply), exc
+            )
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
 
 
