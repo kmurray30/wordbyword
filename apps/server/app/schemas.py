@@ -13,6 +13,14 @@ class TokenAnnotation(BaseModel):
     # call missed this word or failed outright (gloss is then also empty -
     # no dictionary/MT fallback), or when the word didn't need a note.
     note: str = ""
+    # From the same call - non-empty only when this token is part of a
+    # multi-word group (an idiom/phrasal verb/fixed expression, e.g. "tener
+    # en cuenta"): a short word-by-word breakdown of how the group's
+    # individual words combine into its overall gloss, shared across every
+    # token the group covers (see app.routes.chat's _match_token_glosses).
+    # Empty for a standalone word - gloss already says everything literal
+    # would repeat.
+    literal: str = ""
 
 
 class ChatTurnRequest(BaseModel):
@@ -30,6 +38,21 @@ class ChatTurnResponse(BaseModel):
     # string if that call failed (rare; the per-word glosses are then also
     # empty - no dictionary/MT fallback).
     translation: str = ""
+
+
+# POST /chat/turn/stream sends these as SSE events rather than a single JSON
+# response (see app/routes/chat.py's take_turn_stream) - "chunk" events
+# stream the reply's own text as the model generates it, for a live
+# typing-style display; once generation finishes, gloss_reply (which needs
+# the complete text) runs and the full, final payload - the exact same
+# shape the non-streaming POST /chat/turn returns - is sent as one "done"
+# event.
+class ChatTurnChunkEvent(BaseModel):
+    delta: str
+
+
+class ChatTurnErrorEvent(BaseModel):
+    message: str
 
 
 class ChatHistoryMessage(BaseModel):
@@ -112,6 +135,13 @@ class DraftSpan(BaseModel):
     # this alternate reading only when this is non-empty. Empty for the
     # overwhelming majority of spans, which have no such ambiguity.
     alternate_gloss: str = ""
+    # Non-empty only for a multi-word span (an idiom/phrasal verb/fixed
+    # expression, e.g. "tener en cuenta") - a short word-by-word breakdown
+    # of how the group's individual words combine into candidates[0]'s
+    # overall gloss/translation, so the learner can see how the phrase is
+    # built rather than just what it means as a whole. Empty for a single-
+    # word span, where it would just repeat the gloss.
+    literal: str = ""
 
 
 class LlmHealthResponse(BaseModel):

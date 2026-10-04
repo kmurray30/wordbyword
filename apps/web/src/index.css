@@ -11,4 +11,11 @@ body {
   margin: 0;
   background: #14171f;
   color: #f2f2f2;
+  /* Safety net for any absolutely-positioned popover (e.g. the chat
+     bubble's right-docked word gloss, see DockedPopover.css) whose content
+     happens to be wide enough to push past the viewport's right edge -
+     observed live: a long disambiguation note did exactly that, forcing
+     the whole page into horizontal scroll/jump rather than just clipping
+     the popover at the edge. */
+  overflow-x: hidden;
 }

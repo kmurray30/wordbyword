@@ -55,6 +55,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chat/turn/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Take Turn Stream
+         * @description Same turn as POST /chat/turn, but the model's reply streams to the
+         *     client as it's generated instead of waiting for the whole thing - for a
+         *     live, typing-style display. Streamed as Server-Sent Events: a "chunk"
+         *     event per token/delta of the reply's own text, then (once generation
+         *     finishes) the exact same gloss/translate/persist work /chat/turn does,
+         *     sent as one final "done" event carrying the exact same ChatTurnResponse
+         *     shape /chat/turn returns - so the frontend ends up with one consistent
+         *     payload either way, just delivered progressively here.
+         */
+        post: operations["take_turn_stream_chat_turn_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/translate/text": {
         parameters: {
             query?: never;
@@ -351,6 +378,11 @@ export interface components {
              * @default
              */
             alternate_gloss: string;
+            /**
+             * Literal
+             * @default
+             */
+            literal: string;
         };
         /** DraftToken */
         DraftToken: {
@@ -459,6 +491,11 @@ export interface components {
              * @default
              */
             note: string;
+            /**
+             * Literal
+             * @default
+             */
+            literal: string;
         };
         /** TranslateCandidate */
         TranslateCandidate: {
@@ -594,6 +631,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatTurnResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    take_turn_stream_chat_turn_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatTurnRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

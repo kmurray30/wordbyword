@@ -22,6 +22,22 @@
   font-style: italic;
 }
 
+.word-candidates-popover__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+/* A multi-word group's word-by-word breakdown - a quieter secondary line
+   under the main candidate/gloss, not competing with it for attention. */
+.word-candidates-popover__literal {
+  padding: 0 4px;
+  color: #a9adba;
+  font-size: 0.78rem;
+  font-style: italic;
+}
+
 /* Low-profile - a small text toggle, not a prominent control, since the
    cross-language-cognate case (e.g. "once") this covers is rare. */
 .word-candidates-popover__alt-toggle {

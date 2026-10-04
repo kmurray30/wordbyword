@@ -465,7 +465,17 @@ async function checkBrowserEndToEnd() {
     await page.fill("textarea", "Hola");
     await page.keyboard.press("Enter");
 
-    await page.waitForSelector(".chat-message--assistant", { timeout: CHAT_TIMEOUT_MS });
+    // The reply now streams in token-by-token (see App.tsx's streamingText)
+    // via a plain, lightweight placeholder bubble that shares .chat-
+    // message--assistant's own styling classes but isn't the real,
+    // interactive ChatMessage component - that only gets mounted once the
+    // full reply + its word-by-word glosses are ready. Waiting on the bare
+    // ".chat-message--assistant" selector would resolve the instant that
+    // placeholder appears (possibly with no text yet at all), well before
+    // there's anything real to assert on - .chat-message__actions (the
+    // audio/translate-toggle row) is only ever rendered by the real
+    // component, so waiting on that instead reliably waits out the stream.
+    await page.waitForSelector(".chat-message--assistant .chat-message__actions", { timeout: CHAT_TIMEOUT_MS });
     await page.screenshot({ path: "e2e-2-chat-reply.png" });
 
     const replyText = await page.locator(".chat-message--assistant").first().innerText();

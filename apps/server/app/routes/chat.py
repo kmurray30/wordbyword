@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat
+from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.chat.prompt_builder import build_messages
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
@@ -10,6 +11,8 @@ from app.models import ChatMessage, MessageToken
 from app.schemas import (
     ChatHistoryMessage,
     ChatHistoryResponse,
+    ChatTurnChunkEvent,
+    ChatTurnErrorEvent,
     ChatTurnRequest,
     ChatTurnResponse,
     ClearHistoryResponse,
@@ -22,27 +25,33 @@ from app.wordbank import store
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
+
+def _sse(event: str, data: str) -> str:
+    return f"event: {event}\ndata: {data}\n\n"
+
+
 HISTORY_TURNS = 10
 
 
-def _match_token_glosses(tokens: list[Token], matched_spans: list[MatchedSpan]) -> list[tuple[str, str]]:
+def _match_token_glosses(tokens: list[Token], matched_spans: list[MatchedSpan]) -> list[tuple[str, str, str]]:
     """Both `tokens` (spaCy, left-to-right) and `matched_spans` (left-to-
     right, non-overlapping - see span_matching.match_spans) are ordered by
     position, so a single left-to-right walk finds each token's covering
     span, if any, without re-scanning from the start each time. A
     multi-word span (e.g. "el tuyo") covers more than one token - every
-    token inside it gets that same span's gloss/note, rather than only the
-    first one or splitting the group across two separate glosses."""
-    result: list[tuple[str, str]] = []
+    token inside it gets that same span's gloss/note/literal, rather than
+    only the first one or splitting the group across two separate
+    glosses."""
+    result: list[tuple[str, str, str]] = []
     span_idx = 0
     for tok in tokens:
         while span_idx < len(matched_spans) and matched_spans[span_idx].end <= tok.start:
             span_idx += 1
         if span_idx < len(matched_spans) and matched_spans[span_idx].start <= tok.start < matched_spans[span_idx].end:
             span = matched_spans[span_idx]
-            result.append((span.gloss, span.note))
+            result.append((span.gloss, span.note, span.literal))
         else:
-            result.append(("", ""))
+            result.append(("", "", ""))
     return result
 
 
@@ -86,24 +95,14 @@ def clear_history(session_id: str, session: Session = Depends(get_session)) -> C
     return ClearHistoryResponse(cleared=len(rows))
 
 
-@router.post("/turn", response_model=ChatTurnResponse)
-def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
-    history = _recent_history(session, req.session_id)
-    messages = build_messages(history, req.message)
-
-    try:
-        reply_text = model_chat(messages)
-    except ModelServerUnavailableError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
-
-    # One LLM call glosses every word/group in the reply using its meaning
-    # IN CONTEXT, and returns the whole-sentence translation from that
-    # exact same pass - one consistent source for both. No dictionary/MT
-    # fallback for a word it missed or a failed call - that word just gets
-    # no gloss until a later turn supplies one (see store.record_exposure
-    # below).
+def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str) -> ChatTurnResponse:
+    """Shared by both /chat/turn and /chat/turn/stream - everything that
+    happens once the model's full reply text is known: one LLM call glosses
+    every word/group in the reply using its meaning IN CONTEXT, and returns
+    the whole-sentence translation from that exact same pass - one
+    consistent source for both. No dictionary/MT fallback for a word it
+    missed or a failed call - that word just gets no gloss until a later
+    turn supplies one (see store.record_exposure below)."""
     try:
         translation, raw_spans = llm_translate.gloss_reply(reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE)
     except llm_translate.TranslationUnavailableError:
@@ -115,7 +114,7 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
     annotations: list[TokenAnnotation] = []
     token_rows: list[MessageToken] = []
 
-    for position, (tok, (word_gloss, word_note)) in enumerate(zip(tokens, token_glosses)):
+    for position, (tok, (word_gloss, word_note, word_literal)) in enumerate(zip(tokens, token_glosses)):
         # tok.is_spanish is a heuristic built for the learner's own possibly-
         # English-mixed input (see lemmatizer.py); it's gated on a small
         # ~300-word frequency list, so applying it here to the agent's own
@@ -136,12 +135,19 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
             continue
 
         word_note = word_note if word_gloss else ""
+        word_literal = word_literal if word_gloss else ""
         entry = store.record_exposure(session, tok.lemma, pos=tok.pos, translation=word_gloss)
         is_new = entry.exposure_count == 1
 
         annotations.append(
             TokenAnnotation(
-                surface=tok.surface, lemma=tok.lemma, pos=tok.pos, gloss=word_gloss, is_new=is_new, note=word_note
+                surface=tok.surface,
+                lemma=tok.lemma,
+                pos=tok.pos,
+                gloss=word_gloss,
+                is_new=is_new,
+                note=word_note,
+                literal=word_literal,
             )
         )
         token_rows.append(
@@ -155,9 +161,55 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
             )
         )
 
-    assistant_message = ChatMessage(session_id=req.session_id, role="assistant", text=reply_text, tokens=token_rows)
+    assistant_message = ChatMessage(session_id=session_id, role="assistant", text=reply_text, tokens=token_rows)
     session.add(assistant_message)
     session.commit()
     session.refresh(assistant_message)
 
     return ChatTurnResponse(message_id=assistant_message.id, text=reply_text, tokens=annotations, translation=translation)
+
+
+@router.post("/turn", response_model=ChatTurnResponse)
+def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
+    history = _recent_history(session, req.session_id)
+    messages = build_messages(history, req.message)
+
+    try:
+        reply_text = model_chat(messages)
+    except ModelServerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
+
+    return _gloss_and_persist_reply(session, req.session_id, reply_text)
+
+
+@router.post("/turn/stream")
+def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_session)) -> StreamingResponse:
+    """Same turn as POST /chat/turn, but the model's reply streams to the
+    client as it's generated instead of waiting for the whole thing - for a
+    live, typing-style display. Streamed as Server-Sent Events: a "chunk"
+    event per token/delta of the reply's own text, then (once generation
+    finishes) the exact same gloss/translate/persist work /chat/turn does,
+    sent as one final "done" event carrying the exact same ChatTurnResponse
+    shape /chat/turn returns - so the frontend ends up with one consistent
+    payload either way, just delivered progressively here."""
+    history = _recent_history(session, req.session_id)
+    messages = build_messages(history, req.message)
+    session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
+
+    def events():
+        chunks: list[str] = []
+        try:
+            for delta in model_chat_stream(messages):
+                chunks.append(delta)
+                yield _sse("chunk", ChatTurnChunkEvent(delta=delta).model_dump_json())
+        except ModelServerUnavailableError as exc:
+            yield _sse("error", ChatTurnErrorEvent(message=str(exc)).model_dump_json())
+            return
+
+        reply_text = "".join(chunks).strip()
+        result = _gloss_and_persist_reply(session, req.session_id, reply_text)
+        yield _sse("done", result.model_dump_json())
+
+    return StreamingResponse(events(), media_type="text/event-stream")

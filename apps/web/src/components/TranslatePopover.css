@@ -19,3 +19,13 @@
   padding: 6px 6px 10px;
 }
 
+/* A multi-word group's word-by-word breakdown - a quieter secondary line
+   under the main gloss, not competing with it for attention. */
+.translate-popover__literal {
+  padding: 0 4px;
+  margin-top: 2px;
+  color: #a9adba;
+  font-size: 0.78rem;
+  font-style: italic;
+}
+

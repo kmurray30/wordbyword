@@ -22,7 +22,14 @@ function App() {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
+  // null = no turn in flight; "" (or more) while the assistant's reply is
+  // streaming in - rendered as its own lightweight bubble below, OUTSIDE
+  // ChatMessage, until the "done" event's complete message is ready to
+  // push as one real DisplayMessage with a stable id. Keeping it out of
+  // ChatMessage/messages until then avoids both remounting that component
+  // under a changing key and misfiring its id-keyed eager-translation
+  // effect against text that's still incomplete.
+  const [streamingText, setStreamingText] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [voices, setVoices] = useState<string[]>([]);
   const [voice, setVoice] = useState<string | null>(() => {
@@ -89,21 +96,30 @@ function App() {
     }
   };
 
-  const handleSend = (text: string) => {
+  const handleSend = async (text: string) => {
     setError(null);
     setMessages((prev) => [...prev, { id: nextLocalId--, role: "user", text }]);
-    setSending(true);
+    setStreamingText("");
 
-    api
-      .chatTurn({ message: text, session_id: sessionId })
-      .then((res) => {
-        setMessages((prev) => [
-          ...prev,
-          { id: res.message_id, role: "assistant", text: res.text, tokens: res.tokens, translation: res.translation },
-        ]);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setSending(false));
+    try {
+      for await (const event of api.chatTurnStream({ message: text, session_id: sessionId })) {
+        if (event.type === "chunk") {
+          setStreamingText((prev) => (prev ?? "") + event.data.delta);
+        } else if (event.type === "error") {
+          throw new Error(event.data.message);
+        } else {
+          const res = event.data;
+          setMessages((prev) => [
+            ...prev,
+            { id: res.message_id, role: "assistant", text: res.text, tokens: res.tokens, translation: res.translation },
+          ]);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStreamingText(null);
+    }
   };
 
   return (
@@ -138,7 +154,13 @@ function App() {
         {messages.map((m) => (
           <ChatMessage key={m.id} message={m} voice={voice ?? undefined} />
         ))}
-        {sending && <p className="app__typing">…</p>}
+        {streamingText !== null && (
+          <div className="chat-message chat-message--assistant">
+            <div className="chat-message__column">
+              <div className="chat-message__bubble">{streamingText || "…"}</div>
+            </div>
+          </div>
+        )}
         {error && <p className="app__error">{error}. Is the backend running and configured correctly?</p>}
       </main>
 

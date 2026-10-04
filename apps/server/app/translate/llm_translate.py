@@ -27,15 +27,19 @@ _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 # dict-keyed word_map this replaced - full-coverage spans don't dedupe a
 # repeated word like "y" or "el" across its occurrences). A short 2-3
 # sentence reply can still run 20+ words once every function word is
-# counted, each needing its own {"surface", "gloss", "note"} entry - sized
-# well above tag_draft's per-span budget (1400 for a 5-field span) despite
-# gloss_reply's spans only having 3 fields, since this one can have more
-# spans in total. Too tight a budget truncates the JSON mid-generation,
-# which reads identically to the model just failing (unparseable after
-# retries) - and since there's no per-token fallback, that silently drops
-# every gloss in the WHOLE message, not just one word - exactly the
-# "lots of words aren't clickable" symptom this sizing fixes.
-_GLOSS_REPLY_MAX_TOKENS = 1400
+# counted, each needing its own {"surface", "gloss", "note", "literal"}
+# entry - sized well above tag_draft's per-span budget (1400 for a 5-field
+# span) despite gloss_reply's spans only having 4 fields, since this one
+# can have more spans in total. Raised from 1400 after adding `literal`
+# (a word-by-word breakdown, non-empty only for multi-word spans) - most
+# spans leave it empty, but a reply with several idioms/phrasal verbs in
+# it needs the extra room. Too tight a budget truncates the JSON mid-
+# generation, which reads identically to the model just failing
+# (unparseable after retries) - and since there's no per-token fallback,
+# that silently drops every gloss in the WHOLE message, not just one word
+# - exactly the "lots of words aren't clickable" symptom this sizing
+# fixes.
+_GLOSS_REPLY_MAX_TOKENS = 1700
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -126,17 +130,28 @@ def gloss_reply(text: str, source_lang: str, target_lang: str) -> tuple[str, lis
                 f"span, give a short {target_name} gloss of what it means "
                 f"IN THIS SENTENCE - not a generic dictionary definition, "
                 f"since the same word/group can mean different things in "
-                f"different sentences. Reply with ONLY a single JSON object "
-                f"and nothing else - no markdown code fences, no explanation "
-                f"- in exactly this shape: "
+                f"different sentences. For a MULTI-WORD span only, also give "
+                f"a short `literal` word-by-word breakdown in {target_name}, "
+                f"showing what each individual word in the group means on "
+                f"its own and, if the group's overall sense isn't a literal/"
+                f'word-for-word match for `gloss`, making that plain too - '
+                f'e.g. for a {source_name} idiom span like "tener en cuenta" '
+                f'meaning "take into account", `literal` could be "tener (to '
+                f'have) + en (in) + cuenta (account)" - so the learner can '
+                f"see how the phrase is built, not just what it means "
+                f"overall. Leave `literal` an empty string for a single-word "
+                f"span - it would just repeat `gloss`. Reply with ONLY a "
+                f"single JSON object and nothing else - no markdown code "
+                f"fences, no explanation - in exactly this shape: "
                 f'{{"translation": "<the full {target_name} translation>", '
                 f'"spans": [{{"surface": "<exact text from the source, one '
                 f'word or a short fixed-expression group>", "gloss": "<its '
                 f'{target_name} meaning in this sentence>", "note": "<in '
                 f"{target_name}: if this word could easily be confused with "
                 f"a different sense or word, one short phrase explaining why "
-                f'this sense applies here - otherwise an empty string>"}}, '
-                f"...]}}"
+                f'this sense applies here - otherwise an empty string>", '
+                f'"literal": "<word-by-word breakdown for a multi-word span '
+                f'only - else empty>"}}, ...]}}'
             ),
         },
         {"role": "user", "content": text},
@@ -313,28 +328,27 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
     return native_text, target_text
 
 
-_TAG_DRAFT_MAX_TOKENS = 1400  # each span here carries 5 string fields
-# (surface/gloss/note/translation/alternate_gloss) vs. gloss_reply's 2
-# (gloss/note) per word - more than double the per-word payload, so
-# despite a draft usually being shorter than a full reply, this needs a
-# bigger budget than gloss_reply's 700, not a smaller one. Too tight a
-# budget truncates the JSON mid-generation, which reads identically to
-# the model just failing - unparseable after retries, raising
-# TranslationUnavailableError - rather than an obviously-wrong but
-# diagnosable response. Raised from 900 (which was itself raised from
-# 500 for the same reason, before alternate_gloss existed) after live
-# validation caught a longer, idiom-bearing draft coming back with a
-# fully empty completion 3 times in a row - a tight budget combined with
-# this call's 3-part instructions and 5-field-per-span JSON shape is the
-# most likely explanation for a small model (Qwen3-1.7B) giving up
-# entirely rather than truncating mid-object.
+_TAG_DRAFT_MAX_TOKENS = 1600  # each span here carries 6 string fields
+# (surface/gloss/note/translation/alternate_gloss/literal) - most of them
+# empty for a given span (alternate_gloss nearly always, literal unless
+# that span is a multi-word group), but all 6 still need room in the cap.
+# This is just a cap, not a target - the model stops on its own once the
+# JSON is complete, so it doesn't by itself cost latency; it exists so a
+# genuinely long/complex draft can't get truncated mid-object, which reads
+# identically to the model just failing (unparseable after retries,
+# raising TranslationUnavailableError) rather than an obviously-wrong but
+# diagnosable response. The actual latency lever is how much the prompt
+# asks the model to generate per call - see tag_draft's docstring on
+# dropping the unused whole-draft `translation` field for exactly that
+# reason.
 
 
 def _coerce_spans(raw_spans: list) -> list[dict[str, str]]:
     """Shared span-dict normalization for any LLM call that returns a
-    surface/gloss/note/translation/alternate_gloss list in this shape -
-    tag_draft below, and coach_draft_stream's per-option word-by-word
-    breakdown (app.routes.translate's streaming coach endpoint) alike."""
+    surface/gloss/note/translation/alternate_gloss/literal list in this
+    shape - tag_draft below, and coach_draft_stream's per-option word-by-
+    word breakdown (app.routes.translate's streaming coach endpoint)
+    alike."""
     spans: list[dict[str, str]] = []
     for item in raw_spans:
         if not isinstance(item, dict):
@@ -349,6 +363,7 @@ def _coerce_spans(raw_spans: list) -> list[dict[str, str]]:
                 "note": str(item.get("note", "")),
                 "translation": str(item.get("translation", "")),
                 "alternate_gloss": str(item.get("alternate_gloss", "")),
+                "literal": str(item.get("literal", "")),
             }
         )
     return spans
@@ -359,7 +374,11 @@ def _extract_span_list_json(reply: str) -> tuple[str, list[dict[str, str]]]:
     if not match:
         raise ValueError(f"no JSON object found in reply: {reply!r}")
     data = json.loads(match.group(0))
-    translation = data["translation"]
+    # "translation" defaults to "" rather than being required - tag_draft
+    # below doesn't ask the model for it at all (its only caller discarded
+    # it, so asking for it was pure wasted generation - see tag_draft's own
+    # docstring), while gloss_reply still does and gets a real value back.
+    translation = data.get("translation", "")
     raw_spans = data["spans"]
     if not isinstance(translation, str) or not isinstance(raw_spans, list):
         raise ValueError(f"unexpected JSON shape: {data!r}")
@@ -372,17 +391,19 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
     messy-input framing as coach_draft/interpret_user_input, but with NO
     conversation history - this needs to stay fast/cheap, since it's called
     far more often than coach_draft, once per word/boundary rather than once
-    per click). One LLM call returns (translation, spans): translation is
-    the model's best whole-draft interpretation, translated into
-    target_lang - not shown anywhere in the UI directly, but gives the
-    model sentence-level context so its per-span glosses below are
-    consistent with it (mirrors gloss_reply's shape). spans is an ORDERED
-    list, not a dict keyed by surface text like gloss_reply's word_map -
-    gloss_reply can get away with a dict because every occurrence of a
-    repeated word shares one gloss, but here the same surface text can
-    genuinely appear twice in one draft and each occurrence needs its own
-    later position-match (see app.translate.span_matching.match_spans) - a
-    dict would silently collapse them. Each span dict is
+    per click). Still returns a (translation, spans) pair for the same
+    shape _extract_span_list_json/gloss_reply use, but translation is
+    always "" here - unlike gloss_reply, this doesn't ask the model for a
+    whole-draft translation at all (its only caller, /translate/gloss-
+    spans, discarded that value entirely; asking for it was pure wasted
+    generation on every single hover/tap, the most latency-sensitive call
+    in this file). spans is an ORDERED list, not a dict keyed by surface
+    text like gloss_reply's word_map - gloss_reply can get away with a
+    dict because every occurrence of a repeated word shares one gloss, but
+    here the same surface text can genuinely appear twice in one draft and
+    each occurrence needs its own later position-match (see
+    app.translate.span_matching.match_spans) - a dict would silently
+    collapse them. Each span dict is
         {"surface": <copied exactly from the draft, not paraphrased>,
          "gloss": <short native_lang meaning in context>,
          "note": <disambiguation note, or empty>,
@@ -392,7 +413,12 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
             when a standalone word is ALSO a legitimate, different word in
             native_lang (a true cross-language cognate, e.g. "once" -
             Spanish for "eleven", also an English word) - that other
-            word's meaning, in native_lang>}.
+            word's meaning, in native_lang>,
+         "literal": <empty for a single-word span; for a multi-word span,
+            a short native_lang word-by-word breakdown showing how the
+            group's individual words combine - e.g. for "tener en cuenta"
+            (gloss "take into account"), something like "tener (to have) +
+            en (in) + cuenta (account)">}.
     The model decides span boundaries - usually one word, occasionally a
     few words grouped as an idiom/phrasal verb/fixed expression. This does
     NOT itself guarantee the surface text is actually findable in draft at
@@ -412,40 +438,50 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
                 f"A language learner, whose native language is {native_name}, is "
                 f"typing a message in {target_name} - still a draft, not sent yet. "
                 f"It may mix {native_name} and {target_name}, and may have grammar, "
-                f"spelling, or word-order mistakes in either. Your job: (1) give your "
-                f"best whole-message interpretation, translated into natural "
-                f"{target_name}; (2) break the draft into a list of words or short "
-                f"word-groups, IN THE SAME ORDER THEY APPEAR IN THE DRAFT (left to "
-                f"right, earliest first), that together cover as much of the draft as "
-                f"you reasonably can, skipping pure punctuation. For each one, give a "
-                f"short {native_name} gloss of what it means here, and - only if it "
-                f"ISN'T already written as natural {target_name} - a corrected/"
-                f"translated {target_name} replacement for it (leave this empty if "
-                f"the learner's own text for that span is already correct, natural "
+                f"spelling, or word-order mistakes in either. Your job: break the "
+                f"draft into a list of words or short word-groups, IN THE SAME ORDER "
+                f"THEY APPEAR IN THE DRAFT (left to right, earliest first), that "
+                f"together cover as much of the draft as you reasonably can, "
+                f"skipping pure punctuation. For each one, give a short {native_name} "
+                f"gloss of what it means here, and - only if it ISN'T already "
+                f"written as natural {target_name} - a corrected/translated "
+                f"{target_name} replacement for it (leave this empty if the "
+                f"learner's own text for that span is already correct, natural "
                 f"{target_name} - there's nothing to replace). Group a few words "
                 f"together ONLY when they form an idiom, phrasal verb, or fixed "
                 f"expression that doesn't translate word-by-word - most spans should "
                 f"be a single word. Copy each span's `surface` EXACTLY as it appears "
                 f"in the draft - same spelling, same case, same accents, not "
-                f"corrected or paraphrased (corrections belong only in "
-                f"`translation`). (3) For a span that is just ONE standalone word, "
-                f"check whether that exact spelling is ALSO a legitimate, different "
-                f"word in {native_name} (a true cross-language cognate - for example "
-                f'"once" is Spanish for "eleven" but also an ordinary English word). '
-                f"If so, give that other word's meaning as `alternate_gloss`, in "
-                f"{native_name} - otherwise leave `alternate_gloss` an empty string; "
-                f"it will be empty for nearly every span.\n\n"
+                f"corrected or paraphrased (corrections belong only in its own "
+                f"`translation` field). Also, for a span that is just ONE standalone "
+                f"word, check whether that exact spelling is ALSO a legitimate, "
+                f"different word in {native_name} (a true cross-language cognate - "
+                f'for example "once" is Spanish for "eleven" but also an ordinary '
+                f"English word). If so, give that other word's meaning as "
+                f"`alternate_gloss`, in {native_name} - otherwise leave "
+                f"`alternate_gloss` an empty string; it will be empty for nearly "
+                f"every span. For a MULTI-WORD span only, also give a short "
+                f"`literal` word-by-word breakdown in {native_name}, showing what "
+                f"each individual word in the group means on its own and, if the "
+                f"group's overall sense isn't a literal/word-for-word match for "
+                f'`gloss`, making that plain too - e.g. for a {target_name} idiom '
+                f'span like "tener en cuenta" meaning "take into account", '
+                f'`literal` could be "tener (to have) + en (in) + cuenta '
+                f'(account)" - so the learner can see how the phrase is built, '
+                f"not just what it means overall. Leave `literal` an empty string "
+                f"for a single-word span - it would just repeat `gloss`.\n\n"
                 f"Reply with ONLY a single JSON object, no markdown fences, no "
                 f"explanation, in exactly this shape:\n"
-                f'{{"translation": "<your best {target_name} translation of the '
-                f'whole draft>", "spans": [{{"surface": "<exact text from the '
+                f'{{"spans": [{{"surface": "<exact text from the '
                 f'draft>", "gloss": "<its meaning here, in {native_name}>", "note": '
                 f'"<in {native_name}: short reason if this sense could be confused '
                 f'with another - else empty>", "translation": "<a corrected/'
                 f'translated {target_name} replacement - empty if already '
                 f'correct, natural {target_name}>", "alternate_gloss": "<empty, or '
                 f"if this single-word span is ALSO a legitimate different word in "
-                f'{native_name}, that word\'s meaning, in {native_name}>"}}, ...]}}'
+                f'{native_name}, that word\'s meaning, in {native_name}>", '
+                f'"literal": "<word-by-word breakdown for a multi-word span '
+                f'only - else empty>"}}, ...]}}'
             ),
         },
         {"role": "user", "content": draft},
@@ -485,8 +521,18 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
 
 
-_COACH_CORE_MAX_TOKENS = 500
-_COACH_TRANSLATIONS_MAX_TOKENS = 700
+_COACH_CORE_MAX_TOKENS = 600
+# Raised from 700: PART 1 and PART 2 share ONE generation budget (one HTTP
+# call), so a verbose PART 1 (3 full formality variants) could leave too
+# little room for PART 2's per-option word-by-word breakdowns - observed
+# live, non-deterministically: the same kind of draft got usable
+# translations one run and none (truncated/unparseable) the next, purely
+# from how much of the shared budget PART 1 happened to use that time.
+_COACH_TRANSLATIONS_MAX_TOKENS = 1250
+# Raised from 1100 to make room for each span's new `literal` field (a
+# word-by-word breakdown, non-empty only for a multi-word idiom/phrasal-
+# verb group) - most spans leave it empty, but an option with a couple of
+# such groups needs the extra headroom across up to 3 options.
 _COACH_STREAM_MAX_TOKENS = _COACH_CORE_MAX_TOKENS + _COACH_TRANSLATIONS_MAX_TOKENS
 _COACH_HISTORY_TURNS = 8
 _VALID_FORMALITIES = {"neutral", "casual", "formal"}
@@ -577,6 +623,15 @@ def coach_draft_stream(
     ("translations", [{"english": ..., "spans": [...]}, ...]), lined up
     with PART 1's options by list position.
 
+    Speed: when the draft is ALREADY correct and needs no change, the
+    prompt tells the model to collapse PART 1 to a single "neutral" option
+    (an unchanged copy of the draft, empty `feedback`) instead of 3 full
+    formality variants, and to skip PART 2's breakdown entirely
+    ({"options": []}) - nothing there needs double-checking. A much
+    shorter completion for the common "looks good" case, not a separate
+    pre-flight call - callers tell the two cases apart the same way either
+    way (empty `feedback` - see ChatInput.tsx's coachClean).
+
     Unlike every other LLM-backed helper here, this does NOT retry on a
     garbled/unparseable reply - PART 1 may already have been yielded (and
     acted on by the caller) by the time PART 2 turns out unusable, so
@@ -613,7 +668,15 @@ def coach_draft_stream(
                 f"on how close their attempt already is to that meaning (empty "
                 f"string if it was basically already right); (3) suggest the "
                 f"ideal way to actually say it in {target_name} given the "
-                f"conversation's tone and context so far, at 3 formality levels.\n\n"
+                f"conversation's tone and context so far.\n\n"
+                f"IMPORTANT for speed: if what they typed is ALREADY correct, "
+                f"natural {target_name} needing no change at all, don't generate "
+                f"3 formality variants - set `feedback` to an empty string and "
+                f"`options` to EXACTLY ONE entry, {{\"formality\": \"neutral\", "
+                f'"spanish": "<their own draft, copied exactly, unchanged>"}}, '
+                f"and stop there - nothing else to suggest. Only when it DOES "
+                f"need correction, suggest the ideal phrasing at 3 formality "
+                f"levels as described below.\n\n"
                 f"{context_block}"
                 f"PART 1's JSON shape, exactly:\n"
                 f'{{"meaning": "<their intent as a concise {native_name} '
@@ -625,7 +688,9 @@ def coach_draft_stream(
                 f'"spanish": "<the ideal {target_name} phrasing>"}}, {{"formality": '
                 f'"casual", "spanish": "<a more casual/informal way to say it>"}}, '
                 f'{{"formality": "formal", "spanish": "<a more formal/polite way '
-                f'to say it>"}}]}}\n\n'
+                f'to say it>"}}]}} - or, when already correct (see above), just '
+                f'{{"meaning": "...", "feedback": "", "options": [{{"formality": '
+                f'"neutral", "spanish": "<their own draft, unchanged>"}}]}}\n\n'
                 f"Keep every {target_name} option to one natural sentence or "
                 f"short exchange, ready to send in chat as-is - not a lecture, "
                 f"and don't repeat the same phrasing across formality levels if "
@@ -639,14 +704,25 @@ def coach_draft_stream(
                 f"double check: for every option, its whole-phrase "
                 f"{native_name} translation, and a word-by-word breakdown "
                 f"(skip pure punctuation; copy each `surface` EXACTLY as it "
-                f"appears in that option's own {target_name} text). PART 2's "
-                f"JSON shape, exactly:\n"
+                f"appears in that option's own {target_name} text). For a "
+                f"MULTI-WORD span in that breakdown only, also give a short "
+                f"`literal` word-by-word breakdown in {native_name} of how the "
+                f"group's individual words combine, e.g. for a {target_name} "
+                f'idiom like "tener en cuenta" meaning "take into account", '
+                f'`literal` could be "tener (to have) + en (in) + cuenta '
+                f'(account)" - leave it an empty string for a single-word span. '
+                f"EXCEPTION, also for speed: if PART 1 had exactly the one "
+                f"\"already correct\" option described above, skip its "
+                f"breakdown entirely and just write {{\"options\": []}} for "
+                f"PART 2 - nothing there needs double-checking. PART 2's JSON "
+                f"shape, exactly:\n"
                 f'{{"options": [{{"english": "<whole-phrase {native_name} '
                 f'translation of this option>", "spans": [{{"surface": "<exact '
                 f"word/word-group from this option's {target_name} text>\", "
                 f'"gloss": "<its meaning here, in {native_name}>", "note": "<in '
-                f'{native_name}: short disambiguation note, or empty>"}}, '
-                f"...]}}, ...]}}\n\n"
+                f'{native_name}: short disambiguation note, or empty>", '
+                f'"literal": "<word-by-word breakdown for a multi-word span '
+                f'only - else empty>"}}, ...]}}, ...]}}\n\n'
                 f"No markdown fences, no explanation outside the two JSON "
                 f"objects and the marker between them."
             ),

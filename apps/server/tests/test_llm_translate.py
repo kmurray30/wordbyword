@@ -193,16 +193,17 @@ def test_gloss_reply_parses_translation_and_ordered_spans():
 
     assert translation == "The bank is closed."
     assert spans == [
-        {"surface": "El", "gloss": "the", "note": "", "translation": "", "alternate_gloss": ""},
+        {"surface": "El", "gloss": "the", "note": "", "translation": "", "alternate_gloss": "", "literal": ""},
         {
             "surface": "banco",
             "gloss": "bank",
             "note": "financial institution, not a bench",
             "translation": "",
             "alternate_gloss": "",
+            "literal": "",
         },
-        {"surface": "está", "gloss": "is", "note": "", "translation": "", "alternate_gloss": ""},
-        {"surface": "cerrado", "gloss": "closed", "note": "", "translation": "", "alternate_gloss": ""},
+        {"surface": "está", "gloss": "is", "note": "", "translation": "", "alternate_gloss": "", "literal": ""},
+        {"surface": "cerrado", "gloss": "closed", "note": "", "translation": "", "alternate_gloss": "", "literal": ""},
     ]
     (messages,), kwargs = mock_chat.call_args
     assert kwargs["max_tokens"] > 300  # bigger budget than a plain translation
@@ -216,7 +217,9 @@ def test_gloss_reply_groups_a_multi_word_span():
     with patch("app.translate.llm_translate.model_chat", return_value=reply):
         _translation, spans = gloss_reply("el tuyo", "es", "en")
 
-    assert spans == [{"surface": "el tuyo", "gloss": "yours", "note": "", "translation": "", "alternate_gloss": ""}]
+    assert spans == [
+        {"surface": "el tuyo", "gloss": "yours", "note": "", "translation": "", "alternate_gloss": "", "literal": ""}
+    ]
 
 
 def test_gloss_reply_strips_surrounding_prose_and_code_fences():
@@ -228,7 +231,9 @@ def test_gloss_reply_strips_surrounding_prose_and_code_fences():
         translation, spans = gloss_reply("Hola", "es", "en")
 
     assert translation == "Hello"
-    assert spans == [{"surface": "hola", "gloss": "hello", "note": "", "translation": "", "alternate_gloss": ""}]
+    assert spans == [
+        {"surface": "hola", "gloss": "hello", "note": "", "translation": "", "alternate_gloss": "", "literal": ""}
+    ]
 
 
 def test_gloss_reply_retries_once_on_unparseable_reply():
@@ -239,7 +244,9 @@ def test_gloss_reply_retries_once_on_unparseable_reply():
         translation, spans = gloss_reply("Hola", "es", "en")
 
     assert translation == "Hi"
-    assert spans == [{"surface": "hola", "gloss": "hi", "note": "", "translation": "", "alternate_gloss": ""}]
+    assert spans == [
+        {"surface": "hola", "gloss": "hi", "note": "", "translation": "", "alternate_gloss": "", "literal": ""}
+    ]
     assert mock_chat.call_count == 2
 
 
@@ -279,13 +286,14 @@ def test_tag_draft_parses_translation_and_ordered_spans():
 
     assert translation == "Quiero ir a la playa."
     assert spans == [
-        {"surface": "quiero", "gloss": "I want", "note": "", "translation": "", "alternate_gloss": ""},
+        {"surface": "quiero", "gloss": "I want", "note": "", "translation": "", "alternate_gloss": "", "literal": ""},
         {
             "surface": "ir to",
             "gloss": "to go to",
             "note": "mixed English/Spanish",
             "translation": "ir a",
             "alternate_gloss": "",
+            "literal": "",
         },
     ]
     (messages,), kwargs = mock_chat.call_args
@@ -322,6 +330,25 @@ def test_tag_draft_parses_alternate_gloss():
     assert spans[0]["alternate_gloss"] == 'once (as in "at once") - an English word too'
 
 
+def test_tag_draft_parses_literal_breakdown_for_multi_word_span():
+    reply = (
+        '{"spans": [{"surface": "tener en cuenta", "gloss": "take into account", "note": "", '
+        '"translation": "", "literal": "tener (to have) + en (in) + cuenta (account)"}]}'
+    )
+    with patch("app.translate.llm_translate.model_chat", return_value=reply):
+        _translation, spans = tag_draft("tener en cuenta algo", "en", "es")
+
+    assert spans[0]["literal"] == "tener (to have) + en (in) + cuenta (account)"
+
+
+def test_tag_draft_literal_defaults_to_empty():
+    reply = '{"spans": [{"surface": "hola", "gloss": "hi", "note": "", "translation": ""}]}'
+    with patch("app.translate.llm_translate.model_chat", return_value=reply):
+        _translation, spans = tag_draft("hola", "en", "es")
+
+    assert spans[0]["literal"] == ""
+
+
 def test_tag_draft_alternate_gloss_defaults_to_empty():
     reply = '{"translation": "hola", "spans": [{"surface": "hola", "gloss": "hi", "note": "", "translation": ""}]}'
     with patch("app.translate.llm_translate.model_chat", return_value=reply):
@@ -345,7 +372,9 @@ def test_tag_draft_retries_once_on_unparseable_reply():
         translation, spans = tag_draft("hola", "en", "es")
 
     assert translation == "Hi"
-    assert spans == [{"surface": "hola", "gloss": "hi", "note": "", "translation": "", "alternate_gloss": ""}]
+    assert spans == [
+        {"surface": "hola", "gloss": "hi", "note": "", "translation": "", "alternate_gloss": "", "literal": ""}
+    ]
     assert mock_chat.call_count == 2
 
 
@@ -445,7 +474,7 @@ def test_coach_draft_stream_yields_core_then_translations():
     translations = events[1][1]
     assert translations[0]["english"] == "I want to go to the beach tomorrow."
     assert translations[0]["spans"] == [
-        {"surface": "Quiero", "gloss": "I want", "note": "", "translation": "", "alternate_gloss": ""}
+        {"surface": "Quiero", "gloss": "I want", "note": "", "translation": "", "alternate_gloss": "", "literal": ""}
     ]
     assert translations[1] == {"english": "I want to go to the beach tomorrow, yeah?", "spans": []}
 

@@ -832,6 +832,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
             clickable={popoverState === "ready" && !!openSpan?.clickable}
             onSelect={(translation) => openSpan && handleReplace(openSpan, translation)}
             alternateGloss={openSpan?.alternate_gloss}
+            literal={openSpan?.literal}
             showAlternate={openSpan ? !!altToggles[openSpan.start] : false}
             onToggleAlternate={() => {
               if (!openSpan) return;

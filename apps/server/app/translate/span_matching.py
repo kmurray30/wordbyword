@@ -23,6 +23,13 @@ class MatchedSpan:
     note: str
     translation: str
     alternate_gloss: str = ""
+    # Non-empty only for a multi-word span (an idiom/phrasal verb/fixed
+    # expression) - a short word-by-word literal breakdown, e.g. "tener en
+    # cuenta" -> "tener (to have) + en (in) + cuenta (account)", so the
+    # learner can see how the phrase is built rather than just its overall
+    # gloss. Empty for a single-word span, where it would just repeat
+    # `gloss`.
+    literal: str = ""
 
 
 def _normalize(text: str) -> str:
@@ -69,6 +76,7 @@ def match_spans(text: str, spans: list[dict[str, str]]) -> list[MatchedSpan]:
                 note=raw.get("note", ""),
                 translation=raw.get("translation", ""),
                 alternate_gloss=raw.get("alternate_gloss", ""),
+                literal=raw.get("literal", ""),
             )
         )
         cursor = end

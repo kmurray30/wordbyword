@@ -24,6 +24,11 @@ interface WordCandidatesPopoverProps {
   alternateGloss?: string;
   showAlternate?: boolean;
   onToggleAlternate?: () => void;
+  // Non-empty only for a multi-word span (see DraftSpan.literal) - a short
+  // word-by-word breakdown of how the group's individual words combine,
+  // shown as a small secondary line so the learner can see how the phrase
+  // is built, not just its overall gloss.
+  literal?: string;
 }
 
 // The one popover widget for hovering/tapping a word or group in the chat
@@ -42,6 +47,7 @@ export function WordCandidatesPopover({
   alternateGloss,
   showAlternate,
   onToggleAlternate,
+  literal,
 }: WordCandidatesPopoverProps) {
   if (loading) {
     return (
@@ -56,7 +62,10 @@ export function WordCandidatesPopover({
 
   return (
     <div className="word-candidates-popover" role="tooltip">
-      <CandidateCycler candidates={displayCandidates} clickable={!showAlternate && clickable} onSelect={onSelect} />
+      <div className="word-candidates-popover__main">
+        <CandidateCycler candidates={displayCandidates} clickable={!showAlternate && clickable} onSelect={onSelect} />
+        {literal && !showAlternate && <div className="word-candidates-popover__literal">{literal}</div>}
+      </div>
       {alternateGloss && (
         <button
           type="button"

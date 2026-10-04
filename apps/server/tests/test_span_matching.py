@@ -30,6 +30,21 @@ def test_multi_word_group_spans_a_space():
     assert text[matched[0].start : matched[0].end] == "echar de menos"
 
 
+def test_literal_breakdown_passes_through_for_multi_word_span():
+    text = "voy a echar de menos esto"
+    matched = match_spans(
+        text,
+        [{"surface": "echar de menos", "gloss": "to miss", "literal": "echar (to throw) + de menos (of less)"}],
+    )
+    assert len(matched) == 1
+    assert matched[0].literal == "echar (to throw) + de menos (of less)"
+
+
+def test_literal_breakdown_defaults_to_empty():
+    matched = match_spans("comer", [{"surface": "comer", "gloss": "to eat"}])
+    assert matched[0].literal == ""
+
+
 def test_repeated_surface_text_resolves_each_occurrence_separately():
     text = "the cat and the cat"
     matched = match_spans(text, [{"surface": "cat", "gloss": "a"}, {"surface": "cat", "gloss": "b"}])

@@ -47,5 +47,10 @@
 
 .docked-popover-wrap--right .docked-popover {
   width: max-content;
-  max-width: 240px;
+  /* Capped relative to the viewport, not just a flat 240px - a bubble
+     docked close to the right edge (common on a narrow/mobile viewport,
+     where the bubble itself can span most of the width) left little room
+     for even 240px before overflowing; shrinking further there keeps the
+     popover actually fully visible instead of silently clipping. */
+  max-width: min(240px, 60vw);
 }

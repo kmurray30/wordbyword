@@ -272,6 +272,7 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
                     description: message.tokens[openWordIndex].note || undefined,
                   },
                 ]}
+                literal={message.tokens[openWordIndex].literal || undefined}
               />
             </DockedPopover>
           )}

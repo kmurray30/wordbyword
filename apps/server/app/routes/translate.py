@@ -58,6 +58,7 @@ def _build_draft_spans(text: str, raw_spans: list[dict[str, str]]) -> list[Draft
                 clickable=bool(m.translation.strip()),
                 candidates=[TranslateCandidate(translation=candidate_text, description=m.note)],
                 alternate_gloss=m.alternate_gloss,
+                literal=m.literal,
             )
         )
     return spans

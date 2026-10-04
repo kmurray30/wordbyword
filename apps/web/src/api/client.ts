@@ -68,18 +68,34 @@ export type CoachStreamEvent =
   | { type: "translations"; data: CoachTranslationsEvent }
   | { type: "error"; data: CoachErrorEvent };
 
-function parseSseBlock(block: string): CoachStreamEvent | null {
-  let eventName = "";
-  let dataLine = "";
-  for (const line of block.split("\n")) {
-    if (line.startsWith("event:")) eventName = line.slice("event:".length).trim();
-    else if (line.startsWith("data:")) dataLine = line.slice("data:".length).trim();
+// Reads any `event: <name>\ndata: <json>\n\n`-framed SSE response body
+// incrementally, yielding each raw (name, data-string) pair as soon as its
+// block completes - shared by every streaming endpoint below (coachDraftStream,
+// chatTurnStream) so the \n\n-delimited buffering/decoding logic exists in
+// exactly one place. Each caller parses `data` into its own event union and
+// filters `event` to the names it knows about.
+async function* readServerSentEvents(response: Response): AsyncGenerator<{ event: string; data: string }> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      let eventName = "";
+      let dataLine = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) eventName = line.slice("event:".length).trim();
+        else if (line.startsWith("data:")) dataLine = line.slice("data:".length).trim();
+      }
+      if (dataLine) yield { event: eventName, data: dataLine };
+    }
   }
-  if (!dataLine) return null;
-  if (eventName === "core" || eventName === "translations" || eventName === "error") {
-    return { type: eventName, data: JSON.parse(dataLine) } as CoachStreamEvent;
-  }
-  return null;
 }
 
 // Reads the coaching response's SSE stream incrementally, yielding each
@@ -100,19 +116,50 @@ async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal):
     const detail = response.body ? await response.text() : "";
     throw new Error(`/translate/coach failed (${response.status}): ${detail}`);
   }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buffer.indexOf("\n\n")) !== -1) {
-      const block = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      const event = parseSseBlock(block);
-      if (event) yield event;
+  for await (const { event, data } of readServerSentEvents(response)) {
+    if (event === "core" || event === "translations" || event === "error") {
+      yield { type: event, data: JSON.parse(data) } as CoachStreamEvent;
+    }
+  }
+}
+
+// /chat/turn/stream streams Server-Sent Events rather than a single JSON
+// response (see app/routes/chat.py's take_turn_stream) - these mirror app/
+// schemas.py's ChatTurnChunkEvent/ChatTurnErrorEvent by hand, same as the
+// coach types above; the "done" event reuses ChatTurnResponse unchanged,
+// since its shape is already exactly what /chat/turn itself returns.
+export interface ChatTurnChunkEvent {
+  delta: string;
+}
+
+export interface ChatTurnErrorEvent {
+  message: string;
+}
+
+export type ChatTurnStreamEvent =
+  | { type: "chunk"; data: ChatTurnChunkEvent }
+  | { type: "done"; data: ChatTurnResponse }
+  | { type: "error"; data: ChatTurnErrorEvent };
+
+// Same turn as api.chatTurn, but the reply streams in as it's generated -
+// "chunk" events carry each text delta for a live typing-style display;
+// once generation finishes, one "done" event carries the exact same
+// ChatTurnResponse shape the non-streaming call returns (glosses, word-bank
+// updates and persistence all already happened server-side by then).
+async function* chatTurnStream(body: ChatTurnRequest, signal?: AbortSignal): AsyncGenerator<ChatTurnStreamEvent> {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/chat/turn/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    const detail = response.body ? await response.text() : "";
+    throw new Error(`/chat/turn/stream failed (${response.status}): ${detail}`);
+  }
+  for await (const { event, data } of readServerSentEvents(response)) {
+    if (event === "chunk" || event === "done" || event === "error") {
+      yield { type: event, data: JSON.parse(data) } as ChatTurnStreamEvent;
     }
   }
 }
@@ -251,6 +298,7 @@ export const api = {
   interpretInput: (body: InterpretInputRequest) =>
     post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", body),
   coachDraftStream,
+  chatTurnStream,
   rewardEvent: (body: RewardEventRequest) =>
     post<RewardEventRequest, RewardEventResponse>("/events/reward", body),
   speak,
