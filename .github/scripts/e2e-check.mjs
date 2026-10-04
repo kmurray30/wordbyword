@@ -114,7 +114,7 @@ async function chatTurn(message) {
   if (!data.text || data.text.trim().length === 0) {
     fail(`/chat/turn (${JSON.stringify(message)}) returned 200 but empty text: ${JSON.stringify(data)}`);
   }
-  return { elapsed, text: data.text, tokenCount: data.tokens?.length ?? 0 };
+  return { elapsed, text: data.text, tokens: data.tokens ?? [] };
 }
 
 async function checkBackendDirect() {
@@ -124,11 +124,32 @@ async function checkBackendDirect() {
   console.log("  health OK");
 
   console.log(`[1/6] Sending a direct /chat/turn request (session ${TEST_SESSION_ID}, up to ${CHAT_TIMEOUT_MS / 1000}s) ...`);
-  const { elapsed, text, tokenCount } = await chatTurn("Hola");
+  const { elapsed, text, tokens } = await chatTurn("Cuéntame sobre tu familia y tu mejor amigo.");
   console.log(`  OK in ${elapsed}ms - reply: ${JSON.stringify(text)}`);
-  console.log(`  tokens: ${tokenCount}`);
+  console.log(`  tokens: ${tokens.length}`);
   if (elapsed > 6000) {
     console.log(`  (!) /chat/turn took ${elapsed}ms - that's NOT expected for a hosted API call`);
+  }
+
+  // gloss_reply's span-list rewrite asks the model to gloss EVERY word,
+  // including short function words (y, mi, el, la, de, que, ...) - a
+  // regression here (e.g. too tight a max_tokens budget truncating the
+  // JSON and silently dropping every gloss in the message) reads live as
+  // "lots of words aren't clickable", not a clean failure, so this checks
+  // coverage directly rather than just that SOME token got a gloss. Not
+  // 100% - an occasional single word slipping through on a given sample
+  // isn't itself a regression - but a wide miss is.
+  const alphabetic = tokens.filter((t) => /[a-zA-Zá-úñÁ-ÚÑ]/.test(t.surface));
+  const glossed = alphabetic.filter((t) => t.gloss && t.gloss.trim());
+  const coverage = alphabetic.length > 0 ? glossed.length / alphabetic.length : 1;
+  console.log(
+    `  gloss coverage: ${glossed.length}/${alphabetic.length} words (${(coverage * 100).toFixed(0)}%)` +
+      (alphabetic.length > glossed.length
+        ? ` - missing: ${JSON.stringify(alphabetic.filter((t) => !t.gloss || !t.gloss.trim()).map((t) => t.surface))}`
+        : ""),
+  );
+  if (coverage < 0.7) {
+    fail(`gloss coverage too low (${(coverage * 100).toFixed(0)}%) - gloss_reply likely failed/truncated for this reply`);
   }
 
   // The chat turn above only succeeds if the model server is actually up -
