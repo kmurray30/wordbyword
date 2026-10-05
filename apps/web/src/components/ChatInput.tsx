@@ -776,7 +776,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
           ref={textareaRef}
           className="chat-input__textarea"
           value={value}
-          placeholder="Escribe en español... (hover, tap, or select text for a translation)"
+          placeholder="Type your reply - mix in English for words you don't know, we'll help"
           onChange={(e) => handleValueChange(e.target.value)}
           onSelect={handleTextareaSelect}
           onTouchStart={handleTextareaTouchStart}

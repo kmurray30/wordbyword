@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api/client";
 import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
@@ -31,6 +31,11 @@ function App() {
   // effect against text that's still incomplete.
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  // Clear chat + the voice picker used to sit directly in the header,
+  // taking up a full extra row under the title - folded into this
+  // dropdown instead to keep the header to one line.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const [voices, setVoices] = useState<string[]>([]);
   const [voice, setVoice] = useState<string | null>(() => {
     try {
@@ -77,6 +82,15 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [menuOpen]);
+
   const handleClear = () => {
     if (clearing) return;
     setClearing(true);
@@ -85,6 +99,7 @@ function App() {
       .then(() => setMessages([]))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setClearing(false));
+    setMenuOpen(false);
   };
 
   const handleVoiceChange = (next: string) => {
@@ -126,22 +141,35 @@ function App() {
     <div className="app">
       <header className="app__header">
         <h1>wordbyword</h1>
-        <p>Chat in Spanish. Hover any word for a translation.</p>
-        <div className="app__header-controls">
-          {voices.length > 0 && voice && (
-            <div className="app__voice-picker">
-              Voice:{" "}
-              <SegmentedControl
-                value={voice}
-                onChange={handleVoiceChange}
-                options={voices.map((v) => ({ value: v, label: voiceLabel(v) }))}
-              />
+        <div className="app__menu" ref={menuRef}>
+          <button
+            type="button"
+            className="app__menu-toggle"
+            onClick={() => setMenuOpen((open) => !open)}
+            aria-label="Menu"
+            aria-expanded={menuOpen}
+            aria-haspopup="true"
+          >
+            ☰
+          </button>
+          {menuOpen && (
+            <div className="app__menu-dropdown">
+              {voices.length > 0 && voice && (
+                <div className="app__voice-picker">
+                  Voice:{" "}
+                  <SegmentedControl
+                    value={voice}
+                    onChange={handleVoiceChange}
+                    options={voices.map((v) => ({ value: v, label: voiceLabel(v) }))}
+                  />
+                </div>
+              )}
+              {messages.length > 0 && (
+                <button type="button" className="app__clear-chat" onClick={handleClear} disabled={clearing}>
+                  {clearing ? "Clearing…" : "Clear chat"}
+                </button>
+              )}
             </div>
-          )}
-          {messages.length > 0 && (
-            <button type="button" className="app__clear-chat" onClick={handleClear} disabled={clearing}>
-              {clearing ? "Clearing…" : "Clear chat"}
-            </button>
           )}
         </div>
       </header>

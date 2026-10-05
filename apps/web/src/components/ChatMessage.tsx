@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { TokenAnnotation } from "../api/client";
+import type { DraftSpan, TokenAnnotation } from "../api/client";
 import { joinTokens } from "../lib/spacing";
 import { diffRawWords, pickDiffReference, tokenizeSegments } from "../lib/wordDiff";
 import { DockedPopover } from "./DockedPopover";
 import { TranslatePopover } from "./TranslatePopover";
+import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
@@ -98,6 +99,33 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
   const [userNative, setUserNative] = useState<string | null>(null);
   const [userTarget, setUserTarget] = useState<string | null>(null);
   const [userInterpreting, setUserInterpreting] = useState(false);
+
+  // Per-word/group glossing for the learner's OWN sent message - same
+  // backend call (tag_draft via /translate/gloss-spans) the chat input's
+  // own hover-translate uses on a still-being-typed draft, reused here
+  // read-only on the final, already-sent text. Lazy (fetched once on the
+  // first word click, not eagerly for every message) since it's a real
+  // LLM call, same convention as the input's own ensureGlossSpans.
+  const [userSpans, setUserSpans] = useState<DraftSpan[] | null>(null);
+  const [userSpansLoading, setUserSpansLoading] = useState(false);
+  // The raw character offset of the clicked word, re-resolved against
+  // userSpans on every render - mirrors ChatInput's openOffset: a word
+  // clicked before userSpans has loaded can still resolve to a wider
+  // multi-word group once it does, without re-clicking.
+  const [openUserOffset, setOpenUserOffset] = useState<number | null>(null);
+
+  const ensureUserSpans = () => {
+    if (userSpans !== null || userSpansLoading) return;
+    setUserSpansLoading(true);
+    api
+      .glossSpans({ text: message.text })
+      .then((res) => setUserSpans(res.spans))
+      .catch(() => setUserSpans([]))
+      .finally(() => setUserSpansLoading(false));
+  };
+
+  const openUserSpan =
+    openUserOffset !== null ? userSpans?.find((s) => openUserOffset >= s.start && openUserOffset < s.end) : undefined;
 
   useEffect(() => {
     if (message.role !== "assistant" || !message.tokens || message.fromHistory) return;
@@ -194,34 +222,50 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
   const hasTokens = !!message.tokens && message.tokens.length > 0;
   const spaced = hasTokens ? joinTokens(message.tokens!.map((t) => t.surface)) : null;
 
-  // Underlines words in the raw bubble that don't appear in either
-  // corrected version - a lightweight "this looked off" cue, not a full
-  // spell checker. Skipped until both translations are in (or if either
-  // failed), and for accent-only differences (see wordDiff.ts).
-  const userTypoSegments = useMemo(() => {
+  // One segment per word/non-word run of the raw typed message, each
+  // carrying its own character offsets (for matching against userSpans
+  // once that lazy fetch resolves - see openUserSpan) and whether it's
+  // "flagged": looks different from both corrected versions, a
+  // lightweight "this looked off" cue, not a full spell checker. Flagging
+  // is skipped (flagged stays false throughout) until both corrections are
+  // in, or if either failed, or for an accent-only difference (see
+  // wordDiff.ts) - offsets are still computed regardless, since every word
+  // is clickable from the start independent of whether flagging data has
+  // arrived yet.
+  const userWordSegments = useMemo(() => {
     if (message.role !== "user") return null;
-    if (userNative === null || userTarget === null) return null;
-    if (userNative === TRANSLATION_FAILED || userTarget === TRANSLATION_FAILED) return null;
 
     const rawSegments = tokenizeSegments(message.text);
     const rawWords = rawSegments.filter((s) => s.isWord).map((s) => s.text);
-    if (rawWords.length === 0) return null;
 
-    const nativeWords = tokenizeSegments(userNative)
-      .filter((s) => s.isWord)
-      .map((s) => s.text);
-    const targetWords = tokenizeSegments(userTarget)
-      .filter((s) => s.isWord)
-      .map((s) => s.text);
-    const reference = pickDiffReference(rawWords, nativeWords, targetWords);
-    const matched = diffRawWords(rawWords, reference);
+    let matched: boolean[] | null = null;
+    if (
+      rawWords.length > 0 &&
+      userNative !== null &&
+      userTarget !== null &&
+      userNative !== TRANSLATION_FAILED &&
+      userTarget !== TRANSLATION_FAILED
+    ) {
+      const nativeWords = tokenizeSegments(userNative)
+        .filter((s) => s.isWord)
+        .map((s) => s.text);
+      const targetWords = tokenizeSegments(userTarget)
+        .filter((s) => s.isWord)
+        .map((s) => s.text);
+      const reference = pickDiffReference(rawWords, nativeWords, targetWords);
+      matched = diffRawWords(rawWords, reference);
+    }
 
+    let cursor = 0;
     let wordIndex = 0;
     return rawSegments.map((seg) => {
-      if (!seg.isWord) return { text: seg.text, flagged: false };
-      const flagged = !matched[wordIndex];
+      const start = cursor;
+      const end = start + seg.text.length;
+      cursor = end;
+      if (!seg.isWord) return { text: seg.text, start, end, isWord: false, flagged: false };
+      const flagged = matched ? !matched[wordIndex] : false;
       wordIndex++;
-      return { text: seg.text, flagged };
+      return { text: seg.text, start, end, isWord: true, flagged };
     });
   }, [message.role, message.text, userNative, userTarget]);
 
@@ -250,10 +294,20 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
                 />
               </span>
             ))
-          ) : userTypoSegments ? (
-            userTypoSegments.map((seg, i) =>
-              seg.flagged ? (
-                <span key={i} className="chat-message__typo" title="Looks different from the corrected version">
+          ) : userWordSegments ? (
+            userWordSegments.map((seg, i) =>
+              seg.isWord ? (
+                <span
+                  key={i}
+                  className={`word-token${openUserOffset === seg.start ? " word-token--active" : ""}${
+                    seg.flagged ? " chat-message__typo" : ""
+                  }`}
+                  title={seg.flagged ? "Looks different from the corrected version" : undefined}
+                  onClick={() => {
+                    ensureUserSpans();
+                    setOpenUserOffset((cur) => (cur === seg.start ? null : seg.start));
+                  }}
+                >
                   {seg.text}
                 </span>
               ) : (
@@ -324,6 +378,26 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
               </>
             )}
           </div>
+        )}
+        {openUserOffset !== null && (
+          // Docked below the WHOLE column (after the translation rows
+          // above, if those are showing too), not nested inside the
+          // bubble - see Fix 1's own history on this component for why: an
+          // absolutely-positioned popover nested directly in the bubble
+          // doesn't reserve layout space, so it would paint over the
+          // actions row/translations beneath it instead of pushing them
+          // down. "below" rather than "right" since user bubbles sit
+          // flush against the right edge of the viewport - growing
+          // further right would run off-screen.
+          <DockedPopover position="below">
+            <WordCandidatesPopover
+              candidates={openUserSpan?.candidates ?? []}
+              clickable={false}
+              onSelect={() => {}}
+              loading={userSpansLoading}
+              literal={openUserSpan?.literal}
+            />
+          </DockedPopover>
         )}
       </div>
     </div>
