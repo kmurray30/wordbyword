@@ -776,7 +776,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
           ref={textareaRef}
           className="chat-input__textarea"
           value={value}
-          placeholder="Type your reply - mix in English for words you don't know, we'll help"
+          placeholder="Type here - mix in English if stuck, we'll help"
           onChange={(e) => handleValueChange(e.target.value)}
           onSelect={handleTextareaSelect}
           onTouchStart={handleTextareaTouchStart}

@@ -141,6 +141,7 @@ function App() {
     <div className="app">
       <header className="app__header">
         <h1>wordbyword</h1>
+        <p className="app__tagline">Chat in Spanish, click any word to learn it</p>
         <div className="app__menu" ref={menuRef}>
           <button
             type="button"

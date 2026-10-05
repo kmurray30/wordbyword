@@ -330,6 +330,25 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
               />
             </DockedPopover>
           )}
+          {openUserOffset !== null && (
+            // Mirrors the assistant popover right above: nested directly in
+            // the bubble, docked sideways rather than "below" - growing
+            // vertically here would overlap the actions/translations rows
+            // beneath it (absolutely-positioned content reserves no layout
+            // space of its own - see Fix 1's history on this component).
+            // "left" rather than "right" since a user bubble sits flush
+            // against the right edge of the viewport - "right" would run
+            // off-screen there.
+            <DockedPopover position="left">
+              <WordCandidatesPopover
+                candidates={openUserSpan?.candidates ?? []}
+                clickable={false}
+                onSelect={() => {}}
+                loading={userSpansLoading}
+                literal={openUserSpan?.literal}
+              />
+            </DockedPopover>
+          )}
         </div>
         <div className="chat-message__actions">
           <button
@@ -378,26 +397,6 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
               </>
             )}
           </div>
-        )}
-        {openUserOffset !== null && (
-          // Docked below the WHOLE column (after the translation rows
-          // above, if those are showing too), not nested inside the
-          // bubble - see Fix 1's own history on this component for why: an
-          // absolutely-positioned popover nested directly in the bubble
-          // doesn't reserve layout space, so it would paint over the
-          // actions row/translations beneath it instead of pushing them
-          // down. "below" rather than "right" since user bubbles sit
-          // flush against the right edge of the viewport - growing
-          // further right would run off-screen.
-          <DockedPopover position="below">
-            <WordCandidatesPopover
-              candidates={openUserSpan?.candidates ?? []}
-              clickable={false}
-              onSelect={() => {}}
-              loading={userSpansLoading}
-              literal={openUserSpan?.literal}
-            />
-          </DockedPopover>
         )}
       </div>
     </div>

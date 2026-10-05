@@ -34,6 +34,15 @@
   padding-left: 8px;
 }
 
+/* Mirror of "right" - grows off the anchor's own LEFT edge, for an anchor
+   (a right-aligned user chat bubble) that sits flush against the right
+   edge of the viewport, where "right" would run off-screen. */
+.docked-popover-wrap--left {
+  top: 0;
+  right: 100%;
+  padding-right: 8px;
+}
+
 .docked-popover {
   pointer-events: auto;
 }
@@ -45,12 +54,13 @@
   margin: 0 12px;
 }
 
-.docked-popover-wrap--right .docked-popover {
+.docked-popover-wrap--right .docked-popover,
+.docked-popover-wrap--left .docked-popover {
   width: max-content;
   /* Capped relative to the viewport, not just a flat 240px - a bubble
-     docked close to the right edge (common on a narrow/mobile viewport,
-     where the bubble itself can span most of the width) left little room
-     for even 240px before overflowing; shrinking further there keeps the
+     docked close to the edge (common on a narrow/mobile viewport, where
+     the bubble itself can span most of the width) left little room for
+     even 240px before overflowing; shrinking further there keeps the
      popover actually fully visible instead of silently clipping. */
   max-width: min(240px, 60vw);
 }

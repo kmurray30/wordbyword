@@ -10,9 +10,13 @@ interface DockedPopoverProps {
   // edge instead - used for the help button's suggestion, which reads
   // better out of the way of the draft itself. "right" docks flush
   // against the right edge instead of growing the layout vertically -
-  // used for the chat bubble's per-word gloss, which otherwise stacked
-  // underneath the bubble's own full-message translation rows.
-  position?: "above" | "below" | "right";
+  // used for an assistant chat bubble's per-word gloss (those bubbles are
+  // left-aligned, with open room to their right), which otherwise stacked
+  // underneath the bubble's own full-message translation rows. "left" is
+  // the mirror of "right" - for a user bubble's own per-word gloss, since
+  // those bubbles sit flush against the right edge of the viewport;
+  // docking "right" there would run off-screen.
+  position?: "above" | "below" | "right" | "left";
   // For a hover-triggered popover (the word-tap one, which still opens on
   // desktop hover): docking it away from the hovered word/bubble means the
   // mouse now has to travel there, almost always leaving the original
@@ -44,7 +48,7 @@ export function DockedPopover({ children, position = "above", onMouseEnter, onMo
   // popover only mounts once per open), so this doesn't fight the user if
   // they scroll away afterward.
   useEffect(() => {
-    if (position === "below" || position === "right") wrapRef.current?.scrollIntoView({ block: "nearest" });
+    if (position === "below" || position === "right" || position === "left") wrapRef.current?.scrollIntoView({ block: "nearest" });
   }, [position]);
 
   return (

@@ -85,6 +85,10 @@
 
 .chat-input__textarea::placeholder {
   color: #8b93a6;
+  /* Smaller than the real typed text (font: inherit above) - only the
+     placeholder, so it fits this box's default single-line height
+     instead of wrapping/clipping. */
+  font-size: 0.85em;
 }
 
 /* Direct child only - the Send button. A plain descendant selector here
