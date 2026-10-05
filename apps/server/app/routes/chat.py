@@ -30,6 +30,18 @@ def _sse(event: str, data: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
+# Reported live: the reply arrived all at once instead of streaming in -
+# consistent with a reverse proxy between the browser and this server
+# (Railway's edge, in production) buffering the whole SSE response before
+# forwarding it, rather than this server failing to flush each chunk as
+# it's yielded (uvicorn does that correctly on its own - confirmed via a
+# direct local stream). Cache-Control/Connection are standard for SSE;
+# X-Accel-Buffering is nginx's own directive to disable response
+# buffering, but several other reverse proxies honor it by the same
+# convention since it's become a de facto standard for exactly this
+# problem - cheap to send even if Railway's edge doesn't recognize it.
+_SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+
 HISTORY_TURNS = 10
 
 
@@ -220,6 +232,17 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
     session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
 
     def events():
+        # A leading SSE comment line (any line starting with ":" - part of
+        # the spec, ignored by every conforming client, including this
+        # app's own readServerSentEvents) padded well past a typical
+        # reverse-proxy buffering threshold (commonly ~1-4KB). Some proxies
+        # hold back ANY response below that size regardless of the
+        # no-buffering headers above, which only ask nicely - this instead
+        # forces an actual flush right at the start, before the real
+        # (small, one-token-at-a-time) chunks below would ever cross that
+        # threshold on their own.
+        yield ": " + ("padding " * 512) + "\n\n"
+
         chunks: list[str] = []
         try:
             for delta in model_chat_stream(messages):
@@ -244,4 +267,4 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
         result = _gloss_and_persist_reply(session, req.session_id, reply_text)
         yield _sse("done", result.model_dump_json())
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)

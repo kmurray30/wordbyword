@@ -57,6 +57,13 @@ def _run(session, deltas):
         if not block.strip():
             continue
         lines = block.splitlines()
+        # A real SSE client ignores a comment line (starts with ":", no
+        # "event:"/"data:" pair) same as it would any other unrecognized
+        # line - the route's leading anti-buffering padding (see
+        # take_turn_stream) is exactly this, so it's skipped the same way
+        # here rather than asserted on as if it were a real event.
+        if not any(line.startswith("event:") for line in lines):
+            continue
         name = next(line[len("event:") :].strip() for line in lines if line.startswith("event:"))
         data = next(line[len("data:") :].strip() for line in lines if line.startswith("data:"))
         parsed.append((name, json.loads(data)))
@@ -71,6 +78,29 @@ def test_chunks_then_done_carries_the_full_reply():
     assert [d["delta"] for _, d in parsed[:3]] == ["Hola", ", ", "¿qué tal?"]
     assert parsed[-1][0] == "done"
     assert parsed[-1][1]["text"] == "Hola, ¿qué tal?"
+
+
+def test_response_discourages_proxy_buffering():
+    # Reported live: the reply arrived all at once instead of token-by-
+    # token, consistent with a reverse proxy between the browser and this
+    # server buffering the whole SSE response - these headers are the
+    # standard hint to not do that.
+    response, _ = _run(_session(), ["Hola"])
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-accel-buffering"] == "no"
+
+
+def test_leading_padding_is_large_enough_to_cross_common_proxy_buffer_thresholds():
+    with (
+        patch("app.routes.chat.model_chat_stream", return_value=iter(["Hola"])),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+    ):
+        response = take_turn_stream(ChatTurnRequest(session_id="s1", message="hola"), session=_session())
+        raw = "".join(asyncio.run(_collect(response.body_iterator)))
+
+    first_block = raw.split("\n\n", 1)[0]
+    assert first_block.startswith(":")
+    assert len(first_block) >= 4096
 
 
 def test_model_unavailable_yields_an_error_event_with_no_chunks():

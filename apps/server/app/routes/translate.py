@@ -68,6 +68,14 @@ def _sse(event: str, data: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
+# See app/routes/chat.py's own _SSE_HEADERS for why: a reverse proxy
+# between the browser and this server (Railway's edge, in production) can
+# buffer a whole SSE response before forwarding it rather than relaying
+# each chunk as it's yielded - these are the standard headers that hint a
+# proxy to not do that.
+_SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+
+
 @router.post("/text", response_model=TranslateTextResponse)
 def translate_text(req: TranslateTextRequest) -> TranslateTextResponse:
     try:
@@ -146,7 +154,7 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
         except llm_translate.TranslationUnavailableError as exc:
             yield _sse("error", CoachErrorEvent(message=str(exc)).model_dump_json())
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/tag-input", response_model=TagInputResponse)
