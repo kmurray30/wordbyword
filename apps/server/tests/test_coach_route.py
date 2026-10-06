@@ -26,7 +26,7 @@ async def _collect(body_iterator):
     return chunks
 
 
-def _run(text: str, events: list[tuple[str, object]]):
+def _run(text: str, events: list[tuple]):
     # The route function only builds the StreamingResponse - its generator
     # is lazy and isn't actually iterated (and coach_draft_stream isn't
     # actually called) until body_iterator is consumed below, so the
@@ -35,8 +35,7 @@ def _run(text: str, events: list[tuple[str, object]]):
         response = coach_draft(CoachDraftRequest(text=text, session_id="s1"), session=_session())
         raw = "".join(asyncio.run(_collect(response.body_iterator)))
     # Parse the SSE wire format ("event: <name>\ndata: <json>\n\n") back
-    # into (name, parsed_json) pairs, same shape as the mocked events
-    # list above, so assertions can compare structurally.
+    # into (name, parsed_json) pairs.
     parsed = []
     for block in raw.split("\n\n"):
         if not block.strip():
@@ -48,70 +47,88 @@ def _run(text: str, events: list[tuple[str, object]]):
     return response, parsed
 
 
-def test_meaning_chunk_events_are_streamed_before_core():
+def test_clean_verdict_sse_sequence():
     events = [
-        ("meaning_chunk", "I want "),
-        ("meaning_chunk", "to go to the beach."),
-        ("core", {"meaning": "I want to go to the beach.", "feedback": "", "options": [("neutral", "Quiero ir a la playa.")]}),
+        ("verdict", "clean"),
+        ("meaning_chunk", "Hello "),
+        ("meaning_chunk", "there"),
+        ("meaning_complete", "Hello there"),
+    ]
+    response, parsed = _run("hola", events)
+
+    assert response.media_type == "text/event-stream"
+    assert [name for name, _ in parsed] == ["verdict", "meaning_chunk", "meaning_chunk", "meaning_complete"]
+    assert parsed[0][1] == {"verdict": "clean"}
+    assert parsed[1][1] == {"delta": "Hello "}
+    assert parsed[3][1] == {"meaning": "Hello there"}
+
+
+def test_minor_verdict_sse_sequence():
+    events = [
+        ("verdict", "minor"),
+        ("meaning_chunk", "You mean hello"),
+        ("meaning_complete", "You mean hello"),
+        ("suggestion_chunk", "Hola, "),
+        ("suggestion_chunk", "¿cómo estás?"),
+        ("suggestion_complete", "Hola, ¿cómo estás?"),
+    ]
+    response, parsed = _run("hola como estas", events)
+
+    assert [name for name, _ in parsed] == [
+        "verdict",
+        "meaning_chunk",
+        "meaning_complete",
+        "suggestion_chunk",
+        "suggestion_chunk",
+        "suggestion_complete",
+    ]
+    assert parsed[0][1] == {"verdict": "minor"}
+    assert parsed[-1][1] == {"suggestion": "Hola, ¿cómo estás?"}
+
+
+def test_fix_verdict_sse_sequence_is_interleaved_per_option():
+    events = [
+        ("verdict", "fix"),
+        ("meaning_chunk", "I want to go to the beach"),
+        ("meaning_complete", "I want to go to the beach"),
+        ("option_spanish_chunk", 0, "Quiero ir a la playa."),
+        ("option_spanish_complete", 0, "Quiero ir a la playa."),
+        ("option_english_chunk", 0, "I want to go to the beach."),
+        ("option_english_complete", 0, "I want to go to the beach."),
+        ("option_spanish_chunk", 1, "Quiero ir a la playa, ¿va?"),
+        ("option_spanish_complete", 1, "Quiero ir a la playa, ¿va?"),
+        ("option_english_chunk", 1, "I want to go to the beach, right?"),
+        ("option_english_complete", 1, "I want to go to the beach, right?"),
     ]
     response, parsed = _run("quiero ir playa", events)
 
-    assert [name for name, _ in parsed] == ["meaning_chunk", "meaning_chunk", "core"]
-    assert parsed[0][1]["delta"] == "I want "
-    assert parsed[1][1]["delta"] == "to go to the beach."
+    names = [name for name, _ in parsed]
+    assert names == [
+        "verdict",
+        "meaning_chunk",
+        "meaning_complete",
+        "option_chunk",
+        "option_complete",
+        "option_chunk",
+        "option_complete",
+        "option_chunk",
+        "option_complete",
+        "option_chunk",
+        "option_complete",
+    ]
+    # Interleaved order confirmed: option 0's spanish+english complete
+    # before option 1's spanish even starts, not all-spanish-then-all-
+    # english.
+    option_complete_events = [data for name, data in parsed if name == "option_complete"]
+    assert option_complete_events == [
+        {"index": 0, "field": "spanish", "text": "Quiero ir a la playa."},
+        {"index": 0, "field": "english", "text": "I want to go to the beach."},
+        {"index": 1, "field": "spanish", "text": "Quiero ir a la playa, ¿va?"},
+        {"index": 1, "field": "english", "text": "I want to go to the beach, right?"},
+    ]
 
 
-def test_core_event_is_streamed_with_options():
-    core = {
-        "meaning": "I want to go to the beach tomorrow.",
-        "feedback": "Good attempt.",
-        "options": [("neutral", "Quiero ir a la playa mañana.")],
-    }
-    response, parsed = _run("quiero playa manana ir", [("core", core)])
-
-    assert response.media_type == "text/event-stream"
-    assert len(parsed) == 1
-    name, data = parsed[0]
-    assert name == "core"
-    assert data["meaning"] == "I want to go to the beach tomorrow."
-    assert data["options"] == [{"formality": "neutral", "spanish": "Quiero ir a la playa mañana.", "english": "", "spans": []}]
-
-
-def test_translations_event_matches_spans_against_each_options_own_text():
-    core = {
-        "meaning": "x",
-        "feedback": "",
-        "options": [("neutral", "Quiero ir a la playa.")],
-    }
-    translations = [{"english": "I want to go to the beach.", "spans": [{"surface": "Quiero", "gloss": "I want"}]}]
-    response, parsed = _run("quiero ir playa", [("core", core), ("translations", translations)])
-
-    assert [name for name, _ in parsed] == ["core", "translations"]
-    option = parsed[1][1]["options"][0]
-    assert option["english"] == "I want to go to the beach."
-    assert option["spans"][0]["surface"] == "Quiero"
-    assert option["spans"][0]["start"] == 0  # "Quiero" is the first word of its own option text
-
-
-def test_translations_event_short_by_an_option_fills_in_empty():
-    # The model's PART 2 can come back with fewer options than PART 1 (a
-    # garbled/incomplete entry got dropped) - every PART-1 option must
-    # still appear in the translations event, just with nothing attached.
-    core = {
-        "meaning": "x",
-        "feedback": "",
-        "options": [("neutral", "Uno."), ("casual", "Dos.")],
-    }
-    translations = [{"english": "One.", "spans": []}]
-    response, parsed = _run("uno dos", [("core", core), ("translations", translations)])
-
-    options = parsed[1][1]["options"]
-    assert options[0]["english"] == "One."
-    assert options[1]["english"] == ""
-    assert options[1]["spans"] == []
-
-
-def test_core_failure_yields_an_error_event():
+def test_coach_failure_yields_an_error_event():
     with patch(
         "app.routes.translate.llm_translate.coach_draft_stream",
         side_effect=TranslationUnavailableError("model is down"),

@@ -31,7 +31,7 @@ OPENAI_TRANSLATE_MODEL = os.environ.get("OPENAI_TRANSLATE_MODEL", OPENAI_CHAT_MO
 # max_completion_tokens over the classic max_tokens field) whose internal
 # reasoning tokens count against this SAME budget before any visible output
 # - see llm_translate.py's _TAG_DRAFT_MAX_TOKENS/_GLOSS_REPLY_MAX_TOKENS/
-# _COACH_TRANSLATIONS_MAX_TOKENS comments for the first time this bit:
+# _COACH_STREAM_MAX_TOKENS comments for the first time this bit:
 # those calls' heavier structured-JSON prompts needed a much bigger budget
 # (1600-3000) for the exact same reason. 300 mostly worked for a plain
 # conversational reply (much lower reasoning overhead than a multi-part

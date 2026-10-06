@@ -112,6 +112,22 @@
   cursor: default;
 }
 
+/* Lights up the instant the coach's "verdict" event comes back good
+   (clean or minor - see ChatInput.tsx's coachReady), well before the rest
+   of the check has finished streaming - a distinct color from the default
+   blue, not just a label change, so the learner sees it without having
+   to read the button text. Needs ".chat-input > button" in the selector
+   too (not just the modifier class alone) - that rule's own specificity
+   (one class + one element) would otherwise beat a bare single-class
+   selector and silently keep the background blue. */
+.chat-input > button.chat-input__send--ready {
+  background: #2fae5a;
+}
+
+.chat-input > button.chat-input__send--ready:hover {
+  background: #39c468;
+}
+
 /* The press-and-hold bubble for choosing the Send button's mode. */
 .send-mode-picker {
   position: relative;

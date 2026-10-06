@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { CoachOption, DraftSpan, DraftToken } from "../api/client";
+import type { DraftSpan, DraftToken } from "../api/client";
 import { CoachPopover } from "./CoachPopover";
 import { DockedPopover } from "./DockedPopover";
 import { SegmentedControl } from "./SegmentedControl";
@@ -35,6 +35,24 @@ const TAP_MOVE_TOLERANCE_PX = 10;
 // that departure closes (unmounts) the popover before the click ever
 // lands on it.
 const HOVER_CLOSE_DELAY_MS = 200;
+
+type CoachVerdict = "clean" | "minor" | "fix";
+type CoachPhase = "idle" | "loading" | "error";
+const FORMALITIES: CoachOptionState["formality"][] = ["neutral", "casual", "formal"];
+
+// One of a "fix" verdict's three suggestions - starts as an empty skeleton
+// entry the instant the verdict itself arrives (see fetchCoach below),
+// well before any of its own text has streamed in. `formality` is a fixed
+// positional label (index 0/1/2), never sent by the backend - matches
+// app.translate.llm_translate._COACH_FORMALITIES there. Exported for
+// CoachPopover.tsx's own props.
+export interface CoachOptionState {
+  formality: "neutral" | "casual" | "formal";
+  spanish: string;
+  spanishDone: boolean;
+  english: string;
+  englishDone: boolean;
+}
 
 interface Segment {
   text: string;
@@ -115,33 +133,33 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   // reset whenever a fresh gloss-spans fetch lands (a genuinely new
   // instance, offsets may no longer mean the same thing).
   const [altToggles, setAltToggles] = useState<Record<number, boolean>>({});
-  // The combined Send button's coaching-check result for the current draft -
-  // cleared
-  // whenever the draft text changes from typing/replacing a word
+  // The combined Send button's coaching-check state for the current draft -
+  // cleared whenever the draft text changes from typing/replacing a word
   // (handleValueChange below), same as the old draft-translation preview
-  // it replaced. NOT cleared by picking one of its own options (see
-  // handleSelectCoachOption) - the whole point of #9 is that the popover
-  // (and this cached result) survives a pick, so the learner can compare
-  // a different option afterward.
-  const [coachResult, setCoachResult] = useState<{
-    meaning: string;
-    feedback: string;
-    options: CoachOption[];
-  } | null>(null);
-  const [coachState, setCoachState] = useState<"idle" | "loading" | "error">("idle");
-  // The "you mean" restatement's live text, as "meaning_chunk" events
-  // stream it in - shown in place of the static "Thinking…" placeholder
-  // while coachState is still "loading" and coachResult hasn't arrived
-  // yet, for the same token-by-token "zipper" feel the chat reply itself
-  // already has (see api.coachDraftStream's docstring). Cleared on every
-  // fresh fetchCoach call; once "core" actually arrives, coachResult.meaning
-  // takes over as the source of truth and this is no longer read.
-  const [streamingMeaning, setStreamingMeaning] = useState("");
-  // True while the SAME streamed /translate/coach call's second phase
-  // (each option's own English translation + word-by-word breakdown) is
-  // still in flight - the options themselves (coachState above) are
-  // already usable before this clears.
-  const [coachTranslationsPending, setCoachTranslationsPending] = useState(false);
+  // it replaced. NOT cleared by picking one of a "fix" verdict's own
+  // options (see handleSelectCoachOption) - the whole point of #9 is that
+  // the popover survives a pick, so the learner can compare a different
+  // option afterward.
+  const [coachPhase, setCoachPhase] = useState<CoachPhase>("idle");
+  // Known the INSTANT the "verdict" event arrives - well before the rest
+  // of the check has finished streaming. This is what lets the Send
+  // button light up green right away (see coachReady below) instead of
+  // waiting for the full explanation/suggestions.
+  const [coachVerdict, setCoachVerdict] = useState<CoachVerdict | null>(null);
+  // The "you mean"/"did you mean" restatement's live text, streamed in via
+  // "meaning_chunk" events the same token-by-token "zipper" feel the chat
+  // reply itself already has (see api.coachDraftStream's docstring).
+  const [coachMeaning, setCoachMeaning] = useState("");
+  const [coachMeaningDone, setCoachMeaningDone] = useState(false);
+  // Only populated for a "minor" verdict - the single lightweight
+  // corrected-text suggestion, streamed the same way.
+  const [coachSuggestion, setCoachSuggestion] = useState("");
+  const [coachSuggestionDone, setCoachSuggestionDone] = useState(false);
+  // Only populated for a "fix" verdict - seeded with 3 empty skeleton
+  // entries the instant the verdict itself arrives (see fetchCoach), each
+  // one's spanish/english filling in independently as its own events
+  // stream in.
+  const [coachOptions, setCoachOptions] = useState<CoachOptionState[]>([]);
   // Which option the learner has most recently picked, if any - purely
   // for the popover's own "which one is this" highlight; applying it to
   // the draft happens immediately in handleSelectCoachOption, not here.
@@ -351,9 +369,13 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     // coaching result is now of stale text, so drop it (and stop
     // streaming one that's still in flight).
     coachAbortRef.current?.abort();
-    setCoachResult(null);
-    setCoachState("idle");
-    setCoachTranslationsPending(false);
+    setCoachPhase("idle");
+    setCoachVerdict(null);
+    setCoachMeaning("");
+    setCoachMeaningDone(false);
+    setCoachSuggestion("");
+    setCoachSuggestionDone(false);
+    setCoachOptions([]);
     setSelectedCoachOptionIndex(null);
   };
 
@@ -585,106 +607,171 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   };
 
   // The combined Send button's draft-coaching check (see handlePrimaryAction
-  // below) - reads the streamed /translate/coach SSE response as it
-  // arrives: the "core" event (feedback + the options themselves) lands
-  // first and is shown immediately; a "translations" event for the SAME
-  // underlying LLM call fills in each option's own English translation +
-  // word-by-word breakdown a bit later (see api.coachDraftStream's
-  // docstring). Always starts a fresh fetch - a draft that's already been
-  // checked (coachVerified below) skips this call entirely rather than
-  // re-running it, so callers that want the cached result left alone
-  // (clicking Send again on an already-checked draft) just don't call this.
+  // below) - reads the streamed /translate/coach SSE response field by
+  // field as it arrives (see api.coachDraftStream's own docstring for the
+  // full sequence): a "verdict" event lands FIRST, before anything else,
+  // and alone is enough to light the Send button green (see coachReady) -
+  // the meaning restatement, then (depending on the verdict) a single
+  // suggestion or three interleaved options stream in afterward. Always
+  // starts a fresh fetch - a draft that's already been checked
+  // (coachVerified below) skips this call entirely rather than re-running
+  // it, so callers that want the cached result left alone (clicking Send
+  // again on an already-checked draft) just don't call this.
   const fetchCoach = () => {
     if (!value.trim()) return;
     setCoachDismissed(false);
     coachAbortRef.current?.abort();
     const controller = new AbortController();
     coachAbortRef.current = controller;
-    setCoachResult(null);
-    setCoachState("loading");
-    setCoachTranslationsPending(false);
+    setCoachPhase("loading");
+    setCoachVerdict(null);
+    setCoachMeaning("");
+    setCoachMeaningDone(false);
+    setCoachSuggestion("");
+    setCoachSuggestionDone(false);
+    setCoachOptions([]);
     setSelectedCoachOptionIndex(null);
-    setStreamingMeaning("");
 
     (async () => {
       try {
         for await (const event of api.coachDraftStream({ text: value, session_id: sessionId }, controller.signal)) {
           if (controller.signal.aborted) return;
-          if (event.type === "meaning_chunk") {
-            setStreamingMeaning((prev) => prev + event.data.delta);
-          } else if (event.type === "core") {
-            setCoachResult({ meaning: event.data.meaning, feedback: event.data.feedback, options: event.data.options });
-            setCoachState("idle");
-            setCoachTranslationsPending(true);
-          } else if (event.type === "translations") {
-            setCoachResult((prev) => (prev ? { ...prev, options: event.data.options } : prev));
-            setCoachTranslationsPending(false);
-          } else if (event.type === "error") {
-            setCoachState("error");
-            setCoachTranslationsPending(false);
+          switch (event.type) {
+            case "verdict":
+              setCoachVerdict(event.data.verdict);
+              if (event.data.verdict === "fix") {
+                // Rendered as 3 skeleton boxes immediately, before any of
+                // their own content exists - see CoachPopover's "fix"
+                // branch.
+                setCoachOptions(
+                  FORMALITIES.map((formality) => ({ formality, spanish: "", spanishDone: false, english: "", englishDone: false })),
+                );
+              }
+              break;
+            case "meaning_chunk":
+              setCoachMeaning((prev) => prev + event.data.delta);
+              break;
+            case "meaning_complete":
+              setCoachMeaning(event.data.meaning);
+              setCoachMeaningDone(true);
+              break;
+            case "suggestion_chunk":
+              setCoachSuggestion((prev) => prev + event.data.delta);
+              break;
+            case "suggestion_complete":
+              setCoachSuggestion(event.data.suggestion);
+              setCoachSuggestionDone(true);
+              setCoachPhase("idle"); // the whole "minor" check is done
+              break;
+            case "option_chunk":
+              setCoachOptions((prev) =>
+                prev.map((opt, i) => {
+                  if (i !== event.data.index) return opt;
+                  return event.data.field === "spanish"
+                    ? { ...opt, spanish: opt.spanish + event.data.delta }
+                    : { ...opt, english: opt.english + event.data.delta };
+                }),
+              );
+              break;
+            case "option_complete":
+              setCoachOptions((prev) =>
+                prev.map((opt, i) => {
+                  if (i !== event.data.index) return opt;
+                  return event.data.field === "spanish"
+                    ? { ...opt, spanish: event.data.text, spanishDone: true }
+                    : { ...opt, english: event.data.text, englishDone: true };
+                }),
+              );
+              // The last field of the last option - the whole "fix" check
+              // is done. There's no explicit "all done" event (each field
+              // is independent, see coach_draft_stream's own docstring on
+              // graceful degradation), so this is inferred from position.
+              if (event.data.index === FORMALITIES.length - 1 && event.data.field === "english") setCoachPhase("idle");
+              break;
+            case "error":
+              setCoachPhase("error");
+              break;
           }
         }
+        // A "clean" verdict has nothing after "meaning_complete" to flip
+        // coachPhase on - catch that (and any other stream that just ends
+        // without a trailing completion event, e.g. a truncated one) once
+        // the stream itself is done. Already "idle"/"error" from inside
+        // the loop above is left alone.
+        if (!controller.signal.aborted) {
+          setCoachPhase((prev) => (prev === "loading" ? "idle" : prev));
+        }
       } catch {
-        if (!controller.signal.aborted) setCoachState("error");
-      } finally {
-        if (!controller.signal.aborted) setCoachTranslationsPending(false);
+        if (!controller.signal.aborted) setCoachPhase("error");
       }
     })();
   };
 
-  // Picking one of the coach's own suggestions must NOT close/clear the
-  // popover (see #9) - the learner can keep comparing other options
+  // Picking one of a "fix" verdict's own suggestions must NOT close/clear
+  // the popover (see #9) - the learner can keep comparing other options
   // afterward, so this bypasses handleValueChange's coach-clearing
   // entirely (applyValue only) and just records which option is now
-  // applied. When that option's own translations have already arrived,
-  // seeds the chat input's lazy gloss cache directly from them (same
-  // DraftSpan shape /translate/gloss-spans returns, already matched
-  // against this exact spanish text server-side) - hovering a word in
-  // the now-adopted suggestion shows its real translation immediately,
-  // no extra fetch. If they haven't arrived yet, leaves the gloss cache
-  // alone; the normal lazy fetch (ensureGlossSpans) takes over on the
-  // first hover, same as any other edit.
-  const handleSelectCoachOption = (option: CoachOption, index: number) => {
+  // applied. No word-by-word gloss data travels with the coach stream at
+  // all anymore (unlike the earlier version of this protocol) - clearing
+  // glossCache here just lets the EXISTING lazy ensureGlossSpans fetch
+  // pick up the newly-applied text on next hover, same as any other edit.
+  const handleSelectCoachOption = (option: CoachOptionState, index: number) => {
     applyValue(option.spanish);
     setSelectedCoachOptionIndex(index);
-    if (option.english || option.spans.length > 0) {
-      setGlossCache({ sourceText: option.spanish, spans: option.spans });
-      setAltToggles({});
-    }
+    setGlossCache(null);
+    setAltToggles({});
     textareaRef.current?.focus();
+  };
+
+  // A "minor" verdict's one-line fix, confirmed via the popover's own Send
+  // button - unlike a "clean" verdict (whose own confirm button just
+  // sends the draft verbatim via handleSend), this applies the corrected
+  // suggestion into the draft FIRST, since that's what's actually meant
+  // to be sent, not the original typo-ridden text.
+  const handleConfirmMinorSend = () => {
+    if (coachSuggestion) applyValue(coachSuggestion);
+    handleSend();
   };
 
   const handleRegenerateCoach = () => fetchCoach();
 
   // Hides the coach popover without losing a COMPLETED check's result -
-  // coachResult/coachState (and so coachVerified below) survive a dismiss,
-  // since the draft itself hasn't changed and is still just as checked as
-  // it was a moment ago. A check still LOADING has nothing worth keeping,
-  // so that case aborts and resets to idle/null instead - otherwise the
-  // button would be stuck waiting on a check nobody can see the result of.
+  // coachVerdict (and so coachVerified/coachReady below) survive a
+  // dismiss, since the draft itself hasn't changed and is still just as
+  // checked as it was a moment ago. A check still LOADING has nothing
+  // worth keeping, so that case aborts and resets to idle/null instead -
+  // otherwise the button would be stuck waiting on a check nobody can see
+  // the result of.
   const dismissCoach = () => {
-    if (coachState === "loading") {
+    if (coachPhase === "loading") {
       coachAbortRef.current?.abort();
-      setCoachState("idle");
-      setCoachResult(null);
+      setCoachPhase("idle");
+      setCoachVerdict(null);
     }
     setCoachDismissed(true);
     textareaRef.current?.focus();
   };
 
-  // True once a check has resolved for the CURRENT draft text with nothing
-  // left to do but send - either the model judged it clean, or the learner
-  // already picked/accepted a phrasing (handleSelectCoachOption, which
-  // deliberately leaves coachResult/coachState alone so this stays true).
-  // Any edit since (handleValueChange) clears coachResult, so this goes
-  // false again the moment the draft actually changes - exactly the
-  // "if you make any edits it will go back to check and send" behavior.
-  const coachVerified = coachState === "idle" && coachResult !== null;
-  const coachClean = coachResult !== null && coachResult.feedback.trim() === "";
+  // True the INSTANT the verdict itself is known good (clean OR minor) -
+  // well before the rest of the check has finished streaming. This is
+  // what lets the Send button light up green right away (see its
+  // className below) rather than waiting for coachVerified, which still
+  // waits for the WHOLE check to resolve before it's safe to actually
+  // send on a click.
+  const coachReady = coachVerdict === "clean" || coachVerdict === "minor";
+  // True once a check has fully resolved for the CURRENT draft text with
+  // nothing left to do but send - either the model judged it clean/minor,
+  // or the learner already picked/accepted a "fix" option
+  // (handleSelectCoachOption, which deliberately leaves coachVerdict alone
+  // so this stays true). Any edit since (handleValueChange) clears
+  // coachVerdict, so this goes false again the moment the draft actually
+  // changes - exactly the "if you make any edits it will go back to check
+  // and send" behavior.
+  const coachVerified = coachPhase === "idle" && coachVerdict !== null;
   const coachPopoverVisible =
     sendMode === "checkFirst" &&
     !coachDismissed &&
-    (coachState === "loading" || coachState === "error" || coachResult !== null);
+    (coachPhase === "loading" || coachPhase === "error" || coachVerdict !== null);
 
   // The combined Send button's single entry point, fired by both a plain
   // click/tap (handleSendClick) and the Enter key. "direct" mode always
@@ -694,7 +781,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   // second press/Enter after that, or picking a suggestion, is what
   // actually sends).
   const handlePrimaryAction = () => {
-    if (!value.trim() || coachState === "loading") return;
+    if (!value.trim() || coachPhase === "loading") return;
     if (sendMode === "direct" || coachVerified) {
       handleSend();
       return;
@@ -803,7 +890,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       </div>
       <button
         type="button"
-        className="chat-input__send"
+        className={`chat-input__send${sendMode === "checkFirst" && coachReady ? " chat-input__send--ready" : ""}`}
         onMouseDown={startSendHold}
         onMouseUp={cancelSendHold}
         onMouseLeave={cancelSendHold}
@@ -819,7 +906,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       >
         {sendMode === "direct"
           ? "Send"
-          : coachState === "loading"
+          : coachPhase === "loading"
             ? "⏳ Checking…"
             : coachVerified
               ? "Send"
@@ -877,29 +964,29 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
         <DockedPopover
           // Remounts (and so re-runs DockedPopover's scroll-into-view
           // effect) right at the one transition that meaningfully grows
-          // this popover's height - the "core" event replacing the small
-          // "Thinking…" placeholder with the real feedback + option list.
-          // Without this, a popover that opened near the bottom of the
-          // viewport stayed scrolled to fit its small loading-state
-          // height and never scrolled further once the real content (and
-          // its real height) landed.
-          key={coachState === "loading" ? "loading" : "ready"}
+          // this popover's height - the verdict arriving and replacing
+          // the small "Thinking…" placeholder with real content. Without
+          // this, a popover that opened near the bottom of the viewport
+          // stayed scrolled to fit its small loading-state height and
+          // never scrolled further once the real content (and its real
+          // height) landed.
+          key={coachVerdict === null ? "loading" : "ready"}
           position="below"
         >
           <CoachPopover
-            meaning={coachResult?.meaning ?? streamingMeaning}
-            feedback={coachResult?.feedback ?? ""}
-            options={coachResult?.options ?? []}
-            loading={coachState === "loading"}
-            streamingMeaning={coachState === "loading" && !coachResult}
-            error={coachState === "error"}
-            translationsPending={coachTranslationsPending}
+            phase={coachPhase}
+            verdict={coachVerdict}
+            meaning={coachMeaning}
+            meaningDone={coachMeaningDone}
+            suggestion={coachSuggestion}
+            suggestionDone={coachSuggestionDone}
+            options={coachOptions}
             selectedIndex={selectedCoachOptionIndex}
             onSelect={handleSelectCoachOption}
             onClose={dismissCoach}
             onRegenerate={handleRegenerateCoach}
-            clean={coachClean}
             onConfirmSend={handleSend}
+            onConfirmMinorSend={handleConfirmMinorSend}
           />
         </DockedPopover>
       )}

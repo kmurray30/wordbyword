@@ -9,12 +9,15 @@ from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
 from app.models import ChatMessage
 from app.schemas import (
-    CoachCoreEvent,
     CoachDraftRequest,
     CoachErrorEvent,
     CoachMeaningChunkEvent,
-    CoachOption,
-    CoachTranslationsEvent,
+    CoachMeaningCompleteEvent,
+    CoachOptionChunkEvent,
+    CoachOptionCompleteEvent,
+    CoachSuggestionChunkEvent,
+    CoachSuggestionCompleteEvent,
+    CoachVerdictEvent,
     DraftSpan,
     DraftToken,
     GlossSpansRequest,
@@ -111,22 +114,25 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     feedback on the attempt plus phrasing options at a few formality
     levels rather than a single flat correction.
 
-    Streamed as Server-Sent Events, one event per phase of the SAME
-    underlying LLM call (app.translate.llm_translate.coach_draft_stream):
-    first, "meaning_chunk" events carry the "you mean" restatement live,
-    delta by delta, as the model generates it - the same token-by-token
-    feel /chat/turn/stream's own reply already has - then a "core" event
-    once the feedback + options themselves are ready (usable immediately -
-    the frontend shows these without waiting on anything else, and its
-    `meaning` is just the "meaning_chunk" deltas already assembled), then
-    a "translations" event once each option's own English translation +
-    word-by-word breakdown finishes streaming afterward (for pre-
-    populating the chat input's gloss cache the instant an option is
-    picked - see CoachOption's fields). An "error" event means nothing
-    usable was ever produced (even if some "meaning_chunk" deltas already
-    arrived); a stream that ends after "core" with no "translations" just
-    means that part wasn't ready - that's not itself an error (see
-    coach_draft_stream's docstring)."""
+    Streamed as Server-Sent Events, one event per field of the SAME
+    underlying LLM call (app.translate.llm_translate.coach_draft_stream -
+    see its own docstring for the full field-by-field sequence). First, a
+    "verdict" event ("clean"/"minor"/"fix") - usable INSTANTLY, before
+    anything else has streamed, to decide whether the draft is already
+    good to go (see ChatInput.tsx's coachReady). Then "meaning_chunk"/
+    "meaning_complete" carry the restatement live, delta by delta - the
+    same token-by-token feel /chat/turn/stream's own reply already has.
+    What follows depends on the verdict: nothing further for "clean";
+    "suggestion_chunk"/"suggestion_complete" (one lightweight corrected-
+    text suggestion) for "minor"; or, for "fix", three formality-ranked
+    options streamed via "option_chunk"/"option_complete" events (each
+    carrying `index` 0/1/2 and `field` "spanish"/"english"), each option's
+    own English back-translation streaming in right after its own Spanish
+    text - not batched together at the end. An "error" event means
+    nothing at all was usable (not even the verdict); a stream that ends
+    partway through the "fix" options just means the rest weren't ready -
+    whatever DID arrive stays fully usable (see coach_draft_stream's own
+    docstring on this graceful-degradation philosophy)."""
     history_rows = session.scalars(
         select(ChatMessage)
         .where(ChatMessage.session_id == req.session_id)
@@ -136,7 +142,6 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     history = [(row.role, row.text) for row in reversed(history_rows)]
 
     def events():
-        core_options: list[tuple[str, str]] = []
         try:
             for item in iter_with_keepalive(
                 llm_translate.coach_draft_stream(req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE)
@@ -144,27 +149,37 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
                 if item is None:
                     yield KEEPALIVE_LINE
                     continue
-                kind, payload = item
-                if kind == "meaning_chunk":
-                    yield _sse("meaning_chunk", CoachMeaningChunkEvent(delta=payload).model_dump_json())
-                elif kind == "core":
-                    core_options = payload["options"]
-                    core_event = CoachCoreEvent(
-                        meaning=payload["meaning"],
-                        feedback=payload["feedback"],
-                        options=[CoachOption(formality=f, spanish=s) for f, s in core_options],
+                kind, *rest = item
+                if kind == "verdict":
+                    yield _sse("verdict", CoachVerdictEvent(verdict=rest[0]).model_dump_json())
+                elif kind == "meaning_chunk":
+                    yield _sse("meaning_chunk", CoachMeaningChunkEvent(delta=rest[0]).model_dump_json())
+                elif kind == "meaning_complete":
+                    yield _sse("meaning_complete", CoachMeaningCompleteEvent(meaning=rest[0]).model_dump_json())
+                elif kind == "suggestion_chunk":
+                    yield _sse("suggestion_chunk", CoachSuggestionChunkEvent(delta=rest[0]).model_dump_json())
+                elif kind == "suggestion_complete":
+                    yield _sse(
+                        "suggestion_complete", CoachSuggestionCompleteEvent(suggestion=rest[0]).model_dump_json()
                     )
-                    yield _sse("core", core_event.model_dump_json())
-                elif kind == "translations":
-                    options = []
-                    for i, (formality, spanish) in enumerate(core_options):
-                        per_option = payload[i] if i < len(payload) else {"english": "", "spans": []}
-                        spans = _build_draft_spans(spanish, per_option["spans"])
-                        options.append(
-                            CoachOption(formality=formality, spanish=spanish, english=per_option["english"], spans=spans)
-                        )
-                    translations_event = CoachTranslationsEvent(options=options)
-                    yield _sse("translations", translations_event.model_dump_json())
+                elif kind == "option_spanish_chunk":
+                    yield _sse(
+                        "option_chunk", CoachOptionChunkEvent(index=rest[0], field="spanish", delta=rest[1]).model_dump_json()
+                    )
+                elif kind == "option_spanish_complete":
+                    yield _sse(
+                        "option_complete",
+                        CoachOptionCompleteEvent(index=rest[0], field="spanish", text=rest[1]).model_dump_json(),
+                    )
+                elif kind == "option_english_chunk":
+                    yield _sse(
+                        "option_chunk", CoachOptionChunkEvent(index=rest[0], field="english", delta=rest[1]).model_dump_json()
+                    )
+                elif kind == "option_english_complete":
+                    yield _sse(
+                        "option_complete",
+                        CoachOptionCompleteEvent(index=rest[0], field="english", text=rest[1]).model_dump_json(),
+                    )
         except llm_translate.TranslationUnavailableError as exc:
             yield _sse("error", CoachErrorEvent(message=str(exc)).model_dump_json())
 

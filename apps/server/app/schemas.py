@@ -192,51 +192,57 @@ class CoachDraftRequest(BaseModel):
     session_id: str
 
 
-class CoachOption(BaseModel):
-    formality: str  # "neutral" | "casual" | "formal"
-    spanish: str
-    # From the SAME streamed /translate/coach call's second phase - empty
-    # until that phase arrives (see the "translations" SSE event below).
-    # `english` is this option's own whole-phrase English translation;
-    # `spans` is its word-by-word gloss, in exactly the shape
-    # GlossSpansResponse.spans already uses for the draft text itself (same
-    # app.translate.span_matching matching, against THIS option's own
-    # spanish text) - so picking this option can seed the chat input's
-    # lazy gloss cache immediately, with no extra /translate/gloss-spans
-    # round trip.
-    english: str = ""
-    spans: list[DraftSpan] = []
-
-
 # The streamed /translate/coach endpoint sends these as SSE events
-# (`data: <json>\n\n`, `event:` line set to "core"/"translations"/"error")
-# rather than a single JSON response - PART 1 (core) is usable the moment
-# it arrives; PART 2 (translations) fills in each option's english/spans
-# a bit later, from the SAME underlying LLM call (see app.translate.
-# llm_translate.coach_draft_stream).
+# (`data: <json>\n\n`, with `event:` set to the matching name below) rather
+# than a single JSON response - see app.translate.llm_translate.
+# coach_draft_stream's own docstring for the full field-by-field sequence
+# each of these corresponds to. Notably: a picked option's word-by-word
+# gloss breakdown is NOT part of this event set at all (unlike the earlier
+# version of this protocol) - it's fetched lazily via the existing
+# /translate/gloss-spans (GlossSpansRequest/Response above) only once an
+# option is actually picked, same as any hand-typed draft text.
+class CoachVerdictEvent(BaseModel):
+    verdict: str  # "clean" | "minor" | "fix"
+
+
 class CoachMeaningChunkEvent(BaseModel):
-    # One newly-arrived piece of PART 1's plain-text "meaning" - streamed
-    # live, well before the "core" event carries the finished, assembled
-    # version of the same text (see app.translate.llm_translate.
-    # coach_draft_stream's docstring) - the same "zipper" delta-at-a-time
-    # feel /chat/turn/stream's own ChatTurnChunkEvent already has.
+    # One newly-arrived piece of the streaming "you mean"/"did you mean"
+    # restatement - the same "zipper" delta-at-a-time feel
+    # /chat/turn/stream's own ChatTurnChunkEvent already has.
     delta: str
 
 
-class CoachCoreEvent(BaseModel):
-    # Best-guess English meaning of what the learner is trying to say -
-    # empty if the draft was empty.
+class CoachMeaningCompleteEvent(BaseModel):
     meaning: str
-    # One short, encouraging note on how apt/correct the attempt was -
-    # empty if there's nothing worth flagging.
-    feedback: str
-    options: list[CoachOption]
 
 
-class CoachTranslationsEvent(BaseModel):
-    # Parallel to CoachCoreEvent.options by list position - the frontend
-    # merges these into the options it's already showing.
-    options: list[CoachOption]
+class CoachSuggestionChunkEvent(BaseModel):
+    # Only sent for a "minor" verdict - one newly-arrived piece of the
+    # single lightweight corrected-text suggestion.
+    delta: str
+
+
+class CoachSuggestionCompleteEvent(BaseModel):
+    suggestion: str
+
+
+class CoachOptionChunkEvent(BaseModel):
+    # Only sent for a "fix" verdict. `index` is 0/1/2 (neutral/casual/
+    # formal, a fixed positional mapping - see app.translate.llm_translate.
+    # _COACH_FORMALITIES, never parsed from the model). `field` is
+    # "spanish" or "english" - that option's own suggested text, or its
+    # own whole-sentence back-translation, which streams in right after
+    # its Spanish text (not batched with the other options' translations
+    # at the end, unlike the earlier version of this protocol).
+    index: int
+    field: str
+    delta: str
+
+
+class CoachOptionCompleteEvent(BaseModel):
+    index: int
+    field: str
+    text: str
 
 
 class CoachErrorEvent(BaseModel):

@@ -59,13 +59,6 @@
   font-style: normal;
 }
 
-/* The live "you mean" text streaming in, char by char, before "core"
-   arrives - not italicized/dimmed like the plain "Thinking…" status it
-   replaces, since this is real content worth reading as it grows. */
-.coach-popover__streaming-meaning {
-  color: inherit;
-}
-
 .coach-popover__row {
   display: flex;
   flex-wrap: wrap;
@@ -113,6 +106,35 @@
   background: #4c7bf5;
 }
 
+.coach-popover__confirm-send:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: #3b6ef0;
+}
+
+/* A "minor" verdict's single lightweight suggestion - the meaning row
+   above it uses .coach-popover__row/__label already; this just adds the
+   suggestion line itself plus the confirm button, stacked instead of the
+   "clean" confirm's single space-between row (there's an extra line of
+   content here). */
+.coach-popover__minor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.coach-popover__minor .coach-popover__confirm-send {
+  align-self: flex-end;
+}
+
+.coach-popover__suggestion {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  opacity: 0.92;
+}
+
 .coach-popover__options {
   display: flex;
   flex-direction: column;
@@ -124,6 +146,29 @@
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.06);
   overflow: hidden;
+}
+
+/* Rendered the instant a "fix" verdict arrives, before any of this
+   option's own text has streamed in - a subtle pulse on the same box
+   shape real content uses (rather than a literal shimmer-bar skeleton,
+   which this app has no existing pattern for) signals "still loading"
+   without a jarring layout shift once real text starts filling in. */
+.coach-popover__option--skeleton {
+  animation: coach-popover-skeleton-pulse 1.3s ease-in-out infinite;
+}
+
+.coach-popover__option--skeleton .coach-popover__option-text {
+  opacity: 0.45;
+}
+
+@keyframes coach-popover-skeleton-pulse {
+  0%,
+  100% {
+    background-color: rgba(255, 255, 255, 0.04);
+  }
+  50% {
+    background-color: rgba(255, 255, 255, 0.11);
+  }
 }
 
 .coach-popover__option--selected {
@@ -144,6 +189,14 @@
 
 .coach-popover__option-main:hover {
   background: rgba(255, 255, 255, 0.14);
+}
+
+.coach-popover__option-main:disabled {
+  cursor: default;
+}
+
+.coach-popover__option-main:disabled:hover {
+  background: none;
 }
 
 .coach-popover__option-label {

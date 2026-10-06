@@ -17,6 +17,7 @@ import re
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.config import OPENAI_TRANSLATE_MODEL
 from app.translate.lemmatizer import analyze
+from app.translate.sequential_stream import Field, stream_sequential_fields
 
 logger = logging.getLogger(__name__)
 
@@ -539,94 +540,73 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
 
 
-_COACH_CORE_MAX_TOKENS = 600
-# Raised from 700: PART 1 and PART 2 share ONE generation budget (one HTTP
-# call), so a verbose PART 1 (3 full formality variants) could leave too
-# little room for PART 2's per-option word-by-word breakdowns - observed
-# live, non-deterministically: the same kind of draft got usable
-# translations one run and none (truncated/unparseable) the next, purely
-# from how much of the shared budget PART 1 happened to use that time.
-_COACH_TRANSLATIONS_MAX_TOKENS = 2200
-# Raised 1100->1250 to make room for each span's new `literal` field (a
-# word-by-word breakdown, non-empty only for a multi-word idiom/phrasal-
-# verb group) - most spans leave it empty, but an option with a couple of
-# such groups needs the extra headroom across up to 3 options. Raised
-# again, 1250->2200: a live failure in tag_draft (same model, same new
-# `literal` field - see _TAG_DRAFT_MAX_TOKENS's comment) came back
-# completely empty because the model's own reasoning tokens alone
-# exhausted a budget in this same range, before any visible output - this
-# call is at just as much risk, so it gets the same generous headroom.
-_COACH_STREAM_MAX_TOKENS = _COACH_CORE_MAX_TOKENS + _COACH_TRANSLATIONS_MAX_TOKENS
+# Shared across the WHOLE call (verdict + meaning + up to 3x(spanish +
+# english) for a FIX verdict) rather than split per-field, same reasoning
+# the old PART1/PART2 split budget this replaces had for not splitting
+# further: a hard per-field cap risks one field starving a later one with
+# no way for the model to redistribute leftover budget, and that only gets
+# worse the more fields there are (8 here vs. 2 before). Lower than the
+# old combined 2800 despite more fields: the whole protocol is plain text
+# now, no JSON braces/keys/quoting overhead anywhere, and - the single
+# biggest token sink the old protocol had, per _COACH_TRANSLATIONS_MAX_
+# TOKENS's own history below - a picked option's word-by-word gloss
+# breakdown is no longer part of this call at all; it's fetched lazily via
+# /translate/gloss-spans only once an option is actually picked (see
+# ChatInput.tsx's handleSelectCoachOption). Still treat this as a starting
+# point to tune against real output, not a settled number: this model
+# (OPENAI_CHAT_MODEL, a reasoning-style model - see openai_client.py's own
+# comment on requiring max_completion_tokens) has repeatedly come back
+# completely empty under budget pressure elsewhere in this file
+# (_TAG_DRAFT_MAX_TOKENS's history is the clearest example) when its own
+# internal reasoning tokens alone exhausted a tight cap before any visible
+# output - the same failure mode remains possible here.
+_COACH_STREAM_MAX_TOKENS = 2400
 _COACH_HISTORY_TURNS = 8
-_VALID_FORMALITIES = {"neutral", "casual", "formal"}
-# Written literally into the prompt, and watched for verbatim in the
-# streamed reply - _COACH_OPTIONS_MARKER delineates PART 1 (the learner's
-# restated intent, plain text - streamed live, see coach_draft_stream's
-# docstring) from PART 2 (the feedback + target_lang options themselves, a
-# single JSON object, shown the moment it's ready); _COACH_TRANSLATIONS_
-# MARKER then delineates PART 2 from PART 3 (each option's own native_lang
-# translation + word-by-word breakdown, which keeps streaming after PART 2
-# is already on screen). Unlikely to collide with real text/JSON string
-# content, which is the only thing that could make either fire early/never.
-_COACH_OPTIONS_MARKER = "<<<OPTIONS>>>"
-_COACH_TRANSLATIONS_MARKER = "<<<TRANSLATIONS>>>"
-# A streaming marker search has to hold back a short tail of the buffer
-# that could still turn out to be the START of an upcoming marker once more
-# text arrives - otherwise a chunk boundary landing mid-marker would leak a
-# fragment of it into a "meaning_chunk" event as if it were real content.
-# Withholding one marker's length minus one character is always enough:
-# that's the longest possible already-buffered prefix of the marker that
-# still isn't the marker itself.
-_MEANING_MARKER_TAIL = len(_COACH_OPTIONS_MARKER) - 1
+_COACH_FORMALITIES = ("neutral", "casual", "formal")  # fixed, positional - never parsed from the model
+_COACH_VERDICTS = {"clean", "minor", "fix"}
+
+# Written literally into the prompt and watched for verbatim in the
+# streamed reply, same convention every marker in this file already
+# follows - each one terminates the field named after it. Unlike the
+# two-marker protocol this replaces, there are now up to 8 of these in one
+# call (a verdict, a meaning, then up to 6 per-option fields for a FIX
+# verdict) - app.translate.sequential_stream.stream_sequential_fields
+# drives the whole sequence generically; see its own docstring for how the
+# marker-safe-tail withholding generalizes across all of them at once.
+_COACH_VERDICT_MARKER = "<<<VERDICT>>>"
+_COACH_MEANING_MARKER = "<<<MEANING>>>"
+_COACH_SUGGESTION_MARKER = "<<<SUGGESTION>>>"
+_COACH_OPT_MARKERS = (
+    "<<<OPT1_ES>>>",
+    "<<<OPT1_EN>>>",
+    "<<<OPT2_ES>>>",
+    "<<<OPT2_EN>>>",
+    "<<<OPT3_ES>>>",
+    "<<<OPT3_EN>>>",
+)
 
 
-def _parse_coach_feedback_options_json(text: str) -> tuple[str, list[tuple[str, str]]]:
-    if _looks_garbled(text):
-        raise ValueError("garbled reply")
-    match = _JSON_OBJECT_RE.search(text)
-    if not match:
-        raise ValueError(f"no JSON object found in reply: {text!r}")
-    data = json.loads(match.group(0))
-    feedback = str(data.get("feedback", "")).strip()
-    raw_options = data.get("options", [])
-    if not isinstance(raw_options, list):
-        raise ValueError(f"'options' wasn't a list: {data!r}")
+def _run_sequential_fields(chunks, fields, initial_buffer: str = ""):
+    """Drives sequential_stream.stream_sequential_fields and exposes its
+    leftover-buffer return value to a plain caller - a generator's own
+    `return <value>` is only visible via `StopIteration.value`, which a
+    normal `for` loop has no way to capture, so this hands it back instead
+    as the second element of the returned tuple (an itself-exhausted-by-
+    then single-item list, filled in once the wrapped generator truly
+    finishes - read it only AFTER fully iterating the first element)."""
+    leftover_box: list[str] = []
 
-    options: list[tuple[str, str]] = []
-    seen_formalities: set[str] = set()
-    for item in raw_options:
-        if not isinstance(item, dict):
-            continue
-        formality = str(item.get("formality", "")).strip().lower()
-        spanish = str(item.get("spanish", "")).strip()
-        if not spanish or formality in seen_formalities:
-            continue
-        if formality not in _VALID_FORMALITIES:
-            formality = "neutral"
-        seen_formalities.add(formality)
-        options.append((formality, spanish))
-    return feedback, options
+    def driver():
+        gen = stream_sequential_fields(chunks, fields, initial_buffer)
+        while True:
+            try:
+                item = next(gen)
+            except StopIteration as stop:
+                leftover_box.append(stop.value or "")
+                return
+            yield item
 
-
-def _parse_coach_translations_json(text: str) -> list[dict]:
-    match = _JSON_OBJECT_RE.search(text)
-    if not match:
-        raise ValueError(f"no JSON object found in reply: {text!r}")
-    data = json.loads(match.group(0))
-    raw_options = data.get("options", [])
-    if not isinstance(raw_options, list):
-        raise ValueError(f"'options' wasn't a list: {data!r}")
-
-    result: list[dict] = []
-    for item in raw_options:
-        if not isinstance(item, dict):
-            result.append({"english": "", "spans": []})
-            continue
-        english = str(item.get("english", "")).strip()
-        raw_spans = item.get("spans", [])
-        spans = _coerce_spans(raw_spans) if isinstance(raw_spans, list) else []
-        result.append({"english": english, "spans": spans})
-    return result
+    return driver(), leftover_box
 
 
 def coach_draft_stream(
@@ -635,56 +615,57 @@ def coach_draft_stream(
     native_lang: str,
     target_lang: str,
 ):
-    """For a message the learner is still drafting (not yet sent): infers
-    what they're trying to say, gives brief feedback on how apt that
-    attempt was, and suggests the ideal target_lang phrasing - at a couple
-    of formality levels - given the recent conversation's tone and context.
-    ONE streamed LLM call, in three ordered parts delineated by
-    _COACH_OPTIONS_MARKER and _COACH_TRANSLATIONS_MARKER in the raw reply:
+    """For a message the learner is still drafting (not yet sent): decides
+    whether it's already good to go, restates what it thinks they meant,
+    and - only if real correction is needed - suggests the ideal phrasing
+    at a few formality levels, given the recent conversation's tone and
+    context. ONE streamed LLM call, entirely plain text (no JSON anywhere,
+    unlike this function's earlier JSON-blob-based protocol - removes a
+    whole class of truncation/parse failure this file has hit repeatedly
+    elsewhere), driven field-by-field via app.translate.sequential_stream:
 
-    PART 1 (the learner's restated intent, plain text - no JSON, no
-    labels) streams live as it's generated: yielded as ("meaning_chunk",
-    delta) for each newly-arrived, marker-safe piece of text, the same
-    "zipper" feel /chat/turn/stream's own reply tokens already have. This
-    is the one piece of PART 2/3's eventual "core" event the learner
-    actually waits on and reads char-by-char while it's still being
-    generated - the rest (feedback + options, each option's own
-    translation) is short, structured, and arrives as a single ready-to-
-    render block each, same as before.
+    First, a VERDICT - "clean" (nothing to fix at all), "minor" (fine to
+    send as-is, but one small cosmetic suggestion follows), or "fix" (real
+    correction needed) - yielded as ("verdict", "clean"|"minor"|"fix") the
+    moment it's parsed, before anything else has streamed. This is the one
+    piece of the old "core" event's `feedback`/`options` a caller actually
+    needs INSTANTLY: it's what lets the Send button light up the moment a
+    draft is known good, well before the explanation has finished
+    streaming (see ChatInput.tsx's coachReady vs. the slower-to-settle
+    coachVerified).
 
-    PART 2 (the feedback + target_lang options themselves) is yielded as
-    ("core", {"meaning": ..., "feedback": ..., "options": [(formality,
-    target_lang text), ...]}) the moment it's complete, so the UI can show
-    it without waiting on PART 3 at all. `meaning` here is just PART 1's
-    already-streamed text, assembled.
+    Then the restated meaning streams live, delta by delta - the one part
+    of the reply worth reading char-by-char while it's still generating,
+    same "zipper" feel /chat/turn/stream's own reply tokens have -
+    yielded as ("meaning_chunk", delta) per newly-arrived, marker-safe
+    piece of text, then ("meaning_complete", full_text) once settled.
 
-    PART 3 (each PART-2 option's own native_lang translation + word-by-word
-    breakdown - the same surface/gloss/note/translation/alternate_gloss
-    shape tag_draft's spans use, matchable back to real offsets the same
-    way via app.translate.span_matching - so picking an option can seed
-    the chat input's lazy gloss cache immediately, with no extra fetch)
-    keeps streaming after that and is yielded separately, as
-    ("translations", [{"english": ..., "spans": [...]}, ...]), lined up
-    with PART 2's options by list position.
-
-    Speed: when the draft is ALREADY correct and needs no change, the
-    prompt tells the model to collapse PART 2 to a single "neutral" option
-    (an unchanged copy of the draft, empty `feedback`) instead of 3 full
-    formality variants, and to skip PART 3's breakdown entirely
-    ({"options": []}) - nothing there needs double-checking. A much
-    shorter completion for the common "looks good" case, not a separate
-    pre-flight call - callers tell the two cases apart the same way either
-    way (empty `feedback` - see ChatInput.tsx's coachClean).
+    What follows depends on the verdict:
+    - "clean": nothing further - the generator simply ends.
+    - "minor": a single corrected suggestion streams the same way -
+      ("suggestion_chunk", delta) then ("suggestion_complete", full_text).
+    - "fix": three formality-ranked suggestions stream in order (index 0 =
+      neutral, 1 = casual, 2 = formal - see _COACH_FORMALITIES), each
+      INTERLEAVED with its own whole-sentence native_lang back-translation
+      immediately after - not batched together at the end the way the old
+      protocol's PART 3 was: ("option_spanish_chunk", i, delta) /
+      ("option_spanish_complete", i, text), then ("option_english_chunk",
+      i, delta) / ("option_english_complete", i, text), repeated for i in
+      0, 1, 2. A picked option's word-by-word gloss breakdown is
+      DELIBERATELY not part of this stream at all - see
+      _COACH_STREAM_TOKENS's own comment on why, and ChatInput.tsx's
+      handleSelectCoachOption for where it's fetched instead.
 
     Unlike every other LLM-backed helper here, this does NOT retry on a
-    garbled/unparseable reply - earlier parts may already have been
-    yielded (and acted on by the caller) by the time a later one turns out
-    unusable, so there's nothing to cleanly retry. Raises
-    TranslationUnavailableError if PART 2 (the options) never parses into
-    anything usable, even once PART 1's meaning text already streamed;
-    PART 3 failing/missing just means the generator yields one fewer event
-    at the end - a caller that only consumes "meaning_chunk"/"core" never
-    notices."""
+    garbled/unusable reply - earlier fields may already have been yielded
+    (and acted on by the caller) by the time a later one turns out
+    unusable, so there's nothing to cleanly retry; a field that never
+    completes (chunks ran out, or the model skipped straight past it)
+    just means the generator yields one fewer event than the full
+    sequence - whatever DID complete stays fully usable (see
+    sequential_stream's own docstring on why fields are independent this
+    way). Raises TranslationUnavailableError only when NOTHING at all is
+    usable - the verdict marker itself never arrived."""
     if not draft.strip():
         return
 
@@ -704,155 +685,121 @@ def coach_draft_stream(
                 f"drafting their NEXT message in the conversation below - it may "
                 f"mix {native_name} and {target_name}, and may have grammar or "
                 f"spelling mistakes in either.\n\n"
-                f"Respond in THREE parts, in this exact order, with nothing else.\n\n"
-                f"PART 1 - PLAIN TEXT ONLY, no quotes, no labels, no JSON: state "
+                f"{context_block}"
+                f"FIRST, decide a VERDICT for their draft - exactly one word, "
+                f"nothing else:\n"
+                f"- CLEAN: the draft is already completely correct {target_name} - "
+                f"not even a trivial issue. If you would change literally nothing, "
+                f"it's CLEAN.\n"
+                f"- MINOR: the draft is understandable, natural-enough "
+                f"{target_name} that could be sent as-is, but has ONE small "
+                f"cosmetic issue - a missing or wrong accent mark, a punctuation "
+                f"slip (missing ¿/¡, a wrong comma), or an obvious one-letter "
+                f"spelling typo. Nothing about word choice, verb conjugation, or "
+                f"sentence structure is wrong - only surface-level polish. If in "
+                f"doubt between MINOR and FIX, and the issue is purely visual/"
+                f"orthographic, choose MINOR.\n"
+                f"- FIX: anything else - a wrong verb form, wrong word choice, "
+                f"missing words, unnatural phrasing, structural or grammar "
+                f"problems, or the draft is in {native_name}/mixed and needs real "
+                f"translation.\n\n"
+                f"Write exactly one of CLEAN, MINOR, or FIX, then immediately "
+                f"write this marker: {_COACH_VERDICT_MARKER}\n\n"
+                f"THEN, PLAIN TEXT ONLY - no quotes, no labels, no JSON: state "
                 f"their intent as a concise {native_name} sentence - if what they "
                 f"typed is ALREADY clear, grammatical {native_name}, just copy it "
                 f"verbatim; otherwise give the shortest natural {native_name} "
                 f"phrasing of what they meant, not a description of their intent. "
-                f"Nothing else on this part - no preamble, no explanation.\n\n"
-                f"Immediately after PART 1, on its own line, write exactly this "
-                f"marker: {_COACH_OPTIONS_MARKER}\n\n"
-                f"PART 2 - a single JSON object: (1) ONE short, encouraging "
-                f"sentence of feedback, in {native_name}, on how close their "
-                f"attempt already is to PART 1's meaning (empty string if it was "
-                f"basically already right); (2) suggest the ideal way to "
-                f"actually say it in {target_name} given the conversation's tone "
-                f"and context so far.\n\n"
-                f"IMPORTANT for speed: if what they typed is ALREADY correct, "
-                f"natural {target_name} needing no change at all, don't generate "
-                f"3 formality variants - set `feedback` to an empty string and "
-                f"`options` to EXACTLY ONE entry, {{\"formality\": \"neutral\", "
-                f'"spanish": "<their own draft, copied exactly, unchanged>"}}, '
-                f"and stop there - nothing else to suggest. Only when it DOES "
-                f"need correction, suggest the ideal phrasing at 3 formality "
-                f"levels as described below.\n\n"
-                f"{context_block}"
-                f"PART 2's JSON shape, exactly:\n"
-                f'{{"feedback": "<in {native_name}: one short, encouraging '
-                f'sentence on how apt their attempt was, or an empty string if '
-                f'it was already right>", "options": [{{"formality": "neutral", '
-                f'"spanish": "<the ideal {target_name} phrasing>"}}, {{"formality": '
-                f'"casual", "spanish": "<a more casual/informal way to say it>"}}, '
-                f'{{"formality": "formal", "spanish": "<a more formal/polite way '
-                f'to say it>"}}]}} - or, when already correct (see above), just '
-                f'{{"feedback": "", "options": [{{"formality": "neutral", '
-                f'"spanish": "<their own draft, unchanged>"}}]}}\n\n'
-                f"Keep every {target_name} option to one natural sentence or "
-                f"short exchange, ready to send in chat as-is - not a lecture, "
-                f"and don't repeat the same phrasing across formality levels if "
-                f"you can genuinely vary it. If a formality distinction doesn't "
-                f"make sense for this particular message, it's fine for two "
-                f"options to be identical.\n\n"
-                f"Immediately after PART 2's JSON, on its own line, write "
-                f"exactly this marker: {_COACH_TRANSLATIONS_MARKER}\n\n"
-                f"Then PART 3 - a single JSON object translating EACH of PART "
-                f"2's options, IN THE SAME ORDER, back for the learner to "
-                f"double check: for every option, its whole-phrase "
-                f"{native_name} translation, and a word-by-word breakdown "
-                f"(skip pure punctuation; copy each `surface` EXACTLY as it "
-                f"appears in that option's own {target_name} text). For a "
-                f"MULTI-WORD span in that breakdown only, also give a short "
-                f"`literal` word-by-word breakdown in {native_name} of how the "
-                f"group's individual words combine, e.g. for a {target_name} "
-                f'idiom like "tener en cuenta" meaning "take into account", '
-                f'`literal` could be "tener (to have) + en (in) + cuenta '
-                f'(account)" - leave it an empty string for a single-word span. '
-                f"EXCEPTION, also for speed: if PART 2 had exactly the one "
-                f"\"already correct\" option described above, skip its "
-                f"breakdown entirely and just write {{\"options\": []}} for "
-                f"PART 3 - nothing there needs double-checking. PART 3's JSON "
-                f"shape, exactly:\n"
-                f'{{"options": [{{"english": "<whole-phrase {native_name} '
-                f'translation of this option>", "spans": [{{"surface": "<exact '
-                f"word/word-group from this option's {target_name} text>\", "
-                f'"gloss": "<its meaning here, in {native_name}>", "note": "<in '
-                f'{native_name}: short disambiguation note, or empty>", '
-                f'"literal": "<word-by-word breakdown for a multi-word span '
-                f'only - else empty>"}}, ...]}}, ...]}}\n\n'
-                f"No markdown fences, no explanation outside PART 1's plain "
-                f"text, the two JSON objects, and the markers between them."
+                f"Nothing else - no preamble, no explanation.\n\n"
+                f"Immediately after that, write exactly this marker: "
+                f"{_COACH_MEANING_MARKER}\n\n"
+                f"THEN, depending on which VERDICT you chose above:\n\n"
+                f"IF YOU CHOSE CLEAN: write nothing further at all - stop "
+                f"immediately after {_COACH_MEANING_MARKER}.\n\n"
+                f"IF YOU CHOSE MINOR: write ONE corrected version of their whole "
+                f"draft, fixing ONLY that small issue - plain {target_name} text, "
+                f"no quotes, no labels - then immediately write this marker: "
+                f"{_COACH_SUGGESTION_MARKER}\n\n"
+                f"IF YOU CHOSE FIX: write THREE suggested rephrasings in "
+                f"{target_name}, each one natural sentence ready to send as-is, "
+                f"each immediately followed by its OWN whole-sentence "
+                f"{native_name} back-translation (so the learner can double "
+                f"check it) - in this exact order, each piece followed "
+                f"immediately by its own marker:\n"
+                f"1. A natural/neutral way to say it, then {_COACH_OPT_MARKERS[0]}\n"
+                f"2. That SAME suggestion's {native_name} back-translation, then "
+                f"{_COACH_OPT_MARKERS[1]}\n"
+                f"3. A more casual/informal way to say it, then "
+                f"{_COACH_OPT_MARKERS[2]}\n"
+                f"4. That suggestion's {native_name} back-translation, then "
+                f"{_COACH_OPT_MARKERS[3]}\n"
+                f"5. A more formal/polite way to say it, then "
+                f"{_COACH_OPT_MARKERS[4]}\n"
+                f"6. That suggestion's {native_name} back-translation, then "
+                f"{_COACH_OPT_MARKERS[5]}\n"
+                f"Keep each {target_name} suggestion to one natural sentence or "
+                f"short exchange - not a lecture, and don't repeat the same "
+                f"phrasing across formality levels if you can genuinely vary it. "
+                f"If a formality distinction doesn't make sense for this "
+                f"particular message, it's fine for two to be similar, but still "
+                f"write all three suggestions and all three back-translations.\n\n"
+                f"No markdown fences, no explanation, no extra text anywhere "
+                f"beyond exactly what's specified above."
             ),
         },
         {"role": "user", "content": draft},
     ]
 
-    buffer = ""
-    meaning_sent = ""  # how much of PART 1's text has already been yielded
-    # "meaning": still streaming PART 1, watching for _COACH_OPTIONS_MARKER.
-    # "options_json": PART 1 is done (meaning_sent is final); watching for
-    # _COACH_TRANSLATIONS_MARKER to know PART 2's JSON is complete.
-    # "done": PART 2 already parsed and yielded as "core"; whatever's left
-    # in `buffer` from here on is PART 3's own translations JSON.
-    stage = "meaning"
-    feedback = ""
-    options: list[tuple[str, str]] = []
     try:
-        for chunk in model_chat_stream(messages, max_tokens=_COACH_STREAM_MAX_TOKENS):
-            buffer += chunk
-            # Drains as many stage transitions as the buffer currently
-            # supports after each new chunk, rather than one per chunk -
-            # a single chunk can easily carry an entire marker (or more),
-            # same reasoning as /chat/turn/stream's own leading-padding
-            # comment about not assuming one event per network write.
-            while True:
-                if stage == "meaning":
-                    idx = buffer.find(_COACH_OPTIONS_MARKER)
-                    # Only the text up to `idx` (if found) - or, while still
-                    # watching for it, everything except a short safety
-                    # tail that could still turn out to be the marker's own
-                    # start - is safe to call "definitely not part of the
-                    # marker" and stream to the caller.
-                    safe_end = idx if idx != -1 else max(len(meaning_sent), len(buffer) - _MEANING_MARKER_TAIL)
-                    if safe_end > len(meaning_sent):
-                        delta = buffer[len(meaning_sent) : safe_end]
-                        meaning_sent = buffer[:safe_end]
-                        if delta:
-                            yield ("meaning_chunk", delta)
-                    if idx == -1:
-                        break  # marker not fully here yet - wait for more input
-                    buffer = buffer[idx + len(_COACH_OPTIONS_MARKER) :]
-                    stage = "options_json"
-                    continue
-                if stage == "options_json":
-                    idx = buffer.find(_COACH_TRANSLATIONS_MARKER)
-                    if idx == -1:
-                        break
-                    feedback, options = _parse_coach_feedback_options_json(buffer[:idx])
-                    if not options:
-                        raise ValueError("no usable options in reply")
-                    yield ("core", {"meaning": meaning_sent.strip(), "feedback": feedback, "options": options})
-                    buffer = buffer[idx + len(_COACH_TRANSLATIONS_MARKER) :]
-                    stage = "done"
-                    continue
-                break  # stage == "done" - nothing left to drive until the stream itself ends
+        chunks = model_chat_stream(messages, max_tokens=_COACH_STREAM_MAX_TOKENS)
+
+        verdict_iter, verdict_leftover = _run_sequential_fields(chunks, [Field("verdict", _COACH_VERDICT_MARKER)])
+        verdict_raw: str | None = None
+        for kind, text in verdict_iter:
+            if kind == "verdict_complete":
+                verdict_raw = text
+
+        if verdict_raw is None:
+            # The verdict marker never arrived at all - nothing downstream
+            # (not even which fields to expect next) can be trusted.
+            raise TranslationUnavailableError("Model reply had no usable verdict")
+
+        verdict = verdict_raw.strip().lower()
+        if verdict not in _COACH_VERDICTS:
+            # An unrecognized token defaults to the FULL correction flow,
+            # never to "looks good" - showing three suggestions for a
+            # draft that was secretly fine is harmless; silently telling
+            # the learner a genuinely broken draft is fine to send is not.
+            logger.warning("coach_draft_stream: unrecognized verdict token %r, defaulting to fix", verdict_raw)
+            verdict = "fix"
+
+        yield ("verdict", verdict)
+
+        fields = [Field("meaning", _COACH_MEANING_MARKER)]
+        if verdict == "minor":
+            fields.append(Field("suggestion", _COACH_SUGGESTION_MARKER))
+        elif verdict == "fix":
+            for i in range(3):
+                fields.append(Field("option_spanish", _COACH_OPT_MARKERS[2 * i], extra=(i,)))
+                fields.append(Field("option_english", _COACH_OPT_MARKERS[2 * i + 1], extra=(i,)))
+
+        rest_iter, _rest_leftover = _run_sequential_fields(chunks, fields, initial_buffer=verdict_leftover[0])
+        for kind, *rest in rest_iter:
+            if kind == "meaning_chunk":
+                yield ("meaning_chunk", rest[0])
+            elif kind == "meaning_complete":
+                yield ("meaning_complete", rest[0].strip())
+            elif kind == "suggestion_chunk":
+                yield ("suggestion_chunk", rest[0])
+            elif kind == "suggestion_complete":
+                yield ("suggestion_complete", rest[0].strip())
+            elif kind == "option_spanish_chunk":
+                yield ("option_spanish_chunk", rest[0], rest[1])
+            elif kind == "option_spanish_complete":
+                yield ("option_spanish_complete", rest[0], rest[1].strip())
+            elif kind == "option_english_chunk":
+                yield ("option_english_chunk", rest[0], rest[1])
+            elif kind == "option_english_complete":
+                yield ("option_english_complete", rest[0], rest[1].strip())
     except ModelServerUnavailableError as exc:
         raise TranslationUnavailableError(str(exc)) from exc
-    except (ValueError, json.JSONDecodeError, KeyError) as exc:
-        raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {buffer!r} ({exc})") from exc
-
-    if stage == "meaning":
-        # _COACH_OPTIONS_MARKER never arrived at all - PART 1's text (if
-        # any) already streamed as "meaning_chunk" events, but there's no
-        # usable options to offer at all, unlike the fallback below.
-        raise TranslationUnavailableError(f"Model reply had no usable options: {buffer!r}")
-
-    if stage == "options_json":
-        # _COACH_TRANSLATIONS_MARKER never arrived - under token pressure
-        # the model may have skipped PART 3 (or run out of budget) but the
-        # whole remaining buffer can still be a usable PART 2 JSON on its
-        # own, same resilience the old single-marker version had.
-        try:
-            feedback, options = _parse_coach_feedback_options_json(buffer)
-        except (ValueError, json.JSONDecodeError, KeyError) as exc:
-            raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {buffer!r} ({exc})") from exc
-        if not options:
-            raise TranslationUnavailableError(f"Model reply had no usable options: {buffer!r}")
-        yield ("core", {"meaning": meaning_sent.strip(), "feedback": feedback, "options": options})
-        return
-
-    try:
-        translations = _parse_coach_translations_json(buffer)
-    except (ValueError, json.JSONDecodeError, KeyError):
-        return  # PART 3 missing/garbled - PART 1+2 alone are still useful
-    yield ("translations", translations)

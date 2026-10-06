@@ -42,30 +42,48 @@ type CoachDraftRequest =
 // /translate/coach streams Server-Sent Events rather than a single JSON
 // response (see app/routes/translate.py's coach_draft), so there's no
 // OpenAPI-generated response type for it - these mirror app/schemas.py's
-// CoachOption/CoachCoreEvent/CoachTranslationsEvent/CoachErrorEvent by
-// hand instead.
+// Coach*Event classes by hand instead. See app/translate/llm_translate.py's
+// coach_draft_stream docstring for the full field-by-field sequence these
+// correspond to: a "verdict" event first (usable instantly, before
+// anything else has streamed - see ChatInput.tsx's coachReady), then the
+// "you mean"/"did you mean" restatement streaming live, then - depending
+// on the verdict - either nothing further ("clean"), one single streamed
+// suggestion ("minor"), or three formality-ranked options streamed
+// interleaved, each one's own English translation arriving right after
+// its own Spanish text ("fix"). A picked option's word-by-word gloss
+// breakdown is NOT part of this stream at all - see
+// ChatInput.tsx's handleSelectCoachOption, which fetches it lazily via the
+// existing /translate/gloss-spans instead.
+export interface CoachVerdictEvent {
+  verdict: "clean" | "minor" | "fix";
+}
+
 export interface CoachMeaningChunkEvent {
   delta: string;
 }
 
-export interface CoachOption {
-  formality: string;
-  spanish: string;
-  // Both empty until the "translations" event arrives - see
-  // CoachStreamEvent below.
-  english: string;
-  spans: DraftSpan[];
-}
-
-export interface CoachCoreEvent {
+export interface CoachMeaningCompleteEvent {
   meaning: string;
-  feedback: string;
-  options: CoachOption[];
 }
 
-export interface CoachTranslationsEvent {
-  // Parallel to the core event's options by list position.
-  options: CoachOption[];
+export interface CoachSuggestionChunkEvent {
+  delta: string;
+}
+
+export interface CoachSuggestionCompleteEvent {
+  suggestion: string;
+}
+
+export interface CoachOptionChunkEvent {
+  index: number;
+  field: "spanish" | "english";
+  delta: string;
+}
+
+export interface CoachOptionCompleteEvent {
+  index: number;
+  field: "spanish" | "english";
+  text: string;
 }
 
 export interface CoachErrorEvent {
@@ -73,9 +91,13 @@ export interface CoachErrorEvent {
 }
 
 export type CoachStreamEvent =
+  | { type: "verdict"; data: CoachVerdictEvent }
   | { type: "meaning_chunk"; data: CoachMeaningChunkEvent }
-  | { type: "core"; data: CoachCoreEvent }
-  | { type: "translations"; data: CoachTranslationsEvent }
+  | { type: "meaning_complete"; data: CoachMeaningCompleteEvent }
+  | { type: "suggestion_chunk"; data: CoachSuggestionChunkEvent }
+  | { type: "suggestion_complete"; data: CoachSuggestionCompleteEvent }
+  | { type: "option_chunk"; data: CoachOptionChunkEvent }
+  | { type: "option_complete"; data: CoachOptionCompleteEvent }
   | { type: "error"; data: CoachErrorEvent };
 
 // Reads any `event: <name>\ndata: <json>\n\n`-framed SSE response body
@@ -109,15 +131,20 @@ async function* readServerSentEvents(response: Response): AsyncGenerator<{ event
 }
 
 // Reads the coaching response's SSE stream incrementally, yielding each
-// event as it completes - "meaning_chunk" events stream the "you mean"
-// restatement live, delta by delta, well before "core" (the feedback +
-// options themselves, usable right away - its own `meaning` is just those
-// deltas already assembled), which in turn typically arrives well before
-// "translations" (each option's own English translation + word-by-word
-// breakdown, streamed from the SAME underlying LLM call - see
-// coach_draft_stream's docstring in app/translate/llm_translate.py).
-// `signal` lets the caller abort mid-stream (e.g. the draft changed before
-// coaching finished).
+// event as it completes - see CoachStreamEvent's own comment for the full
+// field-by-field sequence. `signal` lets the caller abort mid-stream (e.g.
+// the draft changed before coaching finished).
+const COACH_EVENT_NAMES = new Set([
+  "verdict",
+  "meaning_chunk",
+  "meaning_complete",
+  "suggestion_chunk",
+  "suggestion_complete",
+  "option_chunk",
+  "option_complete",
+  "error",
+]);
+
 async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal): AsyncGenerator<CoachStreamEvent> {
   const response = await fetchWithColdStartRetry(`${BASE_URL}/translate/coach`, {
     method: "POST",
@@ -130,7 +157,7 @@ async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal):
     throw new Error(`/translate/coach failed (${response.status}): ${detail}`);
   }
   for await (const { event, data } of readServerSentEvents(response)) {
-    if (event === "meaning_chunk" || event === "core" || event === "translations" || event === "error") {
+    if (COACH_EVENT_NAMES.has(event)) {
       yield { type: event, data: JSON.parse(data) } as CoachStreamEvent;
     }
   }

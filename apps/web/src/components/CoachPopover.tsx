@@ -1,56 +1,59 @@
-import type { CoachOption } from "../api/client";
+import type { CoachOptionState } from "./ChatInput";
 import "./CoachPopover.css";
 
 interface CoachPopoverProps {
+  phase: "idle" | "loading" | "error";
+  // Known the INSTANT the "verdict" event arrives - well before `phase`
+  // settles back to "idle" for the rest of the check. null until then.
+  verdict: "clean" | "minor" | "fix" | null;
   meaning: string;
-  feedback: string;
-  options: CoachOption[];
-  loading: boolean;
-  // True while `meaning` is still a live, in-progress "meaning_chunk"
-  // stream rather than the finished result from the "core" event - shows
-  // it growing in place (the same token-by-token "zipper" feel the chat
-  // reply itself has) instead of the generic "Thinking…" placeholder,
-  // right up until the real feedback/options are ready.
-  streamingMeaning: boolean;
-  error: boolean;
-  // True while the SAME underlying streamed call's second phase (each
-  // option's own English translation + word-by-word breakdown) is still
-  // in flight - options themselves (and picking one) are already usable
-  // before this clears.
-  translationsPending: boolean;
+  meaningDone: boolean;
+  // Only meaningful for a "minor" verdict.
+  suggestion: string;
+  suggestionDone: boolean;
+  // Only meaningful for a "fix" verdict - 3 entries, seeded as empty
+  // skeletons the instant the verdict arrives (see ChatInput.tsx's
+  // fetchCoach), each filling in independently as its own events stream.
+  options: CoachOptionState[];
   // Which option the learner has picked, if any - stays set (and this
   // popover stays open/rendered) after a pick, so they can compare a
   // different option afterward. Not the same as "closed": only onClose
   // or onRegenerate make the popover go away/refetch.
   selectedIndex: number | null;
-  onSelect: (option: CoachOption, index: number) => void;
+  onSelect: (option: CoachOptionState, index: number) => void;
   onClose: () => void;
   onRegenerate: () => void;
-  // True when the model judged the draft basically already correct
-  // (empty `feedback`) - shows a compact "looks good, send as typed?"
-  // confirmation instead of the full meaning/feedback/options breakdown,
-  // since there's nothing to correct and no real choice to make.
-  clean: boolean;
+  // "clean": sends the draft verbatim. "minor": applies the (by-then-
+  // complete) suggestion into the draft first, then sends - see
+  // ChatInput.tsx's handleConfirmMinorSend.
   onConfirmSend: () => void;
+  onConfirmMinorSend: () => void;
 }
 
 const FORMALITY_LABEL: Record<string, string> = { neutral: "Natural", casual: "Casual", formal: "Formal" };
 
 export function CoachPopover({
+  phase,
+  verdict,
   meaning,
-  feedback,
+  meaningDone,
+  suggestion,
+  suggestionDone,
   options,
-  loading,
-  streamingMeaning,
-  error,
-  translationsPending,
   selectedIndex,
   onSelect,
   onClose,
   onRegenerate,
-  clean,
   onConfirmSend,
+  onConfirmMinorSend,
 }: CoachPopoverProps) {
+  const error = phase === "error";
+  // Before the verdict itself is known, there's nothing yet to show but
+  // the generic placeholder - once it arrives, the meaning row (framed as
+  // a statement or a question depending on the verdict) takes over even
+  // if the rest of the check ("loading") is still in flight.
+  const waitingForVerdict = phase === "loading" && verdict === null;
+
   return (
     <div className="coach-popover" role="tooltip">
       <div className="coach-popover__header-buttons">
@@ -58,7 +61,7 @@ export function CoachPopover({
           type="button"
           className="coach-popover__regenerate"
           onClick={onRegenerate}
-          disabled={loading}
+          disabled={phase === "loading"}
           aria-label="Get new suggestions"
           title="Get new suggestions"
         >
@@ -68,55 +71,70 @@ export function CoachPopover({
           ✕
         </button>
       </div>
-      {loading && streamingMeaning && meaning && (
-        // Live, in-progress text, same cadence as the chat reply's own
-        // streaming bubble - deliberately not wrapped in the "You mean"
-        // row below, which is reserved for the FINAL, settled meaning
-        // once "core" arrives. Not the same "Thinking…" status style
-        // below (not italicized/dimmed) since this is real content worth
-        // reading as it grows.
-        <div className="coach-popover__streaming-meaning">{meaning}</div>
-      )}
-      {loading && !(streamingMeaning && meaning) && <div className="coach-popover__status">Thinking…</div>}
+      {waitingForVerdict && <div className="coach-popover__status">Thinking…</div>}
       {error && <div className="coach-popover__status coach-popover__status--error">Couldn't get suggestions - try again</div>}
-      {!loading && !error && clean && (
-        <div className="coach-popover__confirm">
-          <span className="coach-popover__confirm-text">
-            Looks good. You meant to say <em>"{meaning}"</em>?
-          </span>
-          <button type="button" className="coach-popover__confirm-send" onClick={onConfirmSend}>
-            Send
-          </button>
-        </div>
-      )}
-      {!loading && !error && !clean && (
+      {!error && verdict !== null && (
         <>
           {meaning && (
             <div className="coach-popover__row">
-              <span className="coach-popover__label">You mean</span>
+              <span className="coach-popover__label">{verdict === "fix" ? "Did you mean" : "You mean"}</span>
               {meaning}
+              {verdict === "fix" ? "?" : ""}
             </div>
           )}
-          {feedback && <div className="coach-popover__feedback">{feedback}</div>}
-          <div className="coach-popover__options">
-            {options.map((opt, i) => {
-              const selected = selectedIndex === i;
-              return (
-                <div key={i} className={`coach-popover__option${selected ? " coach-popover__option--selected" : ""}`}>
-                  <button type="button" className="coach-popover__option-main" onClick={() => onSelect(opt, i)}>
-                    <span className="coach-popover__option-label">{FORMALITY_LABEL[opt.formality] ?? opt.formality}</span>
-                    <span className="coach-popover__option-text">{opt.spanish}</span>
-                  </button>
-                  {selected &&
-                    (opt.english ? (
-                      <div className="coach-popover__option-english">{opt.english}</div>
-                    ) : translationsPending ? (
-                      <div className="coach-popover__option-english coach-popover__option-english--loading">Translating…</div>
-                    ) : null)}
-                </div>
-              );
-            })}
-          </div>
+
+          {verdict === "clean" && meaningDone && (
+            <div className="coach-popover__confirm">
+              <span className="coach-popover__confirm-text">Looks good - send as typed?</span>
+              <button type="button" className="coach-popover__confirm-send" onClick={onConfirmSend}>
+                Send
+              </button>
+            </div>
+          )}
+
+          {verdict === "minor" && meaningDone && (
+            <div className="coach-popover__minor">
+              <div className="coach-popover__suggestion">
+                <span className="coach-popover__label">Tiny fix</span>
+                {suggestion || "…"}
+              </div>
+              <button type="button" className="coach-popover__confirm-send" onClick={onConfirmMinorSend} disabled={!suggestionDone}>
+                Send
+              </button>
+            </div>
+          )}
+
+          {verdict === "fix" && (
+            <div className="coach-popover__options">
+              {options.map((opt, i) => {
+                const selected = selectedIndex === i;
+                const isSkeleton = !opt.spanish && !opt.spanishDone;
+                return (
+                  <div
+                    key={i}
+                    className={`coach-popover__option${selected ? " coach-popover__option--selected" : ""}${
+                      isSkeleton ? " coach-popover__option--skeleton" : ""
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      className="coach-popover__option-main"
+                      onClick={() => onSelect(opt, i)}
+                      disabled={!opt.spanishDone}
+                    >
+                      <span className="coach-popover__option-label">{FORMALITY_LABEL[opt.formality] ?? opt.formality}</span>
+                      <span className="coach-popover__option-text">{opt.spanish || "···"}</span>
+                    </button>
+                    {opt.spanish && (
+                      <div className={`coach-popover__option-english${opt.english ? "" : " coach-popover__option-english--loading"}`}>
+                        {opt.english || "…"}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </>
       )}
     </div>
