@@ -1,9 +1,20 @@
 /* pointer-events:none on the wrap keeps it from blocking anything to its
    sides, with the actual popover box opting back into pointer-events.
    Needs its nearest position:relative ancestor to be whatever it should
-   dock against (.chat-input, a .chat-message__bubble, ...). */
+   dock against (.chat-input, a .chat-message__bubble, ...).
+   z-index has to live HERE, on the actually-positioned element - it used
+   to only be set on .docked-popover/.word-candidates-popover/etc (the
+   unpositioned inner content div), where it's simply inert per spec (z-
+   index has no effect on a position:static element). That silently left
+   every popover at the default stack level of a plain position:relative
+   box - indistinguishable from an ordinary LATER chat bubble's own
+   position:relative .chat-message__bubble, so a popover opened on an
+   EARLIER message lost the stacking tie-break (same level, later DOM
+   order wins) to any message that came after it and rendered hidden
+   behind it instead of on top, as a popover should always be. */
 .docked-popover-wrap {
   position: absolute;
+  z-index: 30;
   pointer-events: none;
 }
 

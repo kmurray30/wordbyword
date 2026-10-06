@@ -1,6 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import "./DockedPopover.css";
+
+// How far off the viewport's own edge a "right"/"left" popover is allowed
+// to sit before getting nudged back - matches FloatingPopover's own MARGIN.
+const EDGE_MARGIN = 8;
 
 interface DockedPopoverProps {
   children: ReactNode;
@@ -39,6 +43,14 @@ interface DockedPopoverProps {
 // time rather than hugging whichever word/button triggered it.
 export function DockedPopover({ children, position = "above", onMouseEnter, onMouseLeave }: DockedPopoverProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  // Only "right"/"left" need this: they dock flush against their anchor's
+  // own edge (see the CSS), and that anchor (a chat bubble) can sit
+  // anywhere horizontally - a short bubble near either side of a narrow
+  // mobile viewport leaves too little room for the popover to grow into
+  // before running off-screen. "above"/"below" don't have this problem -
+  // they're already full-width-with-margin relative to their anchor (see
+  // DockedPopover.css), which never exceeds the viewport on its own.
+  const [edgeShift, setEdgeShift] = useState(0);
 
   // "below" grows the page's own scrollable overflow downward from a
   // container that's often already flush with the bottom of the viewport
@@ -51,8 +63,55 @@ export function DockedPopover({ children, position = "above", onMouseEnter, onMo
     if (position === "below" || position === "right" || position === "left") wrapRef.current?.scrollIntoView({ block: "nearest" });
   }, [position]);
 
+  // Nudges a "right"/"left" popover back on screen if it would otherwise
+  // run past the viewport's own left/right edge - e.g. a short reply's
+  // bubble sitting close to the edge, combined with a long translation/
+  // note, could dock a popover that's mostly off-screen (unreadable, and
+  // the exact "should always fit on the mobile screen" bug report this
+  // guards against) without this. Deliberately NOT measured via the
+  // anchor's own position (no FloatingPopover-style portal+clamp here) -
+  // this keeps the CSS-inherited vertical/side docking (including however
+  // a mobile keyboard has already repositioned the anchor) and only
+  // corrects the one axis that can actually go wrong. Runs on every
+  // render, not just mount, since the popover's own width can change after
+  // its content finishes loading (a short "…" placeholder growing into a
+  // real, possibly long, translation) - the bail-out check below (only
+  // call setState when the value actually changed) keeps that from
+  // looping, same pattern FloatingPopover already uses for the same
+  // reason.
+  useLayoutEffect(() => {
+    if (position !== "right" && position !== "left") {
+      setEdgeShift((prev) => (prev === 0 ? prev : 0));
+      return;
+    }
+    const el = wrapRef.current;
+    if (!el) return;
+    // getBoundingClientRect() reflects whatever `edgeShift` is ALREADY
+    // applied as a transform right now - computing the new shift directly
+    // from it (instead of from the un-shifted position) would measure an
+    // already-corrected box, "fix" it again on top of that, overcorrect,
+    // measure THAT as the new baseline next render, and so on - an
+    // infinite oscillation (caught live: "Maximum update depth exceeded").
+    // Subtracting the currently-applied shift first recovers the natural,
+    // untransformed position every time, so each run's answer depends only
+    // on the anchor's own (stable) position and this popover's own
+    // (stable, once loaded) size - exactly the idempotent math
+    // FloatingPopover's analogous clamp relies on for the same reason.
+    const rect = el.getBoundingClientRect();
+    const naturalLeft = rect.left - edgeShift;
+    const naturalRight = rect.right - edgeShift;
+    let shift = 0;
+    if (naturalRight > window.innerWidth - EDGE_MARGIN) shift = window.innerWidth - EDGE_MARGIN - naturalRight;
+    else if (naturalLeft < EDGE_MARGIN) shift = EDGE_MARGIN - naturalLeft;
+    setEdgeShift((prev) => (prev === shift ? prev : shift));
+  });
+
   return (
-    <div ref={wrapRef} className={`docked-popover-wrap docked-popover-wrap--${position}`}>
+    <div
+      ref={wrapRef}
+      className={`docked-popover-wrap docked-popover-wrap--${position}`}
+      style={edgeShift ? { transform: `translateX(${edgeShift}px)` } : undefined}
+    >
       <div className="docked-popover" onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
         {children}
       </div>
