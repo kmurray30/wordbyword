@@ -48,6 +48,19 @@ def _run(text: str, events: list[tuple[str, object]]):
     return response, parsed
 
 
+def test_meaning_chunk_events_are_streamed_before_core():
+    events = [
+        ("meaning_chunk", "I want "),
+        ("meaning_chunk", "to go to the beach."),
+        ("core", {"meaning": "I want to go to the beach.", "feedback": "", "options": [("neutral", "Quiero ir a la playa.")]}),
+    ]
+    response, parsed = _run("quiero ir playa", events)
+
+    assert [name for name, _ in parsed] == ["meaning_chunk", "meaning_chunk", "core"]
+    assert parsed[0][1]["delta"] == "I want "
+    assert parsed[1][1]["delta"] == "to go to the beach."
+
+
 def test_core_event_is_streamed_with_options():
     core = {
         "meaning": "I want to go to the beach tomorrow.",

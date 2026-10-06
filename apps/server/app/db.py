@@ -42,6 +42,10 @@ def add_missing_columns(target_engine) -> None:
             existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(chat_message)")}
             if "session_id" not in existing:
                 conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN session_id VARCHAR(64) DEFAULT ''")
+            if "native_text" not in existing:
+                conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN native_text VARCHAR(1024) DEFAULT ''")
+            if "target_text" not in existing:
+                conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN target_text VARCHAR(1024) DEFAULT ''")
 
         if table_exists("message_token"):
             existing_token_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(message_token)")}

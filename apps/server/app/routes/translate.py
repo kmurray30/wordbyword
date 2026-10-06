@@ -12,6 +12,7 @@ from app.schemas import (
     CoachCoreEvent,
     CoachDraftRequest,
     CoachErrorEvent,
+    CoachMeaningChunkEvent,
     CoachOption,
     CoachTranslationsEvent,
     DraftSpan,
@@ -26,6 +27,7 @@ from app.schemas import (
     TranslateTextRequest,
     TranslateTextResponse,
 )
+from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
 from app.translate.span_matching import match_spans
@@ -111,16 +113,20 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
 
     Streamed as Server-Sent Events, one event per phase of the SAME
     underlying LLM call (app.translate.llm_translate.coach_draft_stream):
-    a "core" event the moment the feedback + options themselves are ready
-    (usable immediately - the frontend shows these without waiting on
-    anything else), then a "translations" event once each option's own
-    English translation + word-by-word breakdown finishes streaming
-    afterward (for pre-populating the chat input's gloss cache the instant
-    an option is picked - see CoachOption's fields). An "error" event
-    means the core phase itself never produced anything usable; a stream
-    that ends after "core" with no "translations" just means that part
-    wasn't ready - that's not itself an error (see coach_draft_stream's
-    docstring)."""
+    first, "meaning_chunk" events carry the "you mean" restatement live,
+    delta by delta, as the model generates it - the same token-by-token
+    feel /chat/turn/stream's own reply already has - then a "core" event
+    once the feedback + options themselves are ready (usable immediately -
+    the frontend shows these without waiting on anything else, and its
+    `meaning` is just the "meaning_chunk" deltas already assembled), then
+    a "translations" event once each option's own English translation +
+    word-by-word breakdown finishes streaming afterward (for pre-
+    populating the chat input's gloss cache the instant an option is
+    picked - see CoachOption's fields). An "error" event means nothing
+    usable was ever produced (even if some "meaning_chunk" deltas already
+    arrived); a stream that ends after "core" with no "translations" just
+    means that part wasn't ready - that's not itself an error (see
+    coach_draft_stream's docstring)."""
     history_rows = session.scalars(
         select(ChatMessage)
         .where(ChatMessage.session_id == req.session_id)
@@ -132,8 +138,16 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     def events():
         core_options: list[tuple[str, str]] = []
         try:
-            for kind, payload in llm_translate.coach_draft_stream(req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE):
-                if kind == "core":
+            for item in iter_with_keepalive(
+                llm_translate.coach_draft_stream(req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+            ):
+                if item is None:
+                    yield KEEPALIVE_LINE
+                    continue
+                kind, payload = item
+                if kind == "meaning_chunk":
+                    yield _sse("meaning_chunk", CoachMeaningChunkEvent(delta=payload).model_dump_json())
+                elif kind == "core":
                     core_options = payload["options"]
                     core_event = CoachCoreEvent(
                         meaning=payload["meaning"],

@@ -47,6 +47,15 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Only populated for role == "user": the same corrected-native-text/
+    # target-translation pair /translate/interpret computes live, persisted
+    # here too so a history-hydrated message doesn't need to re-fetch it
+    # (and show "Translating…" indefinitely if that fetch is ever slow/
+    # stuck) on every page reload. Empty string if the LLM call failed when
+    # this message was first sent - same "no fallback" convention as the
+    # assistant side's note/literal columns below.
+    native_text: Mapped[str] = mapped_column(String(1024), default="")
+    target_text: Mapped[str] = mapped_column(String(1024), default="")
 
     tokens: Mapped[list["MessageToken"]] = relationship(
         back_populates="message", cascade="all, delete-orphan", order_by="MessageToken.position"

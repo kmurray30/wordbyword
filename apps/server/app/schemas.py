@@ -38,6 +38,25 @@ class ChatTurnResponse(BaseModel):
     # string if that call failed (rare; the per-word glosses are then also
     # empty - no dictionary/MT fallback).
     translation: str = ""
+    # The id this same turn's own user-sent message was persisted under -
+    # the frontend already fetches that message's native/target
+    # interpretation live (via /translate/interpret, fired the moment it's
+    # sent, independent of this call) and needs this id to persist that
+    # result back (POST /chat/message/interpretation) so it survives a
+    # reload. Not computed here directly - doing so would add a second,
+    # serial LLM call to every turn's latency for no benefit, since the
+    # frontend already has its own copy on the way.
+    user_message_id: int = 0
+
+
+class SaveUserInterpretationRequest(BaseModel):
+    message_id: int
+    native: str
+    target: str
+
+
+class SaveUserInterpretationResponse(BaseModel):
+    ok: bool
 
 
 # POST /chat/turn/stream sends these as SSE events rather than a single JSON
@@ -60,6 +79,14 @@ class ChatHistoryMessage(BaseModel):
     role: str
     text: str
     tokens: list[TokenAnnotation] = []
+    # Only meaningful for role == "user" (see ChatMessage.native_text/
+    # target_text) - persisted so the frontend can hydrate its two
+    # translation rows straight from history instead of re-fetching
+    # /translate/interpret (and showing "Translating…" indefinitely while
+    # that fetch is stuck/slow) on every reload. Empty for an assistant row,
+    # or if the interpret call failed when this message was first sent.
+    native: str = ""
+    target: str = ""
 
 
 class ChatHistoryResponse(BaseModel):
@@ -187,6 +214,15 @@ class CoachOption(BaseModel):
 # it arrives; PART 2 (translations) fills in each option's english/spans
 # a bit later, from the SAME underlying LLM call (see app.translate.
 # llm_translate.coach_draft_stream).
+class CoachMeaningChunkEvent(BaseModel):
+    # One newly-arrived piece of PART 1's plain-text "meaning" - streamed
+    # live, well before the "core" event carries the finished, assembled
+    # version of the same text (see app.translate.llm_translate.
+    # coach_draft_stream's docstring) - the same "zipper" delta-at-a-time
+    # feel /chat/turn/stream's own ChatTurnChunkEvent already has.
+    delta: str
+
+
 class CoachCoreEvent(BaseModel):
     # Best-guess English meaning of what the learner is trying to say -
     # empty if the draft was empty.

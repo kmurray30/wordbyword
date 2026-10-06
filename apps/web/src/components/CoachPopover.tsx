@@ -6,6 +6,12 @@ interface CoachPopoverProps {
   feedback: string;
   options: CoachOption[];
   loading: boolean;
+  // True while `meaning` is still a live, in-progress "meaning_chunk"
+  // stream rather than the finished result from the "core" event - shows
+  // it growing in place (the same token-by-token "zipper" feel the chat
+  // reply itself has) instead of the generic "Thinking…" placeholder,
+  // right up until the real feedback/options are ready.
+  streamingMeaning: boolean;
   error: boolean;
   // True while the SAME underlying streamed call's second phase (each
   // option's own English translation + word-by-word breakdown) is still
@@ -35,6 +41,7 @@ export function CoachPopover({
   feedback,
   options,
   loading,
+  streamingMeaning,
   error,
   translationsPending,
   selectedIndex,
@@ -61,7 +68,16 @@ export function CoachPopover({
           ✕
         </button>
       </div>
-      {loading && <div className="coach-popover__status">Thinking…</div>}
+      {loading && streamingMeaning && meaning && (
+        // Live, in-progress text, same cadence as the chat reply's own
+        // streaming bubble - deliberately not wrapped in the "You mean"
+        // row below, which is reserved for the FINAL, settled meaning
+        // once "core" arrives. Not the same "Thinking…" status style
+        // below (not italicized/dimmed) since this is real content worth
+        // reading as it grows.
+        <div className="coach-popover__streaming-meaning">{meaning}</div>
+      )}
+      {loading && !(streamingMeaning && meaning) && <div className="coach-popover__status">Thinking…</div>}
       {error && <div className="coach-popover__status coach-popover__status--error">Couldn't get suggestions - try again</div>}
       {!loading && !error && clean && (
         <div className="coach-popover__confirm">

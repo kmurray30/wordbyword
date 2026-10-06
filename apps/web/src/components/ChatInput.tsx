@@ -129,6 +129,14 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     options: CoachOption[];
   } | null>(null);
   const [coachState, setCoachState] = useState<"idle" | "loading" | "error">("idle");
+  // The "you mean" restatement's live text, as "meaning_chunk" events
+  // stream it in - shown in place of the static "Thinking…" placeholder
+  // while coachState is still "loading" and coachResult hasn't arrived
+  // yet, for the same token-by-token "zipper" feel the chat reply itself
+  // already has (see api.coachDraftStream's docstring). Cleared on every
+  // fresh fetchCoach call; once "core" actually arrives, coachResult.meaning
+  // takes over as the source of truth and this is no longer read.
+  const [streamingMeaning, setStreamingMeaning] = useState("");
   // True while the SAME streamed /translate/coach call's second phase
   // (each option's own English translation + word-by-word breakdown) is
   // still in flight - the options themselves (coachState above) are
@@ -596,12 +604,15 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     setCoachState("loading");
     setCoachTranslationsPending(false);
     setSelectedCoachOptionIndex(null);
+    setStreamingMeaning("");
 
     (async () => {
       try {
         for await (const event of api.coachDraftStream({ text: value, session_id: sessionId }, controller.signal)) {
           if (controller.signal.aborted) return;
-          if (event.type === "core") {
+          if (event.type === "meaning_chunk") {
+            setStreamingMeaning((prev) => prev + event.data.delta);
+          } else if (event.type === "core") {
             setCoachResult({ meaning: event.data.meaning, feedback: event.data.feedback, options: event.data.options });
             setCoachState("idle");
             setCoachTranslationsPending(true);
@@ -876,10 +887,11 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
           position="below"
         >
           <CoachPopover
-            meaning={coachResult?.meaning ?? ""}
+            meaning={coachResult?.meaning ?? streamingMeaning}
             feedback={coachResult?.feedback ?? ""}
             options={coachResult?.options ?? []}
             loading={coachState === "loading"}
+            streamingMeaning={coachState === "loading" && !coachResult}
             error={coachState === "error"}
             translationsPending={coachTranslationsPending}
             selectedIndex={selectedCoachOptionIndex}

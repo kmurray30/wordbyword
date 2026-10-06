@@ -59,6 +59,13 @@
   font-style: normal;
 }
 
+/* The live "you mean" text streaming in, char by char, before "core"
+   arrives - not italicized/dimmed like the plain "Thinking…" status it
+   replaces, since this is real content worth reading as it grows. */
+.coach-popover__streaming-meaning {
+  color: inherit;
+}
+
 .coach-popover__row {
   display: flex;
   flex-wrap: wrap;

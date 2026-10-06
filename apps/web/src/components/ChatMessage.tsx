@@ -37,6 +37,21 @@ export interface DisplayMessage {
   // re-award familiarity for words you've seen many times before and
   // re-fire an LLM translation call per historical message, for nothing.
   fromHistory?: boolean;
+  // Only set once the backend has assigned a real id to a freshly-sent
+  // USER message (see App.tsx's handleSend, which patches this in once the
+  // turn's "done" event carries ChatTurnResponse.user_message_id). Used
+  // only to persist this message's live-fetched interpretation back to the
+  // server (see the persist effect below) - deliberately a separate field
+  // from `id` (the stable local id used as this component's React key) so
+  // learning the real id doesn't remount the component and lose state.
+  serverId?: number;
+  // Hydrated from GET /chat/history for a USER message (see ChatMessage.
+  // native_text/target_text on the backend) - lets this component show its
+  // two translation rows instantly instead of "Translating…" on every
+  // reload. Empty/absent for a row that predates this persistence feature,
+  // or whose original /translate/interpret call failed.
+  native?: string;
+  target?: string;
 }
 
 // How long an agent word can go un-hovered before we count that as passive
@@ -178,6 +193,44 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
       })
       .finally(() => setUserInterpreting(false));
   };
+
+  // A history-hydrated user message already carries its interpretation
+  // from GET /chat/history (see DisplayMessage.native/target) - show it
+  // immediately instead of leaving userNative/userTarget null, which would
+  // otherwise only resolve once the learner actually hovers/pins the
+  // translation (fetchUserInterpretation is on-demand, not eager, for a
+  // history row - see the effect below). Absent/empty just means this row
+  // predates the persistence feature or its original call failed; the
+  // on-demand fetch still covers that case.
+  useEffect(() => {
+    if (!message.fromHistory || message.role !== "user") return;
+    if (message.native && message.target) {
+      setUserNative(message.native);
+      setUserTarget(message.target);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message.id]);
+
+  // Persists a freshly-sent user message's live-fetched interpretation back
+  // to the server, once BOTH pieces are known: the backend's real id for
+  // this message (message.serverId, patched in by App.tsx once the turn's
+  // "done" event arrives) and the interpretation itself (userNative/
+  // userTarget, from fetchUserInterpretation above) - whichever resolves
+  // last triggers this. Guarded by a ref (not just userNative !== null,
+  // which fetchUserInterpretation's own guard already covers) so a
+  // mid-flight state change can't fire this twice. Skipped entirely for a
+  // history row (already persisted, nothing new to save) or a failed
+  // translation (nothing worth persisting).
+  const persistedInterpretationRef = useRef(false);
+  useEffect(() => {
+    if (persistedInterpretationRef.current) return;
+    if (message.role !== "user" || message.fromHistory) return;
+    if (message.serverId === undefined) return;
+    if (userNative === null || userTarget === null) return;
+    if (userNative === TRANSLATION_FAILED || userTarget === TRANSLATION_FAILED) return;
+    persistedInterpretationRef.current = true;
+    api.saveUserInterpretation({ message_id: message.serverId, native: userNative, target: userTarget }).catch(() => {});
+  }, [message.role, message.fromHistory, message.serverId, userNative, userTarget]);
 
   // Kick the translation off in the background as soon as the message is
   // shown, rather than waiting for the toggle - the LLM-backed translation

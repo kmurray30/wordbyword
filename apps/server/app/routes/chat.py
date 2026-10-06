@@ -16,8 +16,11 @@ from app.schemas import (
     ChatTurnRequest,
     ChatTurnResponse,
     ClearHistoryResponse,
+    SaveUserInterpretationRequest,
+    SaveUserInterpretationResponse,
     TokenAnnotation,
 )
+from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
 from app.translate.lemmatizer import Token, analyze
 from app.translate.span_matching import MatchedSpan, match_spans
@@ -100,10 +103,34 @@ def get_history(session_id: str, session: Session = Depends(get_session)) -> Cha
                 )
                 for t in row.tokens
             ],
+            native=row.native_text,
+            target=row.target_text,
         )
         for row in rows
     ]
     return ChatHistoryResponse(messages=messages)
+
+
+@router.post("/message/interpretation", response_model=SaveUserInterpretationResponse)
+def save_user_interpretation(
+    req: SaveUserInterpretationRequest, session: Session = Depends(get_session)
+) -> SaveUserInterpretationResponse:
+    """The frontend fetches a fresh user message's native/target
+    interpretation live (POST /translate/interpret, fired the moment the
+    message is sent - see ChatMessage.tsx's fetchUserInterpretation) rather
+    than this server computing it itself as part of /chat/turn (which would
+    add a second, serial LLM call to every turn's latency). This just
+    persists that already-fetched result against the message it belongs to,
+    so GET /chat/history can hydrate it directly on a later reload instead
+    of leaving the learner looking at "Translating…" forever for an old
+    message if that on-demand fetch is ever slow or fails."""
+    message = session.get(ChatMessage, req.message_id)
+    if message is None or message.role != "user":
+        raise HTTPException(status_code=404, detail="user message not found")
+    message.native_text = req.native
+    message.target_text = req.target
+    session.commit()
+    return SaveUserInterpretationResponse(ok=True)
 
 
 @router.post("/history/clear", response_model=ClearHistoryResponse)
@@ -115,7 +142,7 @@ def clear_history(session_id: str, session: Session = Depends(get_session)) -> C
     return ClearHistoryResponse(cleared=len(rows))
 
 
-def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str) -> ChatTurnResponse:
+def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str, user_message_id: int) -> ChatTurnResponse:
     """Shared by both /chat/turn and /chat/turn/stream - everything that
     happens once the model's full reply text is known: one LLM call glosses
     every word/group in the reply using its meaning IN CONTEXT, and returns
@@ -188,7 +215,13 @@ def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str)
     session.commit()
     session.refresh(assistant_message)
 
-    return ChatTurnResponse(message_id=assistant_message.id, text=reply_text, tokens=annotations, translation=translation)
+    return ChatTurnResponse(
+        message_id=assistant_message.id,
+        text=reply_text,
+        tokens=annotations,
+        translation=translation,
+        user_message_id=user_message_id,
+    )
 
 
 @router.post("/turn", response_model=ChatTurnResponse)
@@ -212,9 +245,11 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
         # in history forever once saved.
         raise HTTPException(status_code=502, detail="Model returned an empty reply")
 
-    session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
+    user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
+    session.add(user_message)
+    session.flush()  # assigns user_message.id without committing yet - needed below
 
-    return _gloss_and_persist_reply(session, req.session_id, reply_text)
+    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message.id)
 
 
 @router.post("/turn/stream")
@@ -229,7 +264,10 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
     payload either way, just delivered progressively here."""
     history = _recent_history(session, req.session_id)
     messages = build_messages(history, req.message)
-    session.add(ChatMessage(session_id=req.session_id, role="user", text=req.message))
+    user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
+    session.add(user_message)
+    session.flush()  # assigns user_message.id without committing yet - needed below
+    user_message_id = user_message.id
 
     def events():
         # A leading SSE comment line (any line starting with ":" - part of
@@ -245,7 +283,10 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
 
         chunks: list[str] = []
         try:
-            for delta in model_chat_stream(messages):
+            for delta in iter_with_keepalive(model_chat_stream(messages)):
+                if delta is None:
+                    yield KEEPALIVE_LINE
+                    continue
                 chunks.append(delta)
                 yield _sse("chunk", ChatTurnChunkEvent(delta=delta).model_dump_json())
         except ModelServerUnavailableError as exc:
@@ -264,7 +305,7 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
             # user-only turn in history either.
             yield _sse("error", ChatTurnErrorEvent(message="Model returned an empty reply").model_dump_json())
             return
-        result = _gloss_and_persist_reply(session, req.session_id, reply_text)
+        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message_id)
         yield _sse("done", result.model_dump_json())
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)

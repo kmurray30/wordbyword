@@ -21,6 +21,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chat/message/interpretation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save User Interpretation
+         * @description The frontend fetches a fresh user message's native/target
+         *     interpretation live (POST /translate/interpret, fired the moment the
+         *     message is sent - see ChatMessage.tsx's fetchUserInterpretation) rather
+         *     than this server computing it itself as part of /chat/turn (which would
+         *     add a second, serial LLM call to every turn's latency). This just
+         *     persists that already-fetched result against the message it belongs to,
+         *     so GET /chat/history can hydrate it directly on a later reload instead
+         *     of leaving the learner looking at "Translating…" forever for an old
+         *     message if that on-demand fetch is ever slow or fails.
+         */
+        post: operations["save_user_interpretation_chat_message_interpretation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/chat/history/clear": {
         parameters: {
             query?: never;
@@ -322,6 +350,16 @@ export interface components {
              * @default []
              */
             tokens: components["schemas"]["TokenAnnotation"][];
+            /**
+             * Native
+             * @default
+             */
+            native: string;
+            /**
+             * Target
+             * @default
+             */
+            target: string;
         };
         /** ChatHistoryResponse */
         ChatHistoryResponse: {
@@ -348,6 +386,11 @@ export interface components {
              * @default
              */
             translation: string;
+            /**
+             * User Message Id
+             * @default 0
+             */
+            user_message_id: number;
         };
         /** ClearHistoryResponse */
         ClearHistoryResponse: {
@@ -444,6 +487,20 @@ export interface components {
             familiarity: number;
             /** Review Interval Days */
             review_interval_days: number;
+        };
+        /** SaveUserInterpretationRequest */
+        SaveUserInterpretationRequest: {
+            /** Message Id */
+            message_id: number;
+            /** Native */
+            native: string;
+            /** Target */
+            target: string;
+        };
+        /** SaveUserInterpretationResponse */
+        SaveUserInterpretationResponse: {
+            /** Ok */
+            ok: boolean;
         };
         /** TTSRequest */
         TTSRequest: {
@@ -567,6 +624,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatHistoryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_user_interpretation_chat_message_interpretation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveUserInterpretationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaveUserInterpretationResponse"];
                 };
             };
             /** @description Validation Error */

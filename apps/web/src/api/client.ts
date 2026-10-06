@@ -31,6 +31,11 @@ type InterpretInputRequest =
 type InterpretInputResponse =
   paths["/translate/interpret"]["post"]["responses"][200]["content"]["application/json"];
 
+type SaveUserInterpretationRequest =
+  paths["/chat/message/interpretation"]["post"]["requestBody"]["content"]["application/json"];
+type SaveUserInterpretationResponse =
+  paths["/chat/message/interpretation"]["post"]["responses"][200]["content"]["application/json"];
+
 type CoachDraftRequest =
   paths["/translate/coach"]["post"]["requestBody"]["content"]["application/json"];
 
@@ -39,6 +44,10 @@ type CoachDraftRequest =
 // OpenAPI-generated response type for it - these mirror app/schemas.py's
 // CoachOption/CoachCoreEvent/CoachTranslationsEvent/CoachErrorEvent by
 // hand instead.
+export interface CoachMeaningChunkEvent {
+  delta: string;
+}
+
 export interface CoachOption {
   formality: string;
   spanish: string;
@@ -64,6 +73,7 @@ export interface CoachErrorEvent {
 }
 
 export type CoachStreamEvent =
+  | { type: "meaning_chunk"; data: CoachMeaningChunkEvent }
   | { type: "core"; data: CoachCoreEvent }
   | { type: "translations"; data: CoachTranslationsEvent }
   | { type: "error"; data: CoachErrorEvent };
@@ -99,12 +109,15 @@ async function* readServerSentEvents(response: Response): AsyncGenerator<{ event
 }
 
 // Reads the coaching response's SSE stream incrementally, yielding each
-// event as it completes - "core" (the feedback + options themselves,
-// usable right away) typically arrives well before "translations" (each
-// option's own English translation + word-by-word breakdown, streamed
-// from the SAME underlying LLM call - see coach_draft_stream's docstring
-// in app/translate/llm_translate.py). `signal` lets the caller abort mid-
-// stream (e.g. the draft changed before coaching finished).
+// event as it completes - "meaning_chunk" events stream the "you mean"
+// restatement live, delta by delta, well before "core" (the feedback +
+// options themselves, usable right away - its own `meaning` is just those
+// deltas already assembled), which in turn typically arrives well before
+// "translations" (each option's own English translation + word-by-word
+// breakdown, streamed from the SAME underlying LLM call - see
+// coach_draft_stream's docstring in app/translate/llm_translate.py).
+// `signal` lets the caller abort mid-stream (e.g. the draft changed before
+// coaching finished).
 async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal): AsyncGenerator<CoachStreamEvent> {
   const response = await fetchWithColdStartRetry(`${BASE_URL}/translate/coach`, {
     method: "POST",
@@ -117,7 +130,7 @@ async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal):
     throw new Error(`/translate/coach failed (${response.status}): ${detail}`);
   }
   for await (const { event, data } of readServerSentEvents(response)) {
-    if (event === "core" || event === "translations" || event === "error") {
+    if (event === "meaning_chunk" || event === "core" || event === "translations" || event === "error") {
       yield { type: event, data: JSON.parse(data) } as CoachStreamEvent;
     }
   }
@@ -297,6 +310,8 @@ export const api = {
   glossSpans: (body: GlossSpansRequest) => post<GlossSpansRequest, GlossSpansResponse>("/translate/gloss-spans", body),
   interpretInput: (body: InterpretInputRequest) =>
     post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", body),
+  saveUserInterpretation: (body: SaveUserInterpretationRequest) =>
+    post<SaveUserInterpretationRequest, SaveUserInterpretationResponse>("/chat/message/interpretation", body),
   coachDraftStream,
   chatTurnStream,
   rewardEvent: (body: RewardEventRequest) =>

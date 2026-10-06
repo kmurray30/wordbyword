@@ -65,6 +65,8 @@ function App() {
           text: m.text,
           tokens: m.tokens,
           fromHistory: true,
+          native: m.native,
+          target: m.target,
         }));
         // This fetch can resolve after the user has already sent a message
         // (a cold-started backend makes it slow enough for that to happen) -
@@ -113,7 +115,8 @@ function App() {
 
   const handleSend = async (text: string) => {
     setError(null);
-    setMessages((prev) => [...prev, { id: nextLocalId--, role: "user", text }]);
+    const userLocalId = nextLocalId--;
+    setMessages((prev) => [...prev, { id: userLocalId, role: "user", text }]);
     setStreamingText("");
 
     try {
@@ -125,7 +128,12 @@ function App() {
         } else {
           const res = event.data;
           setMessages((prev) => [
-            ...prev,
+            // Patches the real backend id onto the user message just sent
+            // (see ChatMessage.tsx's persist effect) without touching its
+            // `id` - that's still used as this list's React key, and
+            // swapping it for the server's id here would remount that
+            // bubble instead of just updating a prop.
+            ...prev.map((m) => (m.id === userLocalId ? { ...m, serverId: res.user_message_id } : m)),
             { id: res.message_id, role: "assistant", text: res.text, tokens: res.tokens, translation: res.translation },
           ]);
         }

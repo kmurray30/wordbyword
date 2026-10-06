@@ -8,8 +8,8 @@ from sqlalchemy.orm import sessionmaker
 from app.chat.openai_client import ModelServerUnavailableError
 from app.db import Base
 from app.models import ChatMessage
-from app.routes.chat import get_history, take_turn
-from app.schemas import ChatTurnRequest
+from app.routes.chat import get_history, save_user_interpretation, take_turn
+from app.schemas import ChatTurnRequest, SaveUserInterpretationRequest
 
 
 def _session():
@@ -159,6 +159,58 @@ def test_word_missing_from_llm_spans_gets_empty_gloss():
     assert by_surface["grande"].gloss == "big"
     assert by_surface["gato"].gloss == ""
     assert by_surface["gato"].note == ""
+
+
+def test_turn_response_carries_the_user_messages_own_id():
+    # The frontend fetches the user message's own native/target
+    # interpretation live (POST /translate/interpret), independent of this
+    # call, and needs this id to persist that result back (POST
+    # /chat/message/interpretation) once both are known - see
+    # save_user_interpretation below.
+    session = _session()
+    with (
+        patch("app.routes.chat.model_chat", return_value="Hola"),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+    ):
+        result = take_turn(ChatTurnRequest(session_id="t8", message="hola"), session=session)
+
+    user_row = session.query(ChatMessage).filter(ChatMessage.role == "user").one()
+    assert result.user_message_id == user_row.id
+
+
+def test_save_user_interpretation_persists_and_survives_a_history_reload():
+    session = _session()
+    with (
+        patch("app.routes.chat.model_chat", return_value="Hola"),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+    ):
+        result = take_turn(ChatTurnRequest(session_id="t9", message="hola amigo"), session=session)
+
+    save_user_interpretation(
+        SaveUserInterpretationRequest(message_id=result.user_message_id, native="Hello, friend.", target="Hola, amigo."),
+        session=session,
+    )
+
+    history = get_history(session_id="t9", session=session)
+    user_message = next(m for m in history.messages if m.role == "user")
+    assert user_message.native == "Hello, friend."
+    assert user_message.target == "Hola, amigo."
+
+
+def test_save_user_interpretation_404s_for_an_assistant_message():
+    session = _session()
+    with (
+        patch("app.routes.chat.model_chat", return_value="Hola"),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+    ):
+        result = take_turn(ChatTurnRequest(session_id="t10", message="hola"), session=session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        save_user_interpretation(
+            SaveUserInterpretationRequest(message_id=result.message_id, native="x", target="y"),
+            session=session,
+        )
+    assert exc_info.value.status_code == 404
 
 
 def test_multi_word_group_shares_one_gloss_across_both_tokens():

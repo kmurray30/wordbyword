@@ -443,10 +443,10 @@ def test_coach_draft_stream_empty_input_short_circuits():
     mock_stream.assert_not_called()
 
 
-def test_coach_draft_stream_yields_core_then_translations():
-    core_json = (
-        '{"meaning": "I want to go to the beach tomorrow.", '
-        '"feedback": "Good attempt - just a word order slip.", '
+def test_coach_draft_stream_yields_meaning_chunks_then_core_then_translations():
+    meaning_text = "I want to go to the beach tomorrow."
+    options_json = (
+        '{"feedback": "Good attempt - just a word order slip.", '
         '"options": ['
         '{"formality": "neutral", "spanish": "Quiero ir a la playa mañana."}, '
         '{"formality": "casual", "spanish": "Quiero ir a la playa mañana, ¿sí?"}'
@@ -459,19 +459,22 @@ def test_coach_draft_stream_yields_core_then_translations():
         '{"english": "I want to go to the beach tomorrow, yeah?", "spans": []}'
         "]}"
     )
-    chunks = [core_json, "<<<TRANSLATIONS>>>", translations_json]
+    chunks = [meaning_text, "<<<OPTIONS>>>", options_json, "<<<TRANSLATIONS>>>", translations_json]
     with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)) as mock_stream:
         events = list(coach_draft_stream("quiero playa mañana ir", [], "en", "es"))
 
-    assert [kind for kind, _ in events] == ["core", "translations"]
-    core = events[0][1]
-    assert core["meaning"] == "I want to go to the beach tomorrow."
+    kinds = [kind for kind, _ in events]
+    assert kinds[-2:] == ["core", "translations"]
+    assert all(k == "meaning_chunk" for k in kinds[:-2])
+    assert "".join(d for kind, d in events if kind == "meaning_chunk") == meaning_text
+    core = next(payload for kind, payload in events if kind == "core")
+    assert core["meaning"] == meaning_text
     assert core["feedback"] == "Good attempt - just a word order slip."
     assert core["options"] == [
         ("neutral", "Quiero ir a la playa mañana."),
         ("casual", "Quiero ir a la playa mañana, ¿sí?"),
     ]
-    translations = events[1][1]
+    translations = next(payload for kind, payload in events if kind == "translations")
     assert translations[0]["english"] == "I want to go to the beach tomorrow."
     assert translations[0]["spans"] == [
         {"surface": "Quiero", "gloss": "I want", "note": "", "translation": "", "alternate_gloss": "", "literal": ""}
@@ -482,64 +485,102 @@ def test_coach_draft_stream_yields_core_then_translations():
     assert messages[-1] == {"role": "user", "content": "quiero playa mañana ir"}
 
 
-def test_coach_draft_stream_marker_split_across_chunks():
-    # The marker can land anywhere relative to chunk boundaries - the
-    # buffer accumulates across chunks regardless, so this must behave
-    # identically to the marker arriving in one whole chunk.
-    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
-    marker = "<<<TRANSLATIONS>>>"
+def test_coach_draft_stream_markers_split_across_chunks():
+    # A marker can land anywhere relative to chunk boundaries - the buffer
+    # accumulates across chunks regardless, so this must behave
+    # identically to each marker arriving in one whole chunk.
+    meaning_text = "x"
+    options_json = '{"feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
     translations_json = '{"options": [{"english": "z", "spans": []}]}'
-    full = core_json + marker + translations_json
+    full = meaning_text + "<<<OPTIONS>>>" + options_json + "<<<TRANSLATIONS>>>" + translations_json
     chunks = [full[i : i + 7] for i in range(0, len(full), 7)]  # arbitrary small chunks
     with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
         events = list(coach_draft_stream("algo", [], "en", "es"))
 
-    assert [kind for kind, _ in events] == ["core", "translations"]
-    assert events[0][1]["options"] == [("neutral", "y")]
-    assert events[1][1] == [{"english": "z", "spans": []}]
+    kinds = [kind for kind, _ in events]
+    assert kinds.count("core") == 1
+    assert kinds.count("translations") == 1
+    assert "".join(d for kind, d in events if kind == "meaning_chunk") == meaning_text
+    core = next(payload for kind, payload in events if kind == "core")
+    assert core["options"] == [("neutral", "y")]
+    translations = next(payload for kind, payload in events if kind == "translations")
+    assert translations == [{"english": "z", "spans": []}]
 
 
-def test_coach_draft_stream_core_only_when_marker_never_arrives():
+def test_coach_draft_stream_core_only_when_translations_marker_never_arrives():
     # Token budget pressure (or the model just not getting that far) can
-    # leave PART 2 - and the marker - entirely unwritten. The whole buffer
-    # should still work as PART 1 on its own.
-    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter([core_json])):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    assert [kind for kind, _ in events] == ["core"]
-    assert events[0][1]["options"] == [("neutral", "y")]
-
-
-def test_coach_draft_stream_defaults_unknown_formality_to_neutral():
-    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "sarcastic", "spanish": "y"}]}'
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter([core_json])):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    assert events[0][1]["options"] == [("neutral", "y")]
-
-
-def test_coach_draft_stream_translations_missing_is_not_fatal():
-    # PART 2 garbled/missing shouldn't take PART 1 down with it - the
-    # caller already has (and may have acted on) the core event.
-    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
-    chunks = [core_json, "<<<TRANSLATIONS>>>", "not json at all"]
+    # leave PART 3 - and its marker - entirely unwritten. The whole
+    # remaining buffer should still work as PART 2 (feedback + options) on
+    # its own.
+    options_json = '{"feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    chunks = ["x", "<<<OPTIONS>>>", options_json]
     with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
         events = list(coach_draft_stream("algo", [], "en", "es"))
 
-    assert [kind for kind, _ in events] == ["core"]
+    assert [kind for kind, _ in events if kind != "meaning_chunk"] == ["core"]
+    core = next(payload for kind, payload in events if kind == "core")
+    assert core["options"] == [("neutral", "y")]
 
 
-def test_coach_draft_stream_raises_when_core_itself_never_parses():
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(["not json at all"])):
+def test_coach_draft_stream_raises_when_options_marker_never_arrives():
+    # No options at all were ever produced - the meaning text (if any)
+    # already streamed as "meaning_chunk" events doesn't change that
+    # there's nothing usable to act on.
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(["just some plain text, no marker"])):
+        with pytest.raises(TranslationUnavailableError):
+            list(coach_draft_stream("algo", [], "en", "es"))
+
+
+def test_coach_draft_stream_never_leaks_a_marker_fragment_into_meaning_chunks():
+    # A chunk boundary landing mid-marker must never leak a piece of the
+    # marker itself into a "meaning_chunk" delta - the withheld safety
+    # tail (_MEANING_MARKER_TAIL) exists exactly to prevent this.
+    options_json = '{"feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    # Split right after "<<<OPTI", mid-marker - the worst case for a naive
+    # implementation that streams everything not yet proven to be the
+    # marker.
+    chunks = ["meaning text<<<OPTI", "ONS>>>" + options_json]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    meaning = "".join(d for kind, d in events if kind == "meaning_chunk")
+    assert meaning == "meaning text"
+    assert "<" not in meaning
+
+
+def test_coach_draft_stream_defaults_unknown_formality_to_neutral():
+    options_json = '{"feedback": "", "options": [{"formality": "sarcastic", "spanish": "y"}]}'
+    chunks = ["x", "<<<OPTIONS>>>", options_json]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    core = next(payload for kind, payload in events if kind == "core")
+    assert core["options"] == [("neutral", "y")]
+
+
+def test_coach_draft_stream_translations_missing_is_not_fatal():
+    # PART 3 garbled/missing shouldn't take PART 1/2 down with it - the
+    # caller already has (and may have acted on) the core event.
+    options_json = '{"feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    chunks = ["x", "<<<OPTIONS>>>", options_json, "<<<TRANSLATIONS>>>", "not json at all"]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    assert [kind for kind, _ in events if kind != "meaning_chunk"] == ["core"]
+
+
+def test_coach_draft_stream_raises_when_options_json_never_parses():
+    chunks = ["x", "<<<OPTIONS>>>", "not json at all"]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
         with pytest.raises(TranslationUnavailableError):
             list(coach_draft_stream("hola", [], "en", "es"))
 
 
 def test_coach_draft_stream_includes_recent_history_in_prompt():
-    core_json = '{"meaning": "x", "feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    options_json = '{"feedback": "", "options": [{"formality": "neutral", "spanish": "y"}]}'
+    chunks = ["x", "<<<OPTIONS>>>", options_json]
     history = [("assistant", "¿Qué planes tienes para el fin de semana?"), ("user", "quiero ir playa")]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter([core_json])) as mock_stream:
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)) as mock_stream:
         list(coach_draft_stream("mañana quiero ir", history, "en", "es"))
 
     (messages,), _ = mock_stream.call_args
