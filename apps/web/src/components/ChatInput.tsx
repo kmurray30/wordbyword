@@ -757,8 +757,11 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   // what lets the Send button light up green right away (see its
   // className below) rather than waiting for coachVerified, which still
   // waits for the WHOLE check to resolve before it's safe to actually
-  // send on a click.
-  const coachReady = coachVerdict === "clean" || coachVerdict === "minor";
+  // send on a click. Also true the instant the learner picks one of a
+  // "fix" verdict's own suggestions (handleSelectCoachOption) - picking
+  // one is just as safe to send as a clean/minor verdict, even while its
+  // sibling options are still streaming in.
+  const coachReady = coachVerdict === "clean" || coachVerdict === "minor" || selectedCoachOptionIndex !== null;
   // True once a check has fully resolved for the CURRENT draft text with
   // nothing left to do but send - either the model judged it clean/minor,
   // or the learner already picked/accepted a "fix" option
@@ -782,7 +785,11 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   // actually sends).
   const handlePrimaryAction = () => {
     if (!value.trim() || coachPhase === "loading") return;
-    if (sendMode === "direct" || coachVerified) {
+    // selectedCoachOptionIndex !== null covers clicking Send right after
+    // picking a "fix" suggestion, even while sibling options are still
+    // streaming (coachVerified alone would still be false then, since it
+    // waits for coachPhase to settle back to "idle").
+    if (sendMode === "direct" || coachVerified || selectedCoachOptionIndex !== null) {
       handleSend();
       return;
     }
@@ -875,6 +882,16 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
           className="chat-input__textarea"
           value={value}
           placeholder="Type here - mix in English if stuck, we'll help"
+          // These don't remove iOS/Safari's native keyboard accessory bar
+          // (the row with done/prev/next above the keyboard) - that's
+          // rendered by WKWebView itself, not this page, and no web-page
+          // attribute or CSS can hide it. They do strip the autocorrect/
+          // predictive-text row's content and make the return key read
+          // "send" instead of the default "return".
+          autoCorrect="off"
+          spellCheck={false}
+          autoCapitalize="none"
+          enterKeyHint="send"
           onChange={(e) => handleValueChange(e.target.value)}
           onSelect={handleTextareaSelect}
           onTouchStart={handleTextareaTouchStart}
@@ -985,7 +1002,6 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
             onSelect={handleSelectCoachOption}
             onClose={dismissCoach}
             onRegenerate={handleRegenerateCoach}
-            onConfirmSend={handleSend}
             onConfirmMinorSend={handleConfirmMinorSend}
           />
         </DockedPopover>

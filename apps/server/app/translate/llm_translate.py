@@ -236,6 +236,41 @@ def _looks_spanish(text: str) -> bool:
     return sum(1 for t in words if t.is_spanish) > len(words) / 2
 
 
+def _correct_option_languages(spanish_text: str, english_text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
+    """Post-hoc sanity check for one coach_draft_stream FIX-verdict option's
+    Spanish suggestion plus its own English back-translation - the plain-
+    text, marker-delimited protocol has no structural anchor (unlike the
+    old JSON-keyed one) forcing the model to keep each field in the
+    language its marker name promises, and a small/fast model sometimes
+    drifts. Reuses the same _looks_spanish classifier and the same
+    target_lang=="es"/native_lang=="en" scoping interpret_user_input's own
+    swap-correction already relies on, extended to the two cases a plain
+    swap doesn't cover: either field just never got translated out of the
+    OTHER language at all. Degrades to the original pair, uncorrected, if
+    the extra translate_text call this needs is itself unavailable."""
+    if target_lang != "es" or native_lang != "en" or not spanish_text or not english_text:
+        return spanish_text, english_text
+
+    spanish_is_spanish = _looks_spanish(spanish_text)
+    english_is_spanish = _looks_spanish(english_text)
+
+    if spanish_is_spanish and not english_is_spanish:
+        return spanish_text, english_text
+
+    try:
+        if not spanish_is_spanish and english_is_spanish:
+            # Classic swap - the right content landed under the wrong label.
+            return english_text, spanish_text
+        if not spanish_is_spanish and not english_is_spanish:
+            # The "Spanish" field was never actually translated into Spanish.
+            return translate_text(spanish_text, native_lang, target_lang), english_text
+        # Both fields look Spanish - the "English" field was never
+        # translated into English.
+        return spanish_text, translate_text(english_text, target_lang, native_lang)
+    except TranslationUnavailableError:
+        return spanish_text, english_text
+
+
 def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
     """Given raw learner input that may mix native_lang and target_lang, and
     may have grammar/spelling mistakes in either, return (corrected_native_
@@ -725,17 +760,21 @@ def coach_draft_stream(
                 f"each immediately followed by its OWN whole-sentence "
                 f"{native_name} back-translation (so the learner can double "
                 f"check it) - in this exact order, each piece followed "
-                f"immediately by its own marker:\n"
-                f"1. A natural/neutral way to say it, then {_COACH_OPT_MARKERS[0]}\n"
-                f"2. That SAME suggestion's {native_name} back-translation, then "
-                f"{_COACH_OPT_MARKERS[1]}\n"
-                f"3. A more casual/informal way to say it, then "
-                f"{_COACH_OPT_MARKERS[2]}\n"
-                f"4. That suggestion's {native_name} back-translation, then "
+                f"immediately by its own marker. Each marker's name tells you "
+                f"which language that piece MUST be written in - never put "
+                f"{target_name} text after an _EN marker's content, and never "
+                f"put {native_name} text after an _ES marker's content:\n"
+                f"1. A natural/neutral way to say it, in {target_name}, then "
+                f"{_COACH_OPT_MARKERS[0]}\n"
+                f"2. That SAME suggestion's back-translation, in {native_name}, "
+                f"then {_COACH_OPT_MARKERS[1]}\n"
+                f"3. A more casual/informal way to say it, in {target_name}, "
+                f"then {_COACH_OPT_MARKERS[2]}\n"
+                f"4. That suggestion's back-translation, in {native_name}, then "
                 f"{_COACH_OPT_MARKERS[3]}\n"
-                f"5. A more formal/polite way to say it, then "
+                f"5. A more formal/polite way to say it, in {target_name}, then "
                 f"{_COACH_OPT_MARKERS[4]}\n"
-                f"6. That suggestion's {native_name} back-translation, then "
+                f"6. That suggestion's back-translation, in {native_name}, then "
                 f"{_COACH_OPT_MARKERS[5]}\n"
                 f"Keep each {target_name} suggestion to one natural sentence or "
                 f"short exchange - not a lecture, and don't repeat the same "
@@ -784,6 +823,12 @@ def coach_draft_stream(
                 fields.append(Field("option_english", _COACH_OPT_MARKERS[2 * i + 1], extra=(i,)))
 
         rest_iter, _rest_leftover = _run_sequential_fields(chunks, fields, initial_buffer=verdict_leftover[0])
+        # Stashes each FIX option's Spanish text, by index, the moment it
+        # completes - needed because the Spanish/English language check
+        # below (_correct_option_languages) can only run once BOTH halves
+        # of an option are known, which is only true once its own
+        # option_english_complete arrives.
+        pending_option_spanish: dict[int, str] = {}
         for kind, *rest in rest_iter:
             if kind == "meaning_chunk":
                 yield ("meaning_chunk", rest[0])
@@ -796,10 +841,23 @@ def coach_draft_stream(
             elif kind == "option_spanish_chunk":
                 yield ("option_spanish_chunk", rest[0], rest[1])
             elif kind == "option_spanish_complete":
-                yield ("option_spanish_complete", rest[0], rest[1].strip())
+                index, text = rest[0], rest[1].strip()
+                pending_option_spanish[index] = text
+                yield ("option_spanish_complete", index, text)
             elif kind == "option_english_chunk":
                 yield ("option_english_chunk", rest[0], rest[1])
             elif kind == "option_english_complete":
-                yield ("option_english_complete", rest[0], rest[1].strip())
+                index, english_text = rest[0], rest[1].strip()
+                spanish_text = pending_option_spanish.get(index, "")
+                corrected_spanish, corrected_english = _correct_option_languages(
+                    spanish_text, english_text, native_lang, target_lang
+                )
+                if corrected_spanish != spanish_text:
+                    # A corrective second option_spanish_complete for the
+                    # same index - the frontend reducer already just
+                    # overwrites that field's state on a repeat event, so
+                    # no new frontend handling is needed for this.
+                    yield ("option_spanish_complete", index, corrected_spanish)
+                yield ("option_english_complete", index, corrected_english)
     except ModelServerUnavailableError as exc:
         raise TranslationUnavailableError(str(exc)) from exc

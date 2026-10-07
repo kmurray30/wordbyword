@@ -23,10 +23,11 @@ interface CoachPopoverProps {
   onSelect: (option: CoachOptionState, index: number) => void;
   onClose: () => void;
   onRegenerate: () => void;
-  // "clean": sends the draft verbatim. "minor": applies the (by-then-
-  // complete) suggestion into the draft first, then sends - see
-  // ChatInput.tsx's handleConfirmMinorSend.
-  onConfirmSend: () => void;
+  // Applies the (by-then-complete) suggestion into the draft first, then
+  // sends - see ChatInput.tsx's handleConfirmMinorSend. A "clean" verdict
+  // has no popover Send button of its own: the main input bar's Send
+  // button is already green by then (see ChatInput.tsx's coachReady), so
+  // clicking it just sends directly.
   onConfirmMinorSend: () => void;
 }
 
@@ -44,7 +45,6 @@ export function CoachPopover({
   onSelect,
   onClose,
   onRegenerate,
-  onConfirmSend,
   onConfirmMinorSend,
 }: CoachPopoverProps) {
   const error = phase === "error";
@@ -80,15 +80,6 @@ export function CoachPopover({
               <span className="coach-popover__label">{verdict === "fix" ? "Did you mean" : "You mean"}</span>
               {meaning}
               {verdict === "fix" ? "?" : ""}
-            </div>
-          )}
-
-          {verdict === "clean" && meaningDone && (
-            <div className="coach-popover__confirm">
-              <span className="coach-popover__confirm-text">Looks good - send as typed?</span>
-              <button type="button" className="coach-popover__confirm-send" onClick={onConfirmSend}>
-                Send
-              </button>
             </div>
           )}
 

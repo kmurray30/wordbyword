@@ -514,6 +514,100 @@ def test_coach_draft_stream_fix_verdict_streams_three_interleaved_options():
     }
 
 
+def test_coach_draft_stream_fix_option_swaps_mislabeled_spanish_and_english():
+    # Observed live equivalent of interpret_user_input's own swap bug (see
+    # test_interpret_user_input_swaps_mislabeled_content) but for a FIX
+    # verdict's per-option fields - the model put the right content under
+    # the wrong marker.
+    chunks = [
+        "FIX<<<VERDICT>>>",
+        "meaning<<<MEANING>>>",
+        "I want to go to the beach.<<<OPT1_ES>>>",
+        "Quiero ir a la playa.<<<OPT1_EN>>>",
+    ]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    spanish_complete = [e[2] for e in events if e[0] == "option_spanish_complete" and e[1] == 0]
+    english_complete = [e[2] for e in events if e[0] == "option_english_complete" and e[1] == 0]
+    # The original (wrong-language) spanish_complete is yielded immediately
+    # as it arrives, then a corrective SECOND one follows once the matching
+    # english_complete reveals the swap - a repeat "_complete" for the same
+    # index/field is exactly what the frontend reducer already overwrites
+    # on, so the corrected one being last is what the UI ends up showing.
+    assert spanish_complete[-1] == "Quiero ir a la playa."
+    assert english_complete[-1] == "I want to go to the beach."
+
+
+def test_coach_draft_stream_fix_option_forces_translation_when_spanish_field_was_never_translated():
+    # The model left BOTH fields in English - not a swap (Spanish never
+    # appeared at all), so the Spanish field must be force-translated
+    # rather than swapped with the (also-English) "English" field.
+    chunks = [
+        "FIX<<<VERDICT>>>",
+        "meaning<<<MEANING>>>",
+        "I want to go to the beach.<<<OPT1_ES>>>",
+        "I want to go to the beach.<<<OPT1_EN>>>",
+    ]
+    with (
+        patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)),
+        patch("app.translate.llm_translate.model_chat", return_value="Quiero ir a la playa.") as mock_chat,
+    ):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    spanish_complete = [e[2] for e in events if e[0] == "option_spanish_complete" and e[1] == 0]
+    english_complete = [e[2] for e in events if e[0] == "option_english_complete" and e[1] == 0]
+    assert spanish_complete[-1] == "Quiero ir a la playa."
+    assert english_complete[-1] == "I want to go to the beach."
+    mock_chat.assert_called_once()
+
+
+def test_coach_draft_stream_fix_option_forces_translation_when_english_field_was_never_translated():
+    # The mirror case: both fields left in Spanish - the English back-
+    # translation must be force-translated rather than left showing
+    # Spanish text under an "English" label.
+    chunks = [
+        "FIX<<<VERDICT>>>",
+        "meaning<<<MEANING>>>",
+        "Quiero ir a la playa.<<<OPT1_ES>>>",
+        "Quiero ir a la playa.<<<OPT1_EN>>>",
+    ]
+    with (
+        patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)),
+        patch("app.translate.llm_translate.model_chat", return_value="I want to go to the beach.") as mock_chat,
+    ):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    spanish_complete = [e[2] for e in events if e[0] == "option_spanish_complete" and e[1] == 0]
+    english_complete = [e[2] for e in events if e[0] == "option_english_complete" and e[1] == 0]
+    assert spanish_complete[-1] == "Quiero ir a la playa."
+    assert english_complete[-1] == "I want to go to the beach."
+    mock_chat.assert_called_once()
+
+
+def test_coach_draft_stream_fix_option_correction_degrades_gracefully_on_translate_failure():
+    # The correction check's own fallback translate_text call can itself
+    # fail - that must not crash the whole stream, just leave the
+    # (possibly still wrong-language) pair as the model originally wrote
+    # it rather than losing the option entirely.
+    chunks = [
+        "FIX<<<VERDICT>>>",
+        "meaning<<<MEANING>>>",
+        "I want to go to the beach.<<<OPT1_ES>>>",
+        "I want to go to the beach.<<<OPT1_EN>>>",
+    ]
+    with (
+        patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+    ):
+        events = list(coach_draft_stream("algo", [], "en", "es"))
+
+    spanish_complete = [e[2] for e in events if e[0] == "option_spanish_complete" and e[1] == 0]
+    english_complete = [e[2] for e in events if e[0] == "option_english_complete" and e[1] == 0]
+    assert spanish_complete == ["I want to go to the beach."]
+    assert english_complete == ["I want to go to the beach."]
+
+
 def test_coach_draft_stream_markers_split_across_chunks():
     # A marker can land anywhere relative to chunk boundaries - the buffer
     # accumulates across chunks regardless, so this must behave
@@ -562,7 +656,16 @@ def test_coach_draft_stream_defaults_unrecognized_verdict_token_to_fix():
     # (telling the learner a broken draft is fine to send) - defaulting to
     # the full correction flow is the safe direction to fail in.
     chunks = ["MAYBE<<<VERDICT>>>", "x<<<MEANING>>>", "y<<<OPT1_ES>>>", "z<<<OPT1_EN>>>", "a<<<OPT2_ES>>>", "b<<<OPT2_EN>>>", "c<<<OPT3_ES>>>", "d<<<OPT3_EN>>>"]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+    # The single-letter option placeholders above have no real language
+    # content for the Spanish/English correction check to key off (see
+    # _correct_option_languages's own tests below) - model_chat is mocked
+    # here purely so that check's fallback translate_text call, if it
+    # fires, doesn't reach out over the network; this test only cares
+    # about the verdict default.
+    with (
+        patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)),
+        patch("app.translate.llm_translate.model_chat", return_value="n/a"),
+    ):
         events = list(coach_draft_stream("algo", [], "en", "es"))
 
     assert events[0] == ("verdict", "fix")
@@ -575,8 +678,8 @@ def test_coach_draft_stream_degrades_gracefully_when_a_later_option_never_arrive
     chunks = [
         "FIX<<<VERDICT>>>",
         "meaning<<<MEANING>>>",
-        "opt1 spanish<<<OPT1_ES>>>",
-        "opt1 english<<<OPT1_EN>>>",
+        "Quiero ir a la playa.<<<OPT1_ES>>>",
+        "I want to go to the beach.<<<OPT1_EN>>>",
         "opt2 spanish, no marker yet",
         # opt2's own marker never arrives, nor does its english, nor opt3 -
         # the model just stopped generating.
