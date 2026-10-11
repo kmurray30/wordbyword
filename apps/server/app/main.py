@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import OPENAI_API_KEY
 from app.db import init_db
-from app.routes import chat, events, translate, tts
+from app.routes import chat, events, translate, tts, voice
 from app.schemas import LlmHealthResponse
 
 app = FastAPI(title="wordbyword", version="0.1.0")
@@ -24,6 +24,7 @@ app.include_router(chat.router)
 app.include_router(translate.router)
 app.include_router(events.router)
 app.include_router(tts.router)
+app.include_router(voice.router)
 
 
 @app.on_event("startup")

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>voice spike</title>
+  <style>
+    body { font: 15px/1.4 -apple-system, system-ui, sans-serif; background: #14171f; color: #f2f2f2; margin: 0; padding: 16px; }
+    h1 { font-size: 1.1rem; margin: 0 0 8px; }
+    p { margin: 6px 0; color: #b9c0d0; font-size: 0.9rem; }
+    label { display: block; font-size: 0.8rem; color: #8b93a6; margin-top: 10px; }
+    input { width: 100%; box-sizing: border-box; padding: 8px; border-radius: 8px; border: 1px solid #333a48; background: #20242e; color: #f2f2f2; font-size: 0.9rem; }
+    .row { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+    button { padding: 12px 16px; border-radius: 10px; border: none; background: #3b6ef0; color: #fff; font-weight: 600; font-size: 1rem; }
+    button.secondary { background: #2a2f3b; }
+    button:disabled { opacity: 0.5; }
+    #status { font-weight: 700; margin: 8px 0; }
+    #summary { background: #1f2430; border-radius: 10px; padding: 10px; font-size: 0.85rem; white-space: pre-wrap; }
+    #log { background: #0f1116; border-radius: 10px; padding: 10px; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; max-height: 50vh; overflow: auto; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>wordbyword - screen-off spike</h1>
+  <p>1. Tap <b>Start</b>, allow the mic. 2. Lock the phone for 60-90s. 3. Unlock, tap <b>Stop</b>, read the summary, tap <b>Copy log</b>.
+     Run it once from a Safari tab and once from a home-screen icon.</p>
+  <label for="api">Backend URL</label>
+  <input id="api" />
+  <div class="row">
+    <button id="start">Start</button>
+    <button id="stop" class="secondary" disabled>Stop</button>
+    <button id="copy" class="secondary">Copy log</button>
+    <button id="clear" class="secondary">Clear log</button>
+  </div>
+  <div id="status">idle</div>
+  <div id="summary"></div>
+  <div id="log"></div>
+
+<script>
+(() => {
+  const LOG_KEY = "voice-spike-log";
+  const API_KEY = "voice-spike-api";
+  const DEFAULT_API = "https://server-production-f688.up.railway.app";
+  const $ = (id) => document.getElementById(id);
+
+  const params = new URLSearchParams(location.search);
+  $("api").value = params.get("api") || localStorage.getItem(API_KEY) || DEFAULT_API;
+
+  // ---- persistent log -----------------------------------------------------
+  let entries = [];
+  try { entries = JSON.parse(localStorage.getItem(LOG_KEY) || "[]"); } catch { entries = []; }
+  let t0 = null;
+  const stamp = () => (t0 === null ? "--" : ((performance.now() - t0) / 1000).toFixed(1).padStart(6) + "s");
+  function log(msg) {
+    const line = `${stamp()} ${new Date().toLocaleTimeString()} ${msg}`;
+    entries.push(line);
+    if (entries.length > 600) entries = entries.slice(-600);
+    try { localStorage.setItem(LOG_KEY, JSON.stringify(entries)); } catch {}
+    render();
+  }
+  function render() {
+    $("log").textContent = entries.join("\n");
+    $("log").scrollTop = $("log").scrollHeight;
+  }
+  render();
+  $("clear").onclick = () => { entries = []; localStorage.removeItem(LOG_KEY); render(); $("summary").textContent = ""; };
+  $("copy").onclick = async () => {
+    const text = [$("summary").textContent, "", ...entries].join("\n");
+    try { await navigator.clipboard.writeText(text); $("status").textContent = "copied"; }
+    catch { $("status").textContent = "copy failed - long-press the log to select it"; }
+  };
+
+  // ---- the spike itself ---------------------------------------------------
+  // Everything that must keep running while locked is driven by AUDIO
+  // events (the worklet's own sample counter) and WebSocket messages, never
+  // by timers - iOS throttles timers hard when the screen is off. A plain
+  // setInterval runs alongside purely as a control, so the summary can say
+  // "audio kept flowing but timers stalled" (or whichever way it goes).
+  let ctx = null, stream = null, ws = null, workletNode = null, timerId = null;
+  let keepAlive = null, ttsAudio = null;
+  const stats = { workletTicks: 0, timerTicks: 0, wsSent: 0, wsAcked: 0, gaps: 0, lastTickAt: 0, hiddenAt: null, lockedSeconds: 0, tts: [] };
+
+  const WORKLET_SRC = `
+    class Counter extends AudioWorkletProcessor {
+      constructor() { super(); this.n = 0; }
+      process(inputs) {
+        const ch = inputs[0] && inputs[0][0];
+        if (ch) { this.n += ch.length; if (this.n >= sampleRate) { this.n -= sampleRate; this.port.postMessage("tick"); } }
+        return true;
+      }
+    }
+    registerProcessor("spike-counter", Counter);`;
+
+  function silentWavDataUri() {
+    // 1s of near-silence (not pure zeros - iOS can treat a fully silent
+    // track as "nothing playing"), 8kHz mono 16-bit.
+    const rate = 8000, n = rate, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, (i % 50 === 0) ? 1 : 0, true);
+    let s = ""; const bytes = new Uint8Array(buf); for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return "data:audio/wav;base64," + btoa(s);
+  }
+
+  async function playTts(label) {
+    const api = $("api").value.replace(/\/$/, "");
+    const t = performance.now();
+    try {
+      const res = await fetch(`${api}/tts/speak`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Hola, esto es una prueba de audio con la pantalla apagada.", language: "es" }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      ttsAudio.src = URL.createObjectURL(blob);
+      await ttsAudio.play();
+      const ms = Math.round(performance.now() - t);
+      stats.tts.push(`${label}: played (${ms}ms, hidden=${document.hidden})`);
+      log(`TTS ${label}: play() resolved after ${ms}ms, document.hidden=${document.hidden}`);
+    } catch (err) {
+      stats.tts.push(`${label}: FAILED ${err}`);
+      log(`TTS ${label}: FAILED ${err}`);
+    }
+  }
+
+  function onWorkletTick() {
+    const now = performance.now();
+    stats.workletTicks += 1;
+    if (stats.lastTickAt && now - stats.lastTickAt > 2500) {
+      stats.gaps += 1;
+      log(`GAP: ${((now - stats.lastTickAt) / 1000).toFixed(1)}s between audio ticks (hidden=${document.hidden})`);
+    }
+    stats.lastTickAt = now;
+    if (ws && ws.readyState === WebSocket.OPEN) { ws.send(`t${stats.workletTicks}`); stats.wsSent += 1; }
+    if (stats.workletTicks % 10 === 0) {
+      log(`audio tick ${stats.workletTicks} | timer ticks ${stats.timerTicks} | ws sent ${stats.wsSent} acked ${stats.wsAcked} | hidden=${document.hidden} | mic=${stream?.getAudioTracks()[0]?.readyState}`);
+    }
+    if (stats.workletTicks === 20) playTts("at 20s");
+    if (stats.workletTicks === 50) playTts("at 50s");
+  }
+
+  async function start() {
+    const api = $("api").value.replace(/\/$/, "");
+    localStorage.setItem(API_KEY, api);
+    $("start").disabled = true; $("stop").disabled = false; $("summary").textContent = "";
+    Object.assign(stats, { workletTicks: 0, timerTicks: 0, wsSent: 0, wsAcked: 0, gaps: 0, lastTickAt: 0, hiddenAt: null, lockedSeconds: 0, tts: [] });
+    t0 = performance.now();
+    log(`START standalone=${!!navigator.standalone} ua=${navigator.userAgent}`);
+    $("status").textContent = "starting…";
+
+    try {
+      // Unlock both media elements inside the user gesture.
+      keepAlive = new Audio(silentWavDataUri()); keepAlive.loop = true; keepAlive.setAttribute("playsinline", "");
+      ttsAudio = new Audio(); ttsAudio.setAttribute("playsinline", "");
+      await keepAlive.play();
+      log("keep-alive silent loop playing");
+      ["pause", "ended", "error", "stalled"].forEach((ev) => keepAlive.addEventListener(ev, () => log(`keep-alive audio event: ${ev} (hidden=${document.hidden})`)));
+      ["pause", "ended", "error", "play"].forEach((ev) => ttsAudio.addEventListener(ev, () => log(`tts audio event: ${ev}`)));
+
+      if ("mediaSession" in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: "wordbyword spike", artist: "listening…" });
+        navigator.mediaSession.setActionHandler("pause", () => log("mediaSession: pause pressed"));
+        navigator.mediaSession.setActionHandler("play", () => log("mediaSession: play pressed"));
+        log("mediaSession metadata set");
+      } else log("mediaSession not supported");
+
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
+      const track = stream.getAudioTracks()[0];
+      log(`mic granted: readyState=${track.readyState} label=${track.label}`);
+      track.addEventListener("ended", () => log(`MIC TRACK ENDED (hidden=${document.hidden})`));
+      track.addEventListener("mute", () => log(`mic track muted (hidden=${document.hidden})`));
+      track.addEventListener("unmute", () => log(`mic track unmuted (hidden=${document.hidden})`));
+
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      await ctx.resume();
+      await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" })));
+      workletNode = new AudioWorkletNode(ctx, "spike-counter");
+      workletNode.port.onmessage = onWorkletTick;
+      ctx.createMediaStreamSource(stream).connect(workletNode);
+      // Not connected to destination on purpose - we never want to hear the mic.
+      ctx.addEventListener("statechange", () => log(`AudioContext state: ${ctx.state} (hidden=${document.hidden})`));
+      log(`AudioContext running at ${ctx.sampleRate}Hz`);
+
+      const wsUrl = api.replace(/^http/, "ws") + "/voice/ping";
+      ws = new WebSocket(wsUrl);
+      ws.onopen = () => log(`ws open ${wsUrl}`);
+      ws.onmessage = () => { stats.wsAcked += 1; };
+      ws.onclose = (e) => log(`WS CLOSED code=${e.code} (hidden=${document.hidden})`);
+      ws.onerror = () => log("ws error");
+
+      timerId = setInterval(() => { stats.timerTicks += 1; }, 1000);
+      document.addEventListener("visibilitychange", onVisibility);
+      $("status").textContent = "running - lock the phone now";
+    } catch (err) {
+      log(`START FAILED: ${err}`);
+      $("status").textContent = "failed - see log";
+      stop();
+    }
+  }
+
+  function onVisibility() {
+    if (document.hidden) { stats.hiddenAt = performance.now(); log("visibilitychange: hidden"); }
+    else {
+      if (stats.hiddenAt) stats.lockedSeconds += (performance.now() - stats.hiddenAt) / 1000;
+      stats.hiddenAt = null;
+      log(`visibilitychange: visible | audio ticks ${stats.workletTicks} timer ticks ${stats.timerTicks} ws acked ${stats.wsAcked} mic=${stream?.getAudioTracks()[0]?.readyState} ctx=${ctx?.state}`);
+    }
+  }
+
+  function stop() {
+    document.removeEventListener("visibilitychange", onVisibility);
+    if (timerId) clearInterval(timerId);
+    try { ws && ws.close(); } catch {}
+    try { stream && stream.getTracks().forEach((t) => t.stop()); } catch {}
+    try { ctx && ctx.close(); } catch {}
+    try { keepAlive && keepAlive.pause(); } catch {}
+    const elapsed = t0 === null ? 0 : (performance.now() - t0) / 1000;
+    const summary = [
+      `mode: ${navigator.standalone ? "HOME-SCREEN app" : "browser tab"}`,
+      `ran ${elapsed.toFixed(0)}s, hidden/locked for ~${stats.lockedSeconds.toFixed(0)}s`,
+      `audio ticks (1/s expected): ${stats.workletTicks}  -> ${stats.workletTicks >= elapsed * 0.9 ? "MIC KEPT FLOWING" : "MIC STALLED"}`,
+      `timer ticks (1/s expected): ${stats.timerTicks}  -> ${stats.timerTicks >= elapsed * 0.9 ? "timers fine" : "TIMERS THROTTLED"}`,
+      `ws sent ${stats.wsSent} / acked ${stats.wsAcked}  -> ${stats.wsAcked >= stats.wsSent * 0.9 ? "WS KEPT FLOWING" : "WS STALLED"}`,
+      `audio gaps > 2.5s: ${stats.gaps}`,
+      `tts: ${stats.tts.join(" | ") || "none attempted (ran < 20s)"}`,
+    ].join("\n");
+    $("summary").textContent = summary;
+    log("STOP\n" + summary);
+    $("status").textContent = "stopped";
+    $("start").disabled = false; $("stop").disabled = true;
+    ws = stream = ctx = workletNode = timerId = null;
+  }
+
+  $("start").onclick = start;
+  $("stop").onclick = stop;
+})();
+</script>
+</body>
+</html>
