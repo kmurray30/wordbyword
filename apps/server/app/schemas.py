@@ -249,6 +249,53 @@ class CoachErrorEvent(BaseModel):
     message: str
 
 
+# Voice mode's spoken coach (POST /voice/coach, streamed as SSE - see
+# app/routes/voice.py and app.translate.llm_translate.voice_coach_stream).
+class VoiceWord(BaseModel):
+    word: str
+    confidence: float
+
+
+class VoiceDialogTurn(BaseModel):
+    role: str  # "learner" | "coach"
+    text: str
+
+
+class VoiceCoachRequest(BaseModel):
+    # What the learner just said, as transcribed (may be mixed Spanish/
+    # English, may contain mis-heard words - see `words`).
+    transcript: str
+    # Per-word recognizer confidence for `transcript`, so the coach can
+    # call out likely mis-hearings ("it sounded like X - did you mean Y?").
+    words: list[VoiceWord] = []
+    # The back-and-forth with the coach about the CURRENT attempt so far
+    # (client-held, reset once something is sent).
+    coach_dialog: list[VoiceDialogTurn] = []
+    session_id: str
+
+
+class VoiceCoachIntentEvent(BaseModel):
+    # attempt | question | clarify | confirm | pick | cancel | translate_last
+    intent: str
+
+
+class VoiceCoachVerdictEvent(BaseModel):
+    verdict: str  # "ready" | "revise" | "none"
+
+
+class VoiceCoachDraftEvent(BaseModel):
+    # The single best Spanish sentence to send right now ("" if none).
+    draft: str
+
+
+class VoiceCoachSayChunkEvent(BaseModel):
+    delta: str
+
+
+class VoiceCoachSayCompleteEvent(BaseModel):
+    say: str
+
+
 class RewardEventRequest(BaseModel):
     event_type: str  # "wordSeenNoHover" | "wordHovered" | "userTypedSpanishWord"
     lemma: str
@@ -264,6 +311,11 @@ class TTSRequest(BaseModel):
     text: str
     language: str = "es"
     voice: str | None = None
+    # "partner" (default): the conversation partner's Kokoro voice, picked
+    # by `language`/`voice` as before. "coach": voice mode's coach voice
+    # (ElevenLabs multilingual - English with embedded Spanish phrases);
+    # `language`/`voice` are ignored for it.
+    role: str = "partner"
 
 
 class TTSVoicesResponse(BaseModel):

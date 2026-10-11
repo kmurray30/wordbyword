@@ -169,18 +169,25 @@ export interface paths {
          *     feedback on the attempt plus phrasing options at a few formality
          *     levels rather than a single flat correction.
          *
-         *     Streamed as Server-Sent Events, one event per phase of the SAME
-         *     underlying LLM call (app.translate.llm_translate.coach_draft_stream):
-         *     a "core" event the moment the feedback + options themselves are ready
-         *     (usable immediately - the frontend shows these without waiting on
-         *     anything else), then a "translations" event once each option's own
-         *     English translation + word-by-word breakdown finishes streaming
-         *     afterward (for pre-populating the chat input's gloss cache the instant
-         *     an option is picked - see CoachOption's fields). An "error" event
-         *     means the core phase itself never produced anything usable; a stream
-         *     that ends after "core" with no "translations" just means that part
-         *     wasn't ready - that's not itself an error (see coach_draft_stream's
-         *     docstring).
+         *     Streamed as Server-Sent Events, one event per field of the SAME
+         *     underlying LLM call (app.translate.llm_translate.coach_draft_stream -
+         *     see its own docstring for the full field-by-field sequence). First, a
+         *     "verdict" event ("clean"/"minor"/"fix") - usable INSTANTLY, before
+         *     anything else has streamed, to decide whether the draft is already
+         *     good to go (see ChatInput.tsx's coachReady). Then "meaning_chunk"/
+         *     "meaning_complete" carry the restatement live, delta by delta - the
+         *     same token-by-token feel /chat/turn/stream's own reply already has.
+         *     What follows depends on the verdict: nothing further for "clean";
+         *     "suggestion_chunk"/"suggestion_complete" (one lightweight corrected-
+         *     text suggestion) for "minor"; or, for "fix", three formality-ranked
+         *     options streamed via "option_chunk"/"option_complete" events (each
+         *     carrying `index` 0/1/2 and `field` "spanish"/"english"), each option's
+         *     own English back-translation streaming in right after its own Spanish
+         *     text - not batched together at the end. An "error" event means
+         *     nothing at all was usable (not even the verdict); a stream that ends
+         *     partway through the "fix" options just means the rest weren't ready -
+         *     whatever DID arrive stays fully usable (see coach_draft_stream's own
+         *     docstring on this graceful-degradation philosophy).
          */
         post: operations["coach_draft_translate_coach_post"];
         delete?: never;
@@ -285,6 +292,31 @@ export interface paths {
         put?: never;
         /** Speak */
         post: operations["speak_tts_speak_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/voice/coach": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Voice Coach
+         * @description The spoken coach's turn, streamed as SSE in the same style as
+         *     /translate/coach: "intent", then "verdict" + "draft" (what to send, if
+         *     anything), then "say_chunk"/"say_complete" for the spoken reply (the
+         *     client turns each completed sentence into coach-voice TTS as it
+         *     arrives). "error" means nothing was usable. See
+         *     llm_translate.voice_coach_stream for the field semantics.
+         */
+        post: operations["voice_coach_voice_coach_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -513,6 +545,11 @@ export interface components {
             language: string;
             /** Voice */
             voice?: string | null;
+            /**
+             * Role
+             * @default partner
+             */
+            role: string;
         };
         /** TTSVoicesResponse */
         TTSVoicesResponse: {
@@ -596,6 +633,37 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** VoiceCoachRequest */
+        VoiceCoachRequest: {
+            /** Transcript */
+            transcript: string;
+            /**
+             * Words
+             * @default []
+             */
+            words: components["schemas"]["VoiceWord"][];
+            /**
+             * Coach Dialog
+             * @default []
+             */
+            coach_dialog: components["schemas"]["VoiceDialogTurn"][];
+            /** Session Id */
+            session_id: string;
+        };
+        /** VoiceDialogTurn */
+        VoiceDialogTurn: {
+            /** Role */
+            role: string;
+            /** Text */
+            text: string;
+        };
+        /** VoiceWord */
+        VoiceWord: {
+            /** Word */
+            word: string;
+            /** Confidence */
+            confidence: number;
         };
     };
     responses: never;
@@ -1006,6 +1074,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["TTSRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    voice_coach_voice_coach_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceCoachRequest"];
             };
         };
         responses: {

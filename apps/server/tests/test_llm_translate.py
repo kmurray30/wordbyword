@@ -714,3 +714,94 @@ def test_coach_draft_stream_wraps_model_server_error():
     with patch("app.translate.llm_translate.model_chat_stream", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError, match="down"):
             list(coach_draft_stream("hola", [], "en", "es"))
+
+
+# --- voice_coach_stream -----------------------------------------------------
+
+from app.translate.llm_translate import voice_coach_stream  # noqa: E402
+
+
+def _voice_chunks(intent="attempt", verdict="revise", draft="¿Te gusta correr?", say="Did you mean: do you like running? Say: ¿Te gusta correr?"):
+    return [
+        f"{intent}<<<INTENT>>>",
+        f"{verdict}<<<VERDICT>>>",
+        f"{draft}<<<DRAFT>>>",
+        f"{say}<<<SAY>>>",
+    ]
+
+
+def test_voice_coach_stream_empty_transcript_short_circuits():
+    with patch("app.translate.llm_translate.model_chat_stream") as mock_stream:
+        assert list(voice_coach_stream("   ", [], [], [], "en", "es")) == []
+    mock_stream.assert_not_called()
+
+
+def test_voice_coach_stream_yields_intent_verdict_draft_then_streamed_say():
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(_voice_chunks())) as mock_stream:
+        events = list(voice_coach_stream("te gusta running", [{"word": "gusta", "confidence": 0.6}], [], [], "en", "es"))
+
+    assert events[0] == ("intent", "attempt")
+    assert events[1] == ("verdict", "revise")
+    assert events[2] == ("draft", "¿Te gusta correr?")
+    assert "".join(e[1] for e in events if e[0] == "say_chunk") == "Did you mean: do you like running? Say: ¿Te gusta correr?"
+    assert events[-1] == ("say_complete", "Did you mean: do you like running? Say: ¿Te gusta correr?")
+
+    (messages,), kwargs = mock_stream.call_args
+    assert messages[-1] == {"role": "user", "content": "te gusta running"}
+    prompt = messages[0]["content"]
+    assert "'gusta' (0.60)" in prompt  # low-confidence words are surfaced to the coach
+    assert "<<<SAY>>>" in prompt
+
+
+def test_voice_coach_stream_includes_partner_history_and_coach_dialog_in_prompt():
+    history = [("assistant", "¿Qué te gusta hacer?"), ("user", "me gusta correr")]
+    dialog = [("learner", "te gusta running"), ("coach", "Did you mean: do you like running?")]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(_voice_chunks())) as mock_stream:
+        list(voice_coach_stream("yes", [], dialog, history, "en", "es"))
+
+    prompt = mock_stream.call_args[0][0][0]["content"]
+    assert "Partner: ¿Qué te gusta hacer?" in prompt
+    assert "Coach: Did you mean: do you like running?" in prompt
+
+
+def test_voice_coach_stream_defaults_unknown_intent_and_verdict_safely():
+    chunks = _voice_chunks(intent="shrug", verdict="maybe")
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(voice_coach_stream("hola", [], [], [], "en", "es"))
+
+    assert ("intent", "attempt") in events
+    assert ("verdict", "revise") in events  # never "ready" by accident
+
+
+def test_voice_coach_stream_ready_without_a_draft_becomes_revise():
+    chunks = _voice_chunks(verdict="ready", draft="")
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(voice_coach_stream("hola", [], [], [], "en", "es"))
+
+    assert ("verdict", "revise") in events
+    assert ("draft", "") in events
+
+
+def test_voice_coach_stream_translates_a_draft_the_model_left_in_english():
+    chunks = _voice_chunks(verdict="ready", draft="Do you like running?")
+    with (
+        patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)),
+        patch("app.translate.llm_translate.model_chat", return_value="¿Te gusta correr?") as mock_chat,
+    ):
+        events = list(voice_coach_stream("te gusta running", [], [], [], "en", "es"))
+
+    assert ("verdict", "ready") in events
+    assert ("draft", "¿Te gusta correr?") in events
+    mock_chat.assert_called_once()
+
+
+def test_voice_coach_stream_raises_when_intent_never_arrives():
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(["just prose, no markers"])):
+        with pytest.raises(TranslationUnavailableError):
+            list(voice_coach_stream("hola", [], [], [], "en", "es"))
+
+
+def test_voice_coach_stream_wraps_model_server_error():
+    with patch("app.translate.llm_translate.model_chat_stream", side_effect=ModelServerUnavailableError("down")):
+        with pytest.raises(TranslationUnavailableError, match="down"):
+            list(voice_coach_stream("hola", [], [], [], "en", "es"))

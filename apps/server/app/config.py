@@ -68,6 +68,28 @@ DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 DEEPGRAM_STT_MODEL = os.environ.get("DEEPGRAM_STT_MODEL", "nova-3")
 
+# Text-to-speech for voice mode's COACH voice (ElevenLabs - see
+# app/tts/elevenlabs_client.py). A different provider from the partner's
+# Kokoro voice above on purpose: the coach speaks English with Spanish
+# phrases embedded in it, and Kokoro's voices are each tied to ONE
+# language's pronunciation rules, while ElevenLabs' multilingual models
+# switch pronunciation inside a single text. The two providers also give
+# the two voices Kyle asked for (coach vs partner) for free.
+# ELEVENLABS_TTS_MODEL: eleven_multilingual_v2 for quality;
+# eleven_flash_v2_5 is the lower-latency/cheaper multilingual alternative.
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2")
+# A premade ElevenLabs voice id ("Rachel") - override with any voice from
+# the account's library.
+ELEVENLABS_COACH_VOICE_ID = os.environ.get("ELEVENLABS_COACH_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+
+# Model for the spoken-conversation coach (llm_translate.voice_coach_stream).
+# Latency-critical - it sits between the learner finishing a sentence and
+# the coach starting to talk - so it defaults to the lighter translation
+# model rather than the main chat model (see the reasoning-overhead notes
+# on MAX_REPLY_TOKENS above).
+OPENAI_VOICE_COACH_MODEL = os.environ.get("OPENAI_VOICE_COACH_MODEL", OPENAI_TRANSLATE_MODEL)
+
 # Word-bank exposure/familiarity tuning knobs.
 DEFAULT_REVIEW_INTERVAL_DAYS = 1.0
 MIN_REVIEW_INTERVAL_DAYS = 0.25

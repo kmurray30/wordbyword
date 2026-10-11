@@ -4,6 +4,7 @@ import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
 import { SegmentedControl } from "./components/SegmentedControl";
+import { VoicePanel } from "./components/VoicePanel";
 import { getSessionId } from "./lib/session";
 import "./App.css";
 
@@ -113,11 +114,14 @@ function App() {
     }
   };
 
-  const handleSend = async (text: string) => {
+  // Resolves with the partner's completed reply (voice mode speaks it), or
+  // null if the turn failed.
+  const handleSend = async (text: string): Promise<{ text: string } | null> => {
     setError(null);
     const userLocalId = nextLocalId--;
     setMessages((prev) => [...prev, { id: userLocalId, role: "user", text }]);
     setStreamingText("");
+    let reply: { text: string } | null = null;
 
     try {
       for await (const event of api.chatTurnStream({ message: text, session_id: sessionId })) {
@@ -127,6 +131,7 @@ function App() {
           throw new Error(event.data.message);
         } else {
           const res = event.data;
+          reply = { text: res.text };
           setMessages((prev) => [
             // Patches the real backend id onto the user message just sent
             // (see ChatMessage.tsx's persist effect) without touching its
@@ -143,6 +148,7 @@ function App() {
     } finally {
       setStreamingText(null);
     }
+    return reply;
   };
 
   return (
@@ -201,6 +207,7 @@ function App() {
         {error && <p className="app__error">{error}. Is the backend running and configured correctly?</p>}
       </main>
 
+      <VoicePanel sessionId={sessionId} onSend={handleSend} partnerVoice={voice ?? undefined} />
       <ChatInput onSend={handleSend} sessionId={sessionId} />
     </div>
   );

@@ -51,7 +51,7 @@ export function AudioButton({ text, language, voice, label = "Play audio" }: Aud
       if (requestIdRef.current === requestId) setState("error");
     }, HARD_TIMEOUT_MS);
     api
-      .speak({ text, language, voice })
+      .speak({ text, language, voice, role: "partner" })
       .then((blob) => {
         if (requestIdRef.current !== requestId) return;
         if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
