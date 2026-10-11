@@ -59,6 +59,15 @@ DEEPINFRA_API_TOKEN = os.environ.get("DEEPINFRA_API_TOKEN", "")
 DEEPINFRA_TTS_MODEL = os.environ.get("DEEPINFRA_TTS_MODEL", "hexgrad/Kokoro-82M")
 DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "")
 
+# Speech-to-text for voice mode (Deepgram, streaming over a WebSocket - see
+# app/stt/deepgram_client.py). Chosen for its code-switching mode
+# (`language=multi`): the learner's speech is genuinely mixed Spanish/
+# English inside one utterance. Empty key means voice mode is disabled -
+# /voice/listen reports a clear error rather than failing obscurely, same
+# convention as the other provider keys above.
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
+DEEPGRAM_STT_MODEL = os.environ.get("DEEPGRAM_STT_MODEL", "nova-3")
+
 # Word-bank exposure/familiarity tuning knobs.
 DEFAULT_REVIEW_INTERVAL_DAYS = 1.0
 MIN_REVIEW_INTERVAL_DAYS = 0.25

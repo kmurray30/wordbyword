@@ -176,6 +176,26 @@ export interface ChatTurnErrorEvent {
   message: string;
 }
 
+// WS /voice/listen's server -> client messages (see app/routes/voice.py and
+// app/stt/deepgram_client.py's TranscriptEvent). Hand-written like the
+// other streaming shapes here - no OpenAPI type exists for a WebSocket.
+export interface VoiceTranscriptWord {
+  word: string;
+  confidence: number;
+}
+export type VoiceTranscriptEvent =
+  | { type: "interim"; text: string; words: VoiceTranscriptWord[] }
+  | { type: "final"; text: string; words: VoiceTranscriptWord[] }
+  | { type: "utterance_end"; text: string; words: VoiceTranscriptWord[] }
+  | { type: "speech_started"; text: string; words: VoiceTranscriptWord[] }
+  | { type: "error"; message: string };
+
+// The backend's /voice/listen WebSocket address, derived from the same
+// BASE_URL every HTTP call uses (http -> ws, https -> wss).
+export function voiceListenUrl(): string {
+  return `${BASE_URL.replace(/^http/, "ws")}/voice/listen`;
+}
+
 export type ChatTurnStreamEvent =
   | { type: "chunk"; data: ChatTurnChunkEvent }
   | { type: "done"; data: ChatTurnResponse }

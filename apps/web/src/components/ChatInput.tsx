@@ -5,6 +5,7 @@ import { CoachPopover } from "./CoachPopover";
 import { DockedPopover } from "./DockedPopover";
 import { SegmentedControl } from "./SegmentedControl";
 import { WordCandidatesPopover } from "./WordCandidatesPopover";
+import { useMicStream } from "../voice/useMicStream";
 import "./ChatInput.css";
 
 type SendMode = "checkFirst" | "direct";
@@ -377,6 +378,27 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     setCoachSuggestionDone(false);
     setCoachOptions([]);
     setSelectedCoachOptionIndex(null);
+  };
+
+  // Dictation: each settled ("final") transcript segment is appended to the
+  // draft as if typed, so everything downstream - the coach check, word
+  // glosses, the Send button - works on it unchanged. Interim (still-being-
+  // spoken) text is only previewed (see the mic pill below), never written
+  // into the draft, so a half-heard word can't trigger a stale coach run.
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const mic = useMicStream({
+    sessionId,
+    onEvent: (event) => {
+      if (event.type !== "final" || !event.text.trim()) return;
+      const base = valueRef.current;
+      const separator = base && !/\s$/.test(base) ? " " : "";
+      handleValueChange(base + separator + event.text.trim());
+    },
+  });
+  const handleMicClick = () => {
+    if (mic.state === "listening" || mic.state === "starting") mic.stop();
+    else void mic.start();
   };
 
   const handleReplace = (span: DraftSpan, translation: string) => {
@@ -904,7 +926,22 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
             }
           }}
         />
+        {(mic.interim || mic.state === "starting" || mic.state === "error") && (
+          <div className={`chat-input__mic-pill${mic.state === "error" ? " chat-input__mic-pill--error" : ""}`}>
+            {mic.state === "error" ? mic.error : mic.state === "starting" ? "Starting mic…" : mic.interim}
+          </div>
+        )}
       </div>
+      <button
+        type="button"
+        className={`chat-input__mic${mic.state === "listening" ? " chat-input__mic--listening" : ""}`}
+        onClick={handleMicClick}
+        aria-pressed={mic.state === "listening"}
+        aria-label={mic.state === "listening" ? "Stop listening" : "Dictate with your voice"}
+        title={mic.state === "listening" ? "Stop listening" : "Dictate with your voice"}
+      >
+        {mic.state === "listening" ? "⏹" : "🎤"}
+      </button>
       <button
         type="button"
         className={`chat-input__send${sendMode === "checkFirst" && coachReady ? " chat-input__send--ready" : ""}`}

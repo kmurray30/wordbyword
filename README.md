@@ -55,6 +55,8 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |
 | `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used to synthesize speech |
 | `DEEPINFRA_TTS_VOICE` | *(none)* | force one specific voice regardless of language - normally left unset so the voice is picked per-request from `app/tts/kokoro_voices.py`'s language map |
+| `DEEPGRAM_API_KEY` | *(none)* | Deepgram API key for voice mode's streaming speech-to-text (`WS /voice/listen`); the mic button reports an error if unset |
+| `DEEPGRAM_STT_MODEL` | `nova-3` | Deepgram model for transcription - must support `language=multi` (Spanish/English code-switching) |
 
 ### Frontend
 

@@ -8,6 +8,7 @@
 }
 
 .chat-input__editor {
+  position: relative;
   display: grid;
   flex: 1;
   border-radius: 10px;
@@ -126,6 +127,57 @@
 
 .chat-input > button.chat-input__send--ready:hover {
   background: #39c468;
+}
+
+/* Dictation. The mic button sits between the editor and Send; it inherits
+   ".chat-input > button"'s shape above but is deliberately neutral so the
+   (blue/green) Send button stays the one that reads as "primary". */
+.chat-input > button.chat-input__mic {
+  background: #2a2f3b;
+  padding: 10px 12px;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.chat-input > button.chat-input__mic--listening {
+  background: #c43d3d;
+  animation: chat-input-mic-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes chat-input-mic-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(196, 61, 61, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(196, 61, 61, 0);
+  }
+}
+
+/* Live preview of the words still being spoken (Deepgram's "interim"
+   results) - shown over the editor's top edge rather than written into
+   the draft, which only ever gets settled "final" text. */
+.chat-input__mic-pill {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: -30px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #1f2430;
+  color: #b9c0d0;
+  font-size: 0.8rem;
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.chat-input__mic-pill--error {
+  color: #ff8a8a;
+  font-style: normal;
 }
 
 /* The press-and-hold bubble for choosing the Send button's mode. */
