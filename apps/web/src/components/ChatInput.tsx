@@ -696,12 +696,11 @@ export function ChatInput({
       >
         Send
       </button>
-      {/* Docked flush against the input bar's own top edge (see
-          DockedPopover) rather than floating next to whatever word/button
-          triggered it - a single, predictable, always-on-screen spot
-          regardless of where in the draft that word or selection sits. */}
+      {/* Docked flush under the message box (see DockedPopover) rather
+          than floating next to whatever word triggered it - one
+          predictable spot, out of the way of the text being edited. */}
       {popoverState !== "none" && (
-        <DockedPopover onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
+        <DockedPopover position="below" onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
           <WordCandidatesPopover
             loading={popoverState === "loading"}
             candidates={
@@ -725,7 +724,7 @@ export function ChatInput({
         </DockedPopover>
       )}
       {phraseSelection && (
-        <DockedPopover>
+        <DockedPopover position="below">
           <WordCandidatesPopover
             candidates={[
               phraseState === "loading"
