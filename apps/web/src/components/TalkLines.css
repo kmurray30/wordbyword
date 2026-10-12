@@ -1,6 +1,6 @@
 /* A side conversation with the coach (the "Your next message" panel and the
-   threads under messages). Your lines are right-aligned tinted bubbles;
-   the coach's are plain text on the left, so the two never blur together. */
+   threads under messages). Your lines are right-aligned blue bubbles, the
+   coach's left-aligned neutral ones. */
 .talk-line {
   display: flex;
   flex-direction: column;
@@ -21,6 +21,9 @@
 
 .talk-line--coach {
   align-self: flex-start;
+  padding: 6px 10px;
+  border-radius: 12px 12px 12px 4px;
+  background: rgba(255, 255, 255, 0.08);
   color: #e2e5ec;
 }
 

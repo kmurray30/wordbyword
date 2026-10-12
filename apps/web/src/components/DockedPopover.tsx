@@ -30,6 +30,13 @@ interface DockedPopoverProps {
   // itself, regardless of what's happening back at the original target.
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
+  // Any click/tap anywhere closes the popover - on the popover itself too,
+  // except on a control inside it (a candidate to pick, an audio button,
+  // "next option"), which does its own thing. `keepOpenFor` exempts
+  // elements outside it that manage the popover themselves (the word that
+  // toggles it, the box being typed in).
+  onDismiss?: () => void;
+  keepOpenFor?: (target: Element) => boolean;
 }
 
 // For popovers that should sit flush against a fixed anchor (the chat
@@ -41,8 +48,35 @@ interface DockedPopoverProps {
 // including however a mobile keyboard has already repositioned it -
 // instead of recomputing viewport bounds. Docks in the same place every
 // time rather than hugging whichever word/button triggered it.
-export function DockedPopover({ children, position = "above", onMouseEnter, onMouseLeave }: DockedPopoverProps) {
+export function DockedPopover({
+  children,
+  position = "above",
+  onMouseEnter,
+  onMouseLeave,
+  onDismiss,
+  keepOpenFor,
+}: DockedPopoverProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const dismissRef = useRef({ onDismiss, keepOpenFor });
+  useEffect(() => {
+    dismissRef.current = { onDismiss, keepOpenFor };
+  });
+  const dismissible = !!onDismiss;
+  useEffect(() => {
+    if (!dismissible) return;
+    // Capture phase, added after the click that opened the popover has
+    // already passed through - so only LATER clicks count.
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      const inside = !!wrapRef.current?.contains(target);
+      if (inside && target.closest("button, a, input, textarea, select")) return;
+      if (!inside && dismissRef.current.keepOpenFor?.(target)) return;
+      dismissRef.current.onDismiss?.();
+    };
+    document.addEventListener("click", handleClick, true);
+    return () => document.removeEventListener("click", handleClick, true);
+  }, [dismissible]);
   // Only "right"/"left" need this: they dock flush against their anchor's
   // own edge (see the CSS), and that anchor (a chat bubble) can sit
   // anywhere horizontally - a short bubble near either side of a narrow

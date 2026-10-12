@@ -19,14 +19,6 @@
   text-align: left;
 }
 
-.message-thread__title {
-  font-size: 0.66rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: #9fb8ff;
-}
-
 .message-thread__log {
   display: flex;
   flex-direction: column;

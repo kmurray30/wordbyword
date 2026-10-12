@@ -611,6 +611,10 @@ export function ChatInput({
 
   const ready = !!readyText && value.trim() === readyText.trim();
 
+  // Taps in the message box open/close/switch its popups themselves (see
+  // the touch and mouse handlers above); a click anywhere else closes them.
+  const inEditor = (target: Element) => !!target.closest(".chat-input__editor");
+
   return (
     <div className="chat-input">
       <div className="chat-input__editor">
@@ -700,7 +704,16 @@ export function ChatInput({
           than floating next to whatever word triggered it - one
           predictable spot, out of the way of the text being edited. */}
       {popoverState !== "none" && (
-        <DockedPopover position="below" onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
+        <DockedPopover
+          position="below"
+          onMouseEnter={cancelHoverClose}
+          onMouseLeave={scheduleHoverClose}
+          onDismiss={() => {
+            cancelHoverClose();
+            setOpenOffset(null);
+          }}
+          keepOpenFor={inEditor}
+        >
           <WordCandidatesPopover
             loading={popoverState === "loading"}
             candidates={
@@ -724,7 +737,7 @@ export function ChatInput({
         </DockedPopover>
       )}
       {phraseSelection && (
-        <DockedPopover position="below">
+        <DockedPopover position="below" onDismiss={() => setPhraseSelection(null)} keepOpenFor={inEditor}>
           <WordCandidatesPopover
             candidates={[
               phraseState === "loading"

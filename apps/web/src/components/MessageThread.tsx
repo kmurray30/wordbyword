@@ -58,22 +58,11 @@ function OldCheck({ entry }: { entry: ThreadEntry }) {
   );
 }
 
-export function MessageThread({
-  entries,
-  live,
-  title,
-}: {
-  entries: ThreadEntry[];
-  live: LiveCoachReply | null;
-  // What this thread is: talk about their message, or how you worked out
-  // the message you sent.
-  title: string;
-}) {
+export function MessageThread({ entries, live }: { entries: ThreadEntry[]; live: LiveCoachReply | null }) {
   const logRef = useRef<HTMLDivElement | null>(null);
   useStickToBottom(logRef, [entries.length, live?.reply, live?.error]);
   return (
     <div className="message-thread">
-      <div className="message-thread__title">{title}</div>
       <div className="message-thread__log" ref={logRef}>
         {entries.map((entry) =>
           entry.kind === "check" ? (

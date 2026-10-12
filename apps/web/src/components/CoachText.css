@@ -11,8 +11,8 @@
   margin: 6px 0;
   padding: 7px 7px 7px 10px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   white-space: normal;
 }
 

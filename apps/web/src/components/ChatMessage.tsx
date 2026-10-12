@@ -112,18 +112,11 @@ export function ChatMessage({
     };
   }, []);
 
-  // Hovering the message previews its translation (fetched eagerly below,
-  // so it's normally instant); the toggle button also pins it open on
-  // click, for touch/keyboard users and anyone who wants to read it without
-  // holding the hover (e.g. to use an audio button).
-  // The translation rows live in normal document flow directly under the
-  // bubble - not an absolutely-positioned popover - so there's no gap for
-  // the pointer to cross between them; hover can be driven safely off the
-  // whole column without the old "vanishes before you can reach it" bug
-  // that hover-based popovers elsewhere in the app had to work around.
-  const [isHovering, setIsHovering] = useState(false);
-  const [isPinned, setIsPinned] = useState(false);
-  const showTranslation = isHovering || isPinned;
+  // The 🌐 at the end of the bubble opens the whole message's translation
+  // in the same kind of popup a word gets (fetched eagerly below, so it's
+  // normally instant). One popup per message at a time.
+  const [globeOpen, setGlobeOpen] = useState(false);
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
 
   // Assistant: single ES->EN translation row.
   const [assistantTranslation, setAssistantTranslation] = useState<string | null>(null);
@@ -264,30 +257,29 @@ export function ChatMessage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message.id]);
 
-  const fetchTranslation = () => {
+  const closePopups = () => {
+    cancelHoverClose();
+    setHoveredWordIndex(null);
+    setPinnedWordIndex(null);
+    setOpenUserOffset(null);
+    setGlobeOpen(false);
+  };
+
+  const handleGlobe = () => {
+    if (globeOpen) {
+      setGlobeOpen(false);
+      return;
+    }
+    closePopups();
+    setGlobeOpen(true);
     if (message.role === "assistant") fetchAssistantTranslation();
     else fetchUserInterpretation();
   };
 
-  const handleMouseEnter = () => {
-    setIsHovering(true);
-    fetchTranslation();
-  };
-
-  const handleTogglePin = () => {
-    setIsPinned((pinned) => {
-      const next = !pinned;
-      // A real click always lands while the mouse is still physically
-      // over the button - onMouseEnter already fired and won't fire
-      // again until the pointer actually leaves and comes back, so
-      // showTranslation = isHovering || isPinned stays true from the
-      // lingering hover alone, masking the toggle: a second click looked
-      // like it did nothing. An explicit close should win over that.
-      if (!next) setIsHovering(false);
-      return next;
-    });
-    fetchTranslation();
-  };
+  // A click anywhere closes this message's popup (see DockedPopover),
+  // except on its own words and 🌐, which open/close/switch it themselves.
+  const keepOpenFor = (target: Element) =>
+    !!bubbleRef.current?.contains(target) && !!target.closest(".word-token, .chat-message__globe");
 
   // Only assistant replies get per-token annotations from the backend -
   // history rows for a user message come back with tokens: [] (truthy as
@@ -346,7 +338,7 @@ export function ChatMessage({
   return (
     <div className={`chat-message chat-message--${message.role}`}>
       <div className="chat-message__column">
-        <div className="chat-message__bubble">
+        <div className="chat-message__bubble" ref={bubbleRef}>
           {hasTokens && spaced ? (
             message.tokens!.map((tok, i) => (
               <span key={i}>
@@ -357,20 +349,18 @@ export function ChatMessage({
                   open={openWordIndex === i}
                   onOpen={() => {
                     cancelHoverClose();
+                    setGlobeOpen(false);
                     setHoveredWordIndex(i);
                     handleHover(tok.lemma);
                   }}
                   onClose={scheduleHoverClose}
                   onTogglePin={() => {
-                    // Clicking the word that's open closes it - including
-                    // when it's only open because the pointer is over it
-                    // (or a tap's emulated hover), not just when pinned.
-                    if (openWordIndex === i) {
-                      cancelHoverClose();
-                      setHoveredWordIndex(null);
-                      setPinnedWordIndex(null);
+                    // Clicking the pinned word again closes it.
+                    if (pinnedWordIndex === i) {
+                      closePopups();
                       return;
                     }
+                    setGlobeOpen(false);
                     setPinnedWordIndex(i);
                     handleHover(tok.lemma);
                   }}
@@ -388,6 +378,7 @@ export function ChatMessage({
                   title={seg.flagged ? "Looks different from the corrected version" : undefined}
                   onClick={() => {
                     ensureUserSpans();
+                    setGlobeOpen(false);
                     setOpenUserOffset((cur) => (cur === seg.start ? null : seg.start));
                   }}
                 >
@@ -400,8 +391,61 @@ export function ChatMessage({
           ) : (
             message.text
           )}
+          <button
+            type="button"
+            className={`chat-message__globe${globeOpen ? " chat-message__globe--active" : ""}`}
+            onClick={handleGlobe}
+            aria-label="Translate the whole message"
+            aria-expanded={globeOpen}
+            title="Translate the whole message"
+          >
+            🌐
+          </button>
+          {globeOpen && (
+            <DockedPopover
+              position={message.role === "assistant" ? "right" : "left"}
+              onDismiss={() => setGlobeOpen(false)}
+              keepOpenFor={keepOpenFor}
+            >
+              <div className="translate-popover chat-message__translation-popover" role="tooltip">
+                {message.role === "assistant" ? (
+                  <TranslationRow
+                    variant="assistant"
+                    label="EN"
+                    text={assistantTranslation}
+                    loading={assistantTranslating || assistantTranslation === null}
+                    language="en"
+                  />
+                ) : (
+                  <>
+                    <TranslationRow
+                      variant="user-native"
+                      label="EN"
+                      text={userNative}
+                      loading={userInterpreting || userNative === null}
+                      language="en"
+                    />
+                    <TranslationRow
+                      variant="user-target"
+                      label="ES"
+                      text={userTarget}
+                      loading={userInterpreting || userTarget === null}
+                      language="es"
+                      voice={voice}
+                    />
+                  </>
+                )}
+              </div>
+            </DockedPopover>
+          )}
           {openWordIndex !== null && message.tokens?.[openWordIndex] && (
-            <DockedPopover position="right" onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
+            <DockedPopover
+              position="right"
+              onMouseEnter={cancelHoverClose}
+              onMouseLeave={scheduleHoverClose}
+              onDismiss={closePopups}
+              keepOpenFor={keepOpenFor}
+            >
               <TranslatePopover
                 candidates={[
                   {
@@ -422,7 +466,7 @@ export function ChatMessage({
             // "left" rather than "right" since a user bubble sits flush
             // against the right edge of the viewport - "right" would run
             // off-screen there.
-            <DockedPopover position="left">
+            <DockedPopover position="left" onDismiss={closePopups} keepOpenFor={keepOpenFor}>
               <WordCandidatesPopover
                 candidates={openUserSpan?.candidates ?? []}
                 clickable={false}
@@ -433,71 +477,26 @@ export function ChatMessage({
             </DockedPopover>
           )}
         </div>
-        <div className="chat-message__actions">
-          <button
-            type="button"
-            className={`chat-message__translate-toggle${isPinned ? " chat-message__translate-toggle--active" : ""}`}
-            onClick={handleTogglePin}
-            onMouseEnter={handleMouseEnter}
-            onMouseLeave={() => setIsHovering(false)}
-            aria-label="Pin translation open"
-            aria-pressed={isPinned}
-            title="Hover to preview - click to keep it open"
-          >
-            🌐
-          </button>
-          {message.role === "assistant" && (
-            <AudioButton text={message.text} language="es" voice={voice} label="Play pronunciation" />
-          )}
-          {(threadCount > 0 || liveCoach) && (
-            <button
-              type="button"
-              className={`chat-message__thread-toggle${threadOpen ? " chat-message__thread-toggle--active" : ""}`}
-              onClick={onToggleThread}
-              aria-expanded={threadOpen}
-              title={threadOpen ? "Hide the side conversation" : "Show the side conversation about this message"}
-            >
-              💬 {threadCount + (liveCoach ? 1 : 0)}
-            </button>
-          )}
-        </div>
-        {showTranslation && (
-          <div className="chat-message__translations">
-            {message.role === "assistant" ? (
-              <TranslationRow
-                variant="assistant"
-                label="EN"
-                text={assistantTranslation}
-                loading={assistantTranslating}
-                language="en"
-              />
-            ) : (
-              <>
-                <TranslationRow
-                  variant="user-native"
-                  label="EN"
-                  text={userNative}
-                  loading={userInterpreting}
-                  language="en"
-                />
-                <TranslationRow
-                  variant="user-target"
-                  label="ES"
-                  text={userTarget}
-                  loading={userInterpreting}
-                  language="es"
-                  voice={voice}
-                />
-              </>
+        {(message.role === "assistant" || threadCount > 0 || liveCoach) && (
+          <div className="chat-message__actions">
+            {message.role === "assistant" && (
+              <AudioButton text={message.text} language="es" voice={voice} label="Play pronunciation" />
+            )}
+            {(threadCount > 0 || liveCoach) && (
+              <button
+                type="button"
+                className={`chat-message__thread-toggle${threadOpen ? " chat-message__thread-toggle--active" : ""}`}
+                onClick={onToggleThread}
+                aria-expanded={threadOpen}
+                title={threadOpen ? "Hide the side conversation" : "Show the side conversation about this message"}
+              >
+                💬 {threadCount + (liveCoach ? 1 : 0)}
+              </button>
             )}
           </div>
         )}
         {threadOpen && (threadCount > 0 || liveCoach) && (
-          <MessageThread
-            entries={message.thread ?? []}
-            live={liveCoach}
-            title={message.role === "assistant" ? "About their message" : "How you worked this out"}
-          />
+          <MessageThread entries={message.thread ?? []} live={liveCoach} />
         )}
       </div>
     </div>
