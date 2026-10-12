@@ -4,7 +4,6 @@ import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
 import { SegmentedControl } from "./components/SegmentedControl";
-import { VoicePanel } from "./components/VoicePanel";
 import { getSessionId } from "./lib/session";
 import "./App.css";
 
@@ -207,8 +206,7 @@ function App() {
         {error && <p className="app__error">{error}. Is the backend running and configured correctly?</p>}
       </main>
 
-      <VoicePanel sessionId={sessionId} onSend={handleSend} partnerVoice={voice ?? undefined} />
-      <ChatInput onSend={handleSend} sessionId={sessionId} />
+      <ChatInput onSend={handleSend} sessionId={sessionId} partnerVoice={voice ?? undefined} />
     </div>
   );
 }

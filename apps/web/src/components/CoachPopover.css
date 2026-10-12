@@ -79,6 +79,48 @@
   font-size: 0.8rem;
 }
 
+/* Voice mode's state line inside the same popover (see VoiceCoachPopover). */
+.coach-popover__voice-state {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #9aa1b1;
+}
+
+.coach-popover__voice-state--listening {
+  color: #2fae5a;
+  animation: coach-popover-voice-pulse 1.4s ease-in-out infinite;
+}
+
+.coach-popover__voice-state--thinking,
+.coach-popover__voice-state--sending {
+  color: #f2c14e;
+}
+
+.coach-popover__voice-state--speaking_coach,
+.coach-popover__voice-state--speaking_partner {
+  color: #82aaff;
+}
+
+.coach-popover__voice-state--error {
+  color: #ff8a8a;
+}
+
+@keyframes coach-popover-voice-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.coach-popover__voice-say {
+  font-size: 0.9rem;
+}
+
 .coach-popover__confirm-send {
   all: unset;
   flex-shrink: 0;

@@ -4,8 +4,9 @@ import type { DraftSpan, DraftToken } from "../api/client";
 import { CoachPopover } from "./CoachPopover";
 import { DockedPopover } from "./DockedPopover";
 import { SegmentedControl } from "./SegmentedControl";
+import { VoiceCoachPopover } from "./VoiceCoachPopover";
 import { WordCandidatesPopover } from "./WordCandidatesPopover";
-import { useMicStream } from "../voice/useMicStream";
+import { useVoiceSession } from "../voice/useVoiceSession";
 import "./ChatInput.css";
 
 type SendMode = "checkFirst" | "direct";
@@ -87,7 +88,17 @@ function buildSegments(text: string, ranges: { start: number; end: number; span?
   return segments;
 }
 
-export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => void; sessionId: string }) {
+export function ChatInput({
+  onSend,
+  sessionId,
+  partnerVoice,
+}: {
+  // Resolves with the partner's reply (voice mode speaks it); a plain
+  // void return is fine for callers that don't care.
+  onSend: (text: string) => void | Promise<{ text: string } | null>;
+  sessionId: string;
+  partnerVoice?: string;
+}) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   const dragAnchorRef = useRef<number | null>(null);
@@ -380,25 +391,29 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     setSelectedCoachOptionIndex(null);
   };
 
-  // Dictation: each settled ("final") transcript segment is appended to the
-  // draft as if typed, so everything downstream - the coach check, word
-  // glosses, the Send button - works on it unchanged. Interim (still-being-
-  // spoken) text is only previewed (see the mic pill below), never written
-  // into the draft, so a half-heard word can't trigger a stale coach run.
-  const valueRef = useRef(value);
-  valueRef.current = value;
-  const mic = useMicStream({
+  // Voice mode lives INSIDE this input rather than on its own screen: what
+  // the learner says shows up in the draft box (hoverable words and all),
+  // the coach's spoken reply shows in the same docked coach popover the
+  // text "Check" uses, a ready verdict lights the Send button green, and
+  // the sent message / partner reply are ordinary chat bubbles. Interim
+  // (still-being-spoken) text is only previewed in the mic pill; the draft
+  // only ever gets settled text.
+  const voice = useVoiceSession({
     sessionId,
-    onEvent: (event) => {
-      if (event.type !== "final" || !event.text.trim()) return;
-      const base = valueRef.current;
-      const separator = base && !/\s$/.test(base) ? " " : "";
-      handleValueChange(base + separator + event.text.trim());
-    },
+    partnerVoice,
+    onSend: (text) => sendText(text),
+    // Each settled segment replaces the draft with the whole utterance so
+    // far - a spoken attempt is one message, not an append to a typed one.
+    onTranscript: (text) => handleValueChange(text),
+    // The coach's corrected sentence goes into the draft like picking a
+    // text-coach option does (applyValue, not handleValueChange, so the
+    // in-flight voice turn isn't treated as a stale edit).
+    onDraft: (draft) => applyValue(draft),
   });
+  const voiceActive = voice.state !== "idle";
   const handleMicClick = () => {
-    if (mic.state === "listening" || mic.state === "starting") mic.stop();
-    else void mic.start();
+    if (voiceActive) voice.stop();
+    else void voice.start();
   };
 
   const handleReplace = (span: DraftSpan, translation: string) => {
@@ -606,9 +621,13 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     }, HOVER_CLOSE_DELAY_MS);
   };
 
-  const handleSend = () => {
-    const text = value.trim();
-    if (!text) return;
+  // The one send path, for the Send button and voice mode alike: reward
+  // events for the Spanish the learner produced, hand the text up, clear
+  // the draft and everything derived from it. Resolves with the partner's
+  // reply when the parent provides it (voice mode speaks it).
+  const sendText = (raw: string): Promise<{ text: string } | null> => {
+    const text = raw.trim();
+    if (!text) return Promise.resolve(null);
 
     for (const tok of effectiveTokens) {
       if (tok.is_spanish && SPANISH_WORD_RE.test(tok.surface) && tok.surface.length > 1) {
@@ -616,7 +635,7 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
       }
     }
 
-    onSend(text);
+    const result = onSend(text);
     handleValueChange("");
     tagSeqRef.current += 1; // invalidate any outstanding tagInput request for the just-sent draft
     glossSeqRef.current += 1; // same, for any outstanding gloss-spans request
@@ -626,6 +645,11 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
     setGlossState("idle");
     setOpenOffset(null);
     setAltToggles({});
+    return Promise.resolve(result ?? null);
+  };
+
+  const handleSend = () => {
+    void sendText(value);
   };
 
   // The combined Send button's draft-coaching check (see handlePrimaryAction
@@ -794,9 +818,14 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   // and send" behavior.
   const coachVerified = coachPhase === "idle" && coachVerdict !== null;
   const coachPopoverVisible =
+    !voiceActive &&
     sendMode === "checkFirst" &&
     !coachDismissed &&
     (coachPhase === "loading" || coachPhase === "error" || coachVerdict !== null);
+  // The voice coach's box replaces the text coach's while a voice chat is
+  // on; shown whenever there's something to say or a state worth seeing
+  // (plain listening with nothing said yet stays out of the way).
+  const voicePopoverVisible = voiceActive && (voice.state !== "listening" || !!voice.coachSay || !!voice.error);
 
   // The combined Send button's single entry point, fired by both a plain
   // click/tap (handleSendClick) and the Enter key. "direct" mode always
@@ -807,6 +836,14 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
   // actually sends).
   const handlePrimaryAction = () => {
     if (!value.trim() || coachPhase === "loading") return;
+    // A voice chat owns sending (so the partner's reply gets spoken): a
+    // tap on the green button skips the rest of the coach's readout and
+    // sends; between turns it sends the draft as-is; mid-turn before a
+    // ready verdict there's nothing to do yet.
+    if (voiceActive) {
+      voice.sendNow(value);
+      return;
+    }
     // selectedCoachOptionIndex !== null covers clicking Send right after
     // picking a "fix" suggestion, even while sibling options are still
     // streaming (coachVerified alone would still be false then, since it
@@ -926,25 +963,21 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
             }
           }}
         />
-        {(mic.interim || mic.state === "starting" || mic.state === "error") && (
-          <div className={`chat-input__mic-pill${mic.state === "error" ? " chat-input__mic-pill--error" : ""}`}>
-            {mic.state === "error" ? mic.error : mic.state === "starting" ? "Starting mic…" : mic.interim}
-          </div>
-        )}
+        {voiceActive && voice.interim && <div className="chat-input__mic-pill">{voice.interim}</div>}
       </div>
       <button
         type="button"
-        className={`chat-input__mic${mic.state === "listening" ? " chat-input__mic--listening" : ""}`}
+        className={`chat-input__mic${voiceActive ? " chat-input__mic--active" : ""}${voice.state === "listening" ? " chat-input__mic--listening" : ""}`}
         onClick={handleMicClick}
-        aria-pressed={mic.state === "listening"}
-        aria-label={mic.state === "listening" ? "Stop listening" : "Dictate with your voice"}
-        title={mic.state === "listening" ? "Stop listening" : "Dictate with your voice"}
+        aria-pressed={voiceActive}
+        aria-label={voiceActive ? "End voice chat" : "Start voice chat"}
+        title={voiceActive ? "End voice chat" : "Talk instead of typing - the coach answers out loud and sends when it's right"}
       >
-        {mic.state === "listening" ? "⏹" : "🎤"}
+        {voiceActive ? "⏹" : "🎤"}
       </button>
       <button
         type="button"
-        className={`chat-input__send${sendMode === "checkFirst" && coachReady ? " chat-input__send--ready" : ""}`}
+        className={`chat-input__send${voice.readyToSend || (sendMode === "checkFirst" && coachReady) ? " chat-input__send--ready" : ""}`}
         onMouseDown={startSendHold}
         onMouseUp={cancelSendHold}
         onMouseLeave={cancelSendHold}
@@ -953,12 +986,14 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
         onClick={handleSendClick}
         disabled={!value.trim()}
         title={
-          sendMode === "direct"
-            ? "Send - press and hold to check your draft before sending"
-            : "Checks your draft, then sends - press and hold to send directly instead"
+          voiceActive
+            ? "Send what's in the box - the voice coach does the checking"
+            : sendMode === "direct"
+              ? "Send - press and hold to check your draft before sending"
+              : "Checks your draft, then sends - press and hold to send directly instead"
         }
       >
-        {sendMode === "direct"
+        {voiceActive || sendMode === "direct"
           ? "Send"
           : coachPhase === "loading"
             ? "⏳ Checking…"
@@ -1011,6 +1046,17 @@ export function ChatInput({ onSend, sessionId }: { onSend: (text: string) => voi
               setPhraseSelection(null);
               textareaRef.current?.focus();
             }}
+          />
+        </DockedPopover>
+      )}
+      {voicePopoverVisible && (
+        <DockedPopover position="below">
+          <VoiceCoachPopover
+            state={voice.state}
+            say={voice.coachSay}
+            error={voice.error}
+            keepAwakeMode={voice.keepAwakeMode}
+            onStop={voice.stop}
           />
         </DockedPopover>
       )}

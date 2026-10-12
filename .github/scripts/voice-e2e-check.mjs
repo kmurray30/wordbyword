@@ -296,67 +296,102 @@ async function checkVoiceConversation(wavPath) {
   try {
     await page.goto(FRONTEND_URL);
     await page.waitForSelector(".llm-gate", { state: "hidden", timeout: 60_000 }).catch(() => {});
-    await page.waitForSelector(".voice-panel__toggle", { timeout: 30_000 });
-    await page.click(".voice-panel__toggle");
-    await page.waitForSelector(".voice-panel__state--listening", { timeout: 20_000 });
+    // Voice mode lives inside the chat input: the mic button starts it, the
+    // spoken words land in the draft textarea, the coach's spoken reply is
+    // the docked coach popover, and sent/partner messages are the normal
+    // chat bubbles.
+    const MIC = ".chat-input__mic";
+    const DRAFT = ".chat-input__textarea";
+    const VOICE_STATE = ".coach-popover--voice .coach-popover__voice-state";
+    const VOICE_SAY = ".coach-popover--voice .coach-popover__voice-say";
+    const VOICE_ERR = ".coach-popover--voice .coach-popover__status--error";
+    await page.waitForSelector(MIC, { timeout: 30_000 });
+    await page.click(MIC);
+    await page.waitForSelector(`${MIC}.chat-input__mic--listening`, { timeout: 20_000 });
     await page.screenshot({ path: "voice-e2e-1-listening.png" });
-    console.log("voice chat started: listening");
+    console.log("voice chat started: listening (mic button active)");
 
-    try {
-      await page.waitForSelector(".voice-panel__turn--learner", { timeout: 60_000 });
-    } catch (err) {
+    const draftValue = () => page.inputValue(DRAFT).catch(() => "");
+    const voiceState = () => page.locator(VOICE_STATE).textContent({ timeout: 300 }).catch(() => null);
+    const voiceError = () => page.locator(VOICE_ERR).textContent({ timeout: 300 }).catch(() => null);
+    const micActive = () => page.locator(`${MIC}.chat-input__mic--active`).count().then((n) => n > 0);
+
+    // Everything below has to be captured while the turn is live: a ready
+    // verdict sends the draft (clearing the textarea) and the coach dialog
+    // resets after a send, so polling is the only way to see what was
+    // heard and said.
+    let transcript = "";
+    const coachTurns = [];
+    let sendButtonWentGreen = false;
+    const observe = async () => {
+      const v = await draftValue();
+      if (v.trim().length > transcript.length) transcript = v.trim();
+      const says = await page.$$eval(VOICE_SAY, (els) => els.map((e) => e.textContent.replace(/^Coach/, "").trim())).catch(() => []);
+      for (const t of says) {
+        if (!t) continue;
+        const i = coachTurns.findIndex((prev) => t.startsWith(prev) || prev.startsWith(t));
+        if (i === -1) coachTurns.push(t);
+        else if (t.length > coachTurns[i].length) coachTurns[i] = t;
+      }
+      if (!sendButtonWentGreen && (await page.locator(".chat-input__send--ready").count()) > 0) sendButtonWentGreen = true;
+    };
+
+    const heardBy = Date.now() + 60_000;
+    while (Date.now() < heardBy && !transcript) {
+      await observe();
+      if (!transcript) await page.waitForTimeout(300);
+    }
+    if (!transcript) {
       await page.screenshot({ path: "voice-e2e-timeout.png" });
-      const state = await page.locator(".voice-panel__state").textContent().catch(() => null);
-      const interim = await page.locator(".voice-panel__interim").textContent().catch(() => null);
-      const panelErr = await page.locator(".voice-panel__error").textContent().catch(() => null);
+      const state = await voiceState();
+      const interim = await page.locator(".chat-input__mic-pill").textContent({ timeout: 300 }).catch(() => null);
+      const panelErr = await voiceError();
       const mic = await page.evaluate(() => window.__fakeMic ? { duration: window.__fakeMic.duration, ctxState: window.__fakeMic.ctx.state } : null);
       console.log(`no transcript within 60s. state=${state} interim=${JSON.stringify(interim)} error=${JSON.stringify(panelErr)} fakeMic=${JSON.stringify(mic)}`);
       console.log(`audio sent: ${wsStats.frames} frames / ${wsStats.bytes} bytes, ${wsStats.loudFrames} with speech-level peaks; deepgram events: ${JSON.stringify(wsStats.events.slice(0, 10))}`);
       console.log(`console/page errors: ${JSON.stringify(errors)}`);
-      throw err;
+      fail("the spoken clip never showed up in the draft box");
     }
     console.log(`audio sent so far: ${wsStats.frames} frames (${wsStats.loudFrames} speech-level)`);
-    const transcript = (await page.textContent(".voice-panel__turn--learner")).replace(/^You/, "").trim();
-    console.log(`Deepgram heard: ${JSON.stringify(transcript)}`);
     await page.screenshot({ path: "voice-e2e-2-heard.png" });
-    if (!/gusta|correr|hola|cómo|como/i.test(transcript)) fail(`transcript doesn't look like the spoken sentence: ${transcript}`);
 
-    await page.waitForSelector(".voice-panel__turn--coach", { timeout: 120_000 });
-    // The coach's text has to be captured while the turn is live: once a
-    // sentence is sent, the panel clears the coach dialog by design, so
-    // reading it after the state settles finds nothing.
-    const coachTurns = [];
-    const noteCoach = async () => {
-      const texts = await page.$$eval(".voice-panel__turn--coach", (els) => els.map((e) => e.textContent.replace(/^Coach/, "").trim())).catch(() => []);
-      for (const t of texts) if (t && !coachTurns.includes(t)) coachTurns.push(t);
-    };
-    await noteCoach();
+    // Let the turn play out: coach reply (+ possible send and partner
+    // reply), then back to plain listening - the voice popover hides again
+    // once there's nothing to show, or stays with "Listening…".
     const settled = Date.now() + 150_000;
+    let sawCoach = false;
+    let lastState = null;
     while (Date.now() < settled) {
-      await noteCoach();
-      const s = await page.locator(".voice-panel__state").textContent().catch(() => "");
-      if (s === "Listening…" || s === "Problem") break;
+      await observe();
+      if (coachTurns.length) sawCoach = true;
+      const s = await voiceState();
+      if (s) lastState = s;
+      if (sawCoach && (s === null || s === "Listening…" || s === "Problem")) break;
       await page.waitForTimeout(500);
     }
+    console.log(`Deepgram heard: ${JSON.stringify(transcript)}`);
+    if (!/gusta|correr|hola|cómo|como/i.test(transcript)) fail(`transcript doesn't look like the spoken sentence: ${transcript}`);
     console.log(`coach said: ${JSON.stringify(coachTurns)}`);
-    const state = await page.textContent(".voice-panel__state");
-    const err = await page.locator(".voice-panel__error").textContent().catch(() => null);
-    console.log(`state after the turn: ${state}${err ? ` (error: ${err})` : ""}`);
+    const err = await voiceError();
+    const stillActive = await micActive();
+    console.log(`after the turn: mic active=${stillActive}, voice state=${lastState}, draft=${JSON.stringify(await draftValue())}${err ? ` (error: ${err})` : ""}`);
     const bubbles = await page.$$eval(".chat-message__bubble", (els) => els.map((e) => e.textContent.trim()).slice(-2));
     console.log(`last chat bubbles: ${JSON.stringify(bubbles)}`);
     await page.screenshot({ path: "voice-e2e-3-after-turn.png" });
 
     if (!coachTurns.length || !coachTurns[0]) fail("coach produced no spoken text");
     if (err) fail(`voice session error: ${err}`);
+    if (!stillActive) fail("voice chat ended by itself during the turn");
     if (/^(INTENT|VERDICT|DRAFT|SAY)\b/i.test(coachTurns[0])) fail(`coach text starts with an echoed field label: ${coachTurns[0]}`);
     // The clip is correct Spanish, so the coach normally judges it ready and
     // says "Sending:" - in which case the sentence MUST actually have been
-    // sent and answered, with the partner's reply spoken.
+    // sent and answered (draft cleared, Send went green, partner spoken).
     if (/sending/i.test(coachTurns[0])) {
       if (!bubbles.some((b) => /gusta correr/i.test(b))) fail(`coach said "Sending" but no user bubble with the sentence appeared: ${JSON.stringify(bubbles)}`);
       if (bubbles.length < 2) fail(`coach said "Sending" but no partner reply bubble appeared: ${JSON.stringify(bubbles)}`);
       if (!tts.some((t) => t.role === "partner" && t.status === 200)) fail("coach said \"Sending\" but the partner reply was never spoken");
-      console.log("auto-send after a ready verdict: OK");
+      if ((await draftValue()).trim()) fail("sent, but the draft box still holds the transcript");
+      console.log(`auto-send after a ready verdict: OK (send button went green: ${sendButtonWentGreen})`);
     } else {
       console.log("coach asked for a revision rather than sending - acceptable, nothing to send-check");
     }
@@ -366,7 +401,8 @@ async function checkVoiceConversation(wavPath) {
     if (!coachOk) fail("no successful coach TTS clip was fetched");
     if (coachBad.length) fail(`coach TTS failures: ${JSON.stringify(coachBad)}`);
 
-    await page.click(".voice-panel__toggle");
+    await page.click(MIC);
+    await page.waitForSelector(`${MIC}.chat-input__mic--active`, { state: "detached", timeout: 10_000 });
     console.log(`console/page errors: ${errors.length ? JSON.stringify(errors) : "none"}`);
     if (errors.length) fail("page errors during the voice conversation");
   } finally {

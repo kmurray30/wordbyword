@@ -139,8 +139,13 @@
   line-height: 1;
 }
 
-.chat-input > button.chat-input__mic--listening {
+/* A voice chat is on (any state) - red; pulses only while actually
+   listening, so "the coach is talking" reads as steady. */
+.chat-input > button.chat-input__mic--active {
   background: #c43d3d;
+}
+
+.chat-input > button.chat-input__mic--listening {
   animation: chat-input-mic-pulse 1.4s ease-in-out infinite;
 }
 

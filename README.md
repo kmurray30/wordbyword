@@ -201,9 +201,12 @@ optional `voice` field and rejects one that isn't valid for the given
 
 ## Voice mode
 
-"Start voice chat" (above the input) turns the whole loop into a spoken
-conversation; the 🎤 button next to Send is plain dictation into the text
-draft. Both stream the microphone to `WS /voice/listen`
+The 🎤 button next to Send turns the chat into a spoken conversation - in
+place, not on a separate screen: what you say appears in the draft box
+(with the same hoverable word glosses), the coach's spoken reply appears in
+the same docked popover the text "Check" uses, a ready verdict lights the
+Send button green, and the sent message and the partner's reply are
+ordinary chat bubbles. The microphone streams to `WS /voice/listen`
 (`app/routes/voice.py`), which proxies it to Deepgram's live transcription
 (`app/stt/deepgram_client.py`) using Nova-3's code-switching mode
 (`language=multi`) - the learner's speech is genuinely mixed Spanish and
@@ -234,8 +237,9 @@ audio is playing (voice mode keeps a near-silent loop going, with Media
 Session metadata so the lock screen shows it and its pause button ends the
 chat), while a home-screen ("Add to Home Screen") app loses the mic the
 moment the screen locks - no web page can change that. In that case voice
-mode falls back to keeping the screen on with the Screen Wake Lock API
-behind a black overlay (turn the brightness down). `public/voice-spike.html`
+mode falls back to keeping the screen on with the Screen Wake Lock API -
+the chat stays visible as usual; the coach popover suggests turning the
+brightness down. `public/voice-spike.html`
 is the standalone page used to verify this on a real phone: open it, tap
 Start, lock the phone for a minute, and its summary says whether the mic,
 timers and socket kept flowing.
