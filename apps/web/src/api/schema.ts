@@ -298,31 +298,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/voice/coach": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Voice Coach
-         * @description The spoken coach's turn, streamed as SSE in the same style as
-         *     /translate/coach: "intent", then "verdict" + "draft" (what to send, if
-         *     anything), then "say_chunk"/"say_complete" for the spoken reply (the
-         *     client turns each completed sentence into coach-voice TTS as it
-         *     arrives). "error" means nothing was usable. See
-         *     llm_translate.voice_coach_stream for the field semantics.
-         */
-        post: operations["voice_coach_voice_coach_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/health": {
         parameters: {
             query?: never;
@@ -392,6 +367,11 @@ export interface components {
              * @default
              */
             target: string;
+            /**
+             * Thread
+             * @default []
+             */
+            thread: components["schemas"]["ThreadEntryOut"][];
         };
         /** ChatHistoryResponse */
         ChatHistoryResponse: {
@@ -404,6 +384,11 @@ export interface components {
             message: string;
             /** Session Id */
             session_id: string;
+            /**
+             * Thread
+             * @default []
+             */
+            thread: components["schemas"]["ThreadEntryIn"][];
         };
         /** ChatTurnResponse */
         ChatTurnResponse: {
@@ -435,6 +420,10 @@ export interface components {
             text: string;
             /** Session Id */
             session_id: string;
+            /** Thread Message Id */
+            thread_message_id?: number | null;
+            /** Force */
+            force?: string | null;
         };
         /** DraftSpan */
         DraftSpan: {
@@ -568,6 +557,42 @@ export interface components {
             /** Tokens */
             tokens: components["schemas"]["DraftToken"][];
         };
+        /** ThreadEntryIn */
+        ThreadEntryIn: {
+            /** Role */
+            role: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Data
+             * @default
+             */
+            data: string;
+        };
+        /** ThreadEntryOut */
+        ThreadEntryOut: {
+            /** Role */
+            role: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Data
+             * @default
+             */
+            data: string;
+            /** Id */
+            id: number;
+        };
         /** TokenAnnotation */
         TokenAnnotation: {
             /** Surface */
@@ -633,37 +658,6 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
-        };
-        /** VoiceCoachRequest */
-        VoiceCoachRequest: {
-            /** Transcript */
-            transcript: string;
-            /**
-             * Words
-             * @default []
-             */
-            words: components["schemas"]["VoiceWord"][];
-            /**
-             * Coach Dialog
-             * @default []
-             */
-            coach_dialog: components["schemas"]["VoiceDialogTurn"][];
-            /** Session Id */
-            session_id: string;
-        };
-        /** VoiceDialogTurn */
-        VoiceDialogTurn: {
-            /** Role */
-            role: string;
-            /** Text */
-            text: string;
-        };
-        /** VoiceWord */
-        VoiceWord: {
-            /** Word */
-            word: string;
-            /** Confidence */
-            confidence: number;
         };
     };
     responses: never;
@@ -1074,39 +1068,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["TTSRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    voice_coach_voice_coach_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VoiceCoachRequest"];
             };
         };
         responses: {

@@ -86,3 +86,19 @@
   margin-top: 4px;
   width: 100%;
 }
+
+.chat-message__thread-toggle {
+  margin: 0;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 0.8em;
+}
+
+.chat-message__thread-toggle:hover,
+.chat-message__thread-toggle--active {
+  opacity: 1;
+}

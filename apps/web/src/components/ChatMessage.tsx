@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { DraftSpan, TokenAnnotation } from "../api/client";
+import type { DraftSpan, ThreadEntry, TokenAnnotation } from "../api/client";
 import { joinTokens } from "../lib/spacing";
 import { diffRawWords, pickDiffReference, tokenizeSegments } from "../lib/wordDiff";
 import { DockedPopover } from "./DockedPopover";
@@ -9,6 +9,8 @@ import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
+import { MessageThread } from "./MessageThread";
+import type { LiveTutorAnswer } from "./MessageThread";
 import "./ChatMessage.css";
 
 const TRANSLATION_FAILED = "(translation failed)";
@@ -52,14 +54,35 @@ export interface DisplayMessage {
   // or whose original /translate/interpret call failed.
   native?: string;
   target?: string;
+  // The side conversation about this message (see MessageThread): coach
+  // checks behind a sent message, questions and the tutor's answers.
+  thread?: ThreadEntry[];
 }
 
 // How long an agent word can go un-hovered before we count that as passive
 // recognition (a small familiarity boost) rather than "still pending".
 const RESOLUTION_DELAY_MS = 6000;
 
-export function ChatMessage({ message, voice }: { message: DisplayMessage; voice?: string }) {
+export function ChatMessage({
+  message,
+  voice,
+  threadOpen = false,
+  onToggleThread,
+  liveTutor = null,
+  onSayInstead,
+}: {
+  message: DisplayMessage;
+  voice?: string;
+  threadOpen?: boolean;
+  onToggleThread?: () => void;
+  // The tutor's answer while it's still streaming, when it's about this
+  // message.
+  liveTutor?: LiveTutorAnswer | null;
+  onSayInstead?: (question: string) => void;
+}) {
   const resolvedLemmas = useRef<Set<string>>(new Set());
+  // Checks count once each; a question and its answer count as one.
+  const threadCount = (message.thread ?? []).filter((e) => e.kind !== "answer").length;
 
   // Which word's translation popover is open, if any - at most one per
   // message, docked flush to the bottom of this message's own bubble
@@ -419,6 +442,17 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
           {message.role === "assistant" && (
             <AudioButton text={message.text} language="es" voice={voice} label="Play pronunciation" />
           )}
+          {(threadCount > 0 || liveTutor) && (
+            <button
+              type="button"
+              className={`chat-message__thread-toggle${threadOpen ? " chat-message__thread-toggle--active" : ""}`}
+              onClick={onToggleThread}
+              aria-expanded={threadOpen}
+              title={threadOpen ? "Hide the side conversation" : "Show the side conversation about this message"}
+            >
+              💬 {threadCount + (liveTutor ? 1 : 0)}
+            </button>
+          )}
         </div>
         {showTranslation && (
           <div className="chat-message__translations">
@@ -450,6 +484,9 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
               </>
             )}
           </div>
+        )}
+        {threadOpen && (threadCount > 0 || liveTutor) && (
+          <MessageThread entries={message.thread ?? []} live={liveTutor} onSayInstead={(q) => onSayInstead?.(q)} />
         )}
       </div>
     </div>

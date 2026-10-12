@@ -29,6 +29,9 @@ interface CoachPopoverProps {
   // button is already green by then (see ChatInput.tsx's coachReady), so
   // clicking it just sends directly.
   onConfirmMinorSend: () => void;
+  // The learner meant this as a question for the tutor, not something to
+  // say - re-routes it (ChatInput.tsx's handleAskInstead).
+  onAskInstead: () => void;
 }
 
 const FORMALITY_LABEL: Record<string, string> = { neutral: "Natural", casual: "Casual", formal: "Formal" };
@@ -46,6 +49,7 @@ export function CoachPopover({
   onClose,
   onRegenerate,
   onConfirmMinorSend,
+  onAskInstead,
 }: CoachPopoverProps) {
   const error = phase === "error";
   // Before the verdict itself is known, there's nothing yet to show but
@@ -127,6 +131,11 @@ export function CoachPopover({
             </div>
           )}
         </>
+      )}
+      {verdict !== null && (
+        <button type="button" className="coach-popover__ask-instead" onClick={onAskInstead}>
+          That was a question - ask the tutor
+        </button>
       )}
     </div>
   );

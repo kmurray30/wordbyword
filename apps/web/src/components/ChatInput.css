@@ -139,10 +139,12 @@
   line-height: 1;
 }
 
-/* A voice chat is on (any state) - red; pulses only while actually
-   listening, so "the coach is talking" reads as steady. */
-.chat-input > button.chat-input__mic--active {
-  background: #c43d3d;
+/* Dictating: the mic button becomes the Done button (the Send button is
+   hidden meanwhile - Done is what submits). Pulses while listening. */
+.chat-input > button.chat-input__mic--done {
+  background: #2fae5a;
+  padding: 10px 16px;
+  font-size: 0.95rem;
 }
 
 .chat-input > button.chat-input__mic--listening {
@@ -152,16 +154,15 @@
 @keyframes chat-input-mic-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(196, 61, 61, 0.55);
+    box-shadow: 0 0 0 0 rgba(47, 174, 90, 0.55);
   }
   50% {
-    box-shadow: 0 0 0 7px rgba(196, 61, 61, 0);
+    box-shadow: 0 0 0 7px rgba(47, 174, 90, 0);
   }
 }
 
-/* Live preview of the words still being spoken (Deepgram's "interim"
-   results) - shown over the editor's top edge rather than written into
-   the draft, which only ever gets settled "final" text. */
+/* A dictation problem (mic blocked, voice server unreachable), shown over
+   the editor's top edge. */
 .chat-input__mic-pill {
   position: absolute;
   left: 8px;

@@ -1,0 +1,85 @@
+/* The side conversation under a message (see MessageThread.tsx) - quieter
+   than the chat itself so the main exchange still reads first. */
+.message-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid rgba(130, 170, 255, 0.45);
+  border-radius: 0 8px 8px 0;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: #d9dde6;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.message-thread__line {
+  overflow-wrap: anywhere;
+}
+
+.message-thread__line--learner {
+  color: #b9c7ff;
+}
+
+.message-thread__who {
+  font-weight: 700;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  opacity: 0.6;
+  margin-right: 6px;
+}
+
+.message-thread__check {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.message-thread__option {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.message-thread__option--picked {
+  background: rgba(47, 174, 90, 0.16);
+  outline: 1px solid rgba(47, 174, 90, 0.45);
+}
+
+.message-thread__option-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.message-thread__option-english {
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+
+.message-thread__error {
+  color: #ff8a8a;
+}
+
+.message-thread__say-instead {
+  all: unset;
+  align-self: flex-start;
+  cursor: pointer;
+  font-size: 0.72rem;
+  opacity: 0.55;
+  text-decoration: underline;
+}
+
+.message-thread__say-instead:hover {
+  opacity: 1;
+}

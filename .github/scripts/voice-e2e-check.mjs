@@ -9,18 +9,21 @@
 //     directly - both must return real audio. The clips are uploaded as
 //     artifacts so a human can listen to the coach's mixed English/Spanish
 //     pronunciation, which no script can judge.
-//  2. /voice/coach directly (OpenAI) with a Spanglish transcript and one
-//     deliberately low-confidence word - prints the intent / verdict /
-//     draft / spoken reply for eyeballing, asserts all four arrived.
+//  2. /translate/coach directly (OpenAI): a Spanglish attempt must come
+//     back as a coach verdict (not routed to the tutor), and a question
+//     ("what does correr mean?") must be routed to the tutor ("ask") with
+//     a streamed answer. Both printed for eyeballing.
 //  3. WS /voice/listen from a browser context (Deepgram handshake): send
 //     the "start" frame plus a second of silence, assert no "error" event.
 //  4. The real thing: the partner clip from stage 1 (Kokoro saying
 //     "Hola, ¿cómo estás? ¿Te gusta correr?") is decoded to a WAV and fed
 //     to Chromium as its fake microphone against the deployed frontend.
-//     Start voice chat -> Deepgram transcribes the clip -> the coach
-//     answers (ElevenLabs audio) -> if it judged the sentence ready, it's
-//     sent and the partner replies (Kokoro audio). Transcript, coach text
-//     and every TTS request/response are printed; screenshots at each step.
+//     Voice input is dictation: tap the mic, the words stream into the
+//     chat box (a pause submits nothing), tap Done -> the same check as
+//     typed text, read aloud by the coach (ElevenLabs) -> Send -> the
+//     partner's reply (read aloud, Kokoro). Then a typed question goes to
+//     the tutor and its answer appears (and is read aloud) in the thread
+//     under the partner's message. Screenshots at each step.
 import { chromium } from "playwright";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -91,39 +94,37 @@ async function checkTtsDirect() {
 }
 
 // ---- stage 2: the spoken coach, directly ----------------------------------
-async function checkVoiceCoachDirect() {
-  console.log("\n=== Stage 2: /voice/coach (OpenAI) on a Spanglish transcript ===");
+async function coachStream(text) {
   const start = Date.now();
-  const res = await post("/voice/coach", {
-    transcript: "hola, te gusta running?",
-    words: [
-      { word: "hola,", confidence: 0.98 },
-      { word: "te", confidence: 0.95 },
-      { word: "gusta", confidence: 0.58 },
-      { word: "running?", confidence: 0.97 },
-    ],
-    coach_dialog: [],
-    session_id: TEST_SESSION_ID,
-  });
-  if (!res.ok) fail(`/voice/coach returned ${res.status}: ${await res.text()}`);
+  const res = await post("/translate/coach", { text, session_id: TEST_SESSION_ID });
+  if (!res.ok) fail(`/translate/coach returned ${res.status}: ${await res.text()}`);
   const events = await readSseEvents(res);
-  const elapsed = Date.now() - start;
   const get = (name) => events.find((e) => e.name === name)?.data;
   const error = get("error");
-  if (error) fail(`/voice/coach error event: ${error.message}`);
-  const intent = get("intent")?.intent;
-  const verdict = get("verdict")?.verdict;
-  const draft = get("draft")?.draft;
-  const say = get("say_complete")?.say;
-  console.log(`(${elapsed}ms) intent=${intent} verdict=${verdict}`);
-  console.log(`draft: ${JSON.stringify(draft)}`);
-  console.log(`say:   ${JSON.stringify(say)}`);
-  if (!intent || !verdict || draft === undefined || !say) fail("missing one of intent/verdict/draft/say");
-  if (!["attempt", "question", "clarify", "confirm", "pick", "cancel", "translate_last"].includes(intent)) fail(`bad intent ${intent}`);
-  if (!["ready", "revise", "none"].includes(verdict)) fail(`bad verdict ${verdict}`);
+  if (error) fail(`/translate/coach error event: ${error.message}`);
+  return { events, get, elapsed: Date.now() - start };
 }
 
-// ---- stage 3: Deepgram handshake over WS /voice/listen --------------------
+async function checkCoachRoutingDirect() {
+  console.log("\n=== Stage 2: /translate/coach (OpenAI) - attempt vs question routing ===");
+  const attempt = await coachStream("hola, te gusta running?");
+  const verdict = attempt.get("verdict")?.verdict;
+  console.log(`attempt (${attempt.elapsed}ms): verdict=${verdict} meaning=${JSON.stringify(attempt.get("meaning_complete")?.meaning)}`);
+  for (const e of attempt.events.filter((e) => e.name === "option_complete" || e.name === "suggestion_complete")) {
+    console.log(`  ${e.name}: ${JSON.stringify(e.data)}`);
+  }
+  if (!["clean", "minor", "fix"].includes(verdict)) fail(`a Spanglish attempt should get a coach verdict, got ${verdict}`);
+  if (!attempt.get("meaning_complete")?.meaning) fail("attempt had no meaning");
+
+  const question = await coachStream("what does 'correr' mean?");
+  const qVerdict = question.get("verdict")?.verdict;
+  const answer = question.get("answer_complete")?.answer;
+  console.log(`question (${question.elapsed}ms): verdict=${qVerdict}`);
+  console.log(`  tutor: ${JSON.stringify(answer)}`);
+  if (qVerdict !== "ask") fail(`a question should be routed to the tutor ("ask"), got ${qVerdict}`);
+  if (!answer || /^(ABOUT|ANSWER)\b/i.test(answer)) fail("tutor answer missing or starts with an echoed label");
+}
+
 async function checkListenHandshake(browser) {
   console.log("\n=== Stage 3: WS /voice/listen handshake (Deepgram) ===");
   const page = await browser.newPage();
@@ -280,6 +281,7 @@ async function checkVoiceConversation(wavPath) {
     });
   });
   const tts = [];
+  const coachCalls = [];
   page.on("response", async (res) => {
     const url = res.url();
     if (url.includes("/tts/speak")) {
@@ -290,119 +292,104 @@ async function checkVoiceConversation(wavPath) {
       if (res.status() !== 200) detail = ` body=${JSON.stringify(await res.text().catch(() => "?")).slice(0, 300)}`;
       console.log(`  tts role=${role} status=${res.status()} text=${JSON.stringify(text)}${detail}`);
     }
-    if (url.includes("/voice/coach") || url.includes("/chat/turn/stream")) console.log(`  ${res.status()} ${url.replace(BACKEND_URL, "")}`);
+    if (url.includes("/translate/coach") || url.includes("/chat/turn/stream")) {
+      let text = "";
+      try { text = res.request().postDataJSON().text ?? res.request().postDataJSON().message ?? ""; } catch {}
+      coachCalls.push(url.includes("/translate/coach") ? text : null);
+      console.log(`  ${res.status()} ${url.replace(BACKEND_URL, "")} ${JSON.stringify(text)}`);
+    }
   });
 
   try {
     await page.goto(FRONTEND_URL);
     await page.waitForSelector(".llm-gate", { state: "hidden", timeout: 60_000 }).catch(() => {});
-    // Voice mode lives inside the chat input: the mic button starts it, the
-    // spoken words land in the draft textarea, the coach's spoken reply is
-    // the docked coach popover, and sent/partner messages are the normal
-    // chat bubbles.
     const MIC = ".chat-input__mic";
     const DRAFT = ".chat-input__textarea";
-    const VOICE_STATE = ".coach-popover--voice .coach-popover__voice-state";
-    const VOICE_SAY = ".coach-popover--voice .coach-popover__voice-say";
-    const VOICE_ERR = ".coach-popover--voice .coach-popover__status--error";
+    const SEND = ".chat-input__send";
+    const draftValue = () => page.inputValue(DRAFT).catch(() => "");
+
+    // 1. Dictation: the words stream into the box; nothing is submitted
+    //    until Done.
     await page.waitForSelector(MIC, { timeout: 30_000 });
     await page.click(MIC);
-    await page.waitForSelector(`${MIC}.chat-input__mic--listening`, { timeout: 20_000 });
+    await page.waitForSelector(`${MIC}.chat-input__mic--done`, { timeout: 20_000 });
     await page.screenshot({ path: "voice-e2e-1-listening.png" });
-    console.log("voice chat started: listening (mic button active)");
-
-    const draftValue = () => page.inputValue(DRAFT).catch(() => "");
-    const voiceState = () => page.locator(VOICE_STATE).textContent({ timeout: 300 }).catch(() => null);
-    const voiceError = () => page.locator(VOICE_ERR).textContent({ timeout: 300 }).catch(() => null);
-    const micActive = () => page.locator(`${MIC}.chat-input__mic--active`).count().then((n) => n > 0);
-
-    // Everything below has to be captured while the turn is live: a ready
-    // verdict sends the draft (clearing the textarea) and the coach dialog
-    // resets after a send, so polling is the only way to see what was
-    // heard and said.
-    let transcript = "";
-    const coachTurns = [];
-    let sendButtonWentGreen = false;
-    const observe = async () => {
-      const v = await draftValue();
-      if (v.trim().length > transcript.length) transcript = v.trim();
-      const says = await page.$$eval(VOICE_SAY, (els) => els.map((e) => e.textContent.replace(/^Coach/, "").trim())).catch(() => []);
-      for (const t of says) {
-        if (!t) continue;
-        const i = coachTurns.findIndex((prev) => t.startsWith(prev) || prev.startsWith(t));
-        if (i === -1) coachTurns.push(t);
-        else if (t.length > coachTurns[i].length) coachTurns[i] = t;
-      }
-      if (!sendButtonWentGreen && (await page.locator(".chat-input__send--ready").count()) > 0) sendButtonWentGreen = true;
-    };
-
+    console.log("dictation started (mic became Done)");
+    let streamed = "";
     const heardBy = Date.now() + 60_000;
-    while (Date.now() < heardBy && !transcript) {
-      await observe();
-      if (!transcript) await page.waitForTimeout(300);
+    while (Date.now() < heardBy) {
+      streamed = (await draftValue()).trim();
+      if (/correr/i.test(streamed)) break;
+      await page.waitForTimeout(300);
     }
-    if (!transcript) {
+    if (!streamed) {
       await page.screenshot({ path: "voice-e2e-timeout.png" });
-      const state = await voiceState();
-      const interim = await page.locator(".chat-input__mic-pill").textContent({ timeout: 300 }).catch(() => null);
-      const panelErr = await voiceError();
       const mic = await page.evaluate(() => window.__fakeMic ? { duration: window.__fakeMic.duration, ctxState: window.__fakeMic.ctx.state } : null);
-      console.log(`no transcript within 60s. state=${state} interim=${JSON.stringify(interim)} error=${JSON.stringify(panelErr)} fakeMic=${JSON.stringify(mic)}`);
+      console.log(`nothing streamed into the box within 60s. fakeMic=${JSON.stringify(mic)}`);
       console.log(`audio sent: ${wsStats.frames} frames / ${wsStats.bytes} bytes, ${wsStats.loudFrames} with speech-level peaks; deepgram events: ${JSON.stringify(wsStats.events.slice(0, 10))}`);
       console.log(`console/page errors: ${JSON.stringify(errors)}`);
-      fail("the spoken clip never showed up in the draft box");
+      fail("dictation never reached the chat box");
     }
-    console.log(`audio sent so far: ${wsStats.frames} frames (${wsStats.loudFrames} speech-level)`);
-    await page.screenshot({ path: "voice-e2e-2-heard.png" });
+    console.log(`streamed into the box: ${JSON.stringify(streamed)} (${wsStats.frames} frames sent, ${wsStats.loudFrames} speech-level)`);
+    // The clip is over and Deepgram has seen the pause - still nothing may
+    // be submitted.
+    await page.waitForTimeout(3000);
+    if (coachCalls.length) fail("a pause in speech submitted the text - only Done should");
+    await page.screenshot({ path: "voice-e2e-2-dictated.png" });
 
-    // Let the turn play out: coach reply (+ possible send and partner
-    // reply), then back to plain listening - the voice popover hides again
-    // once there's nothing to show, or stays with "Listening…".
-    const settled = Date.now() + 150_000;
-    let sawCoach = false;
-    let lastState = null;
-    while (Date.now() < settled) {
-      await observe();
-      if (coachTurns.length) sawCoach = true;
-      const s = await voiceState();
-      if (s) lastState = s;
-      if (sawCoach && (s === null || s === "Listening…" || s === "Problem")) break;
-      await page.waitForTimeout(500);
-    }
-    console.log(`Deepgram heard: ${JSON.stringify(transcript)}`);
-    if (!/gusta|correr|hola|cómo|como/i.test(transcript)) fail(`transcript doesn't look like the spoken sentence: ${transcript}`);
-    console.log(`coach said: ${JSON.stringify(coachTurns)}`);
-    const err = await voiceError();
-    const stillActive = await micActive();
-    console.log(`after the turn: mic active=${stillActive}, voice state=${lastState}, draft=${JSON.stringify(await draftValue())}${err ? ` (error: ${err})` : ""}`);
-    const bubbles = await page.$$eval(".chat-message__bubble", (els) => els.map((e) => e.textContent.trim()).slice(-2));
-    console.log(`last chat bubbles: ${JSON.stringify(bubbles)}`);
-    await page.screenshot({ path: "voice-e2e-3-after-turn.png" });
-
-    if (!coachTurns.length || !coachTurns[0]) fail("coach produced no spoken text");
-    if (err) fail(`voice session error: ${err}`);
-    if (!stillActive) fail("voice chat ended by itself during the turn");
-    if (/^(INTENT|VERDICT|DRAFT|SAY)\b/i.test(coachTurns[0])) fail(`coach text starts with an echoed field label: ${coachTurns[0]}`);
-    // The clip is correct Spanish, so the coach normally judges it ready and
-    // says "Sending:" - in which case the sentence MUST actually have been
-    // sent and answered (draft cleared, Send went green, partner spoken).
-    if (/sending/i.test(coachTurns[0])) {
-      if (!bubbles.some((b) => /gusta correr/i.test(b))) fail(`coach said "Sending" but no user bubble with the sentence appeared: ${JSON.stringify(bubbles)}`);
-      if (bubbles.length < 2) fail(`coach said "Sending" but no partner reply bubble appeared: ${JSON.stringify(bubbles)}`);
-      if (!tts.some((t) => t.role === "partner" && t.status === 200)) fail("coach said \"Sending\" but the partner reply was never spoken");
-      if ((await draftValue()).trim()) fail("sent, but the draft box still holds the transcript");
-      console.log(`auto-send after a ready verdict: OK (send button went green: ${sendButtonWentGreen})`);
-    } else {
-      console.log("coach asked for a revision rather than sending - acceptable, nothing to send-check");
-    }
-    const coachOk = tts.filter((t) => t.role === "coach" && t.status === 200).length;
-    const coachBad = tts.filter((t) => t.role === "coach" && t.status !== 200);
-    console.log(`coach TTS clips: ${coachOk} ok, ${coachBad.length} failed; partner clips: ${tts.filter((t) => t.role === "partner").map((t) => t.status).join(",") || "none"}`);
-    if (!coachOk) fail("no successful coach TTS clip was fetched");
-    if (coachBad.length) fail(`coach TTS failures: ${JSON.stringify(coachBad)}`);
-
+    // 2. Done -> the same check typed text gets, read aloud.
     await page.click(MIC);
-    await page.waitForSelector(`${MIC}.chat-input__mic--active`, { state: "detached", timeout: 10_000 });
+    await page.waitForSelector(`${MIC}.chat-input__mic--done`, { state: "detached", timeout: 10_000 });
+    const submitted = (await draftValue()).trim();
+    console.log(`Done -> box: ${JSON.stringify(submitted)}`);
+    if (!/gusta|correr|hola|cómo|como/i.test(submitted)) fail(`final text doesn't look like the spoken sentence: ${submitted}`);
+    await page.waitForSelector(".coach-popover .coach-popover__row", { timeout: 120_000 });
+    await page.waitForFunction(() => !document.querySelector(".chat-input__send")?.textContent.includes("Checking"), null, { timeout: 120_000 });
+    const coachText = (await page.textContent(".coach-popover")).trim();
+    console.log(`coach: ${JSON.stringify(coachText.slice(0, 300))}`);
+    await page.screenshot({ path: "voice-e2e-3-checked.png" });
+    await page.waitForTimeout(1500);
+    const coachClips = tts.filter((t) => t.role === "coach");
+    if (!coachClips.some((t) => t.status === 200)) fail("the coach's result was not read aloud");
+    if (coachClips.some((t) => t.status !== 200)) fail(`coach TTS failures: ${JSON.stringify(coachClips.filter((t) => t.status !== 200))}`);
+
+    // 3. Send (picking the natural option first if the coach wants a fix).
+    if (!(await page.locator(".chat-input__send--ready").count())) {
+      await page.click(".coach-popover__option-main >> nth=0");
+      await page.waitForSelector(".chat-input__send--ready", { timeout: 10_000 });
+    }
+    const bubblesBefore = await page.locator(".chat-message__bubble").count();
+    await page.click(SEND);
+    await page.waitForFunction((n) => document.querySelectorAll(".chat-message--assistant .chat-message__bubble").length >= 1 && document.querySelectorAll(".chat-message__bubble").length >= n + 2, bubblesBefore, { timeout: 120_000 });
+    const bubbles = await page.$$eval(".chat-message__bubble", (els) => els.map((e) => e.textContent.trim()).slice(-2));
+    console.log(`chat: ${JSON.stringify(bubbles)}`);
+    await page.waitForTimeout(2000);
+    if (!tts.some((t) => t.role === "partner" && t.status === 200)) fail("the partner's reply was not read aloud");
+    if (!(await page.locator(".chat-message--user .chat-message__thread-toggle").count())) fail("the sent message has no thread with its check");
+
+    // 4. A question goes to the tutor, answered under the partner's message.
+    const coachClipsBefore = tts.filter((t) => t.role === "coach").length;
+    await page.fill(DRAFT, "what does 'correr' mean?");
+    await page.press(DRAFT, "Enter");
+    await page.waitForSelector(".chat-message--assistant .message-thread", { timeout: 120_000 });
+    await page.waitForFunction(
+      () => {
+        const lines = [...document.querySelectorAll(".chat-message--assistant .message-thread .message-thread__line")];
+        const last = lines.at(-1)?.textContent ?? "";
+        return /tutor/i.test(last) && last.replace(/^tutor/i, "").trim().length > 10 && !document.querySelector(".message-thread__error");
+      },
+      null,
+      { timeout: 120_000 },
+    );
+    await page.waitForTimeout(2500);
+    const thread = (await page.textContent(".chat-message--assistant .message-thread")).trim();
+    console.log(`tutor thread: ${JSON.stringify(thread.slice(0, 400))}`);
+    await page.screenshot({ path: "voice-e2e-4-tutor.png" });
+    if (await page.locator(".message-thread__error").count()) fail("tutor answer failed");
+    if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("the question was sent to the partner instead of the tutor");
+    if (tts.filter((t) => t.role === "coach").length <= coachClipsBefore) fail("the tutor's answer was not read aloud");
+    console.log(`TTS: ${tts.filter((t) => t.role === "coach").length} coach/tutor clips, ${tts.filter((t) => t.role === "partner").length} partner clips, statuses ${[...new Set(tts.map((t) => t.status))].join(",")}`);
+
     console.log(`console/page errors: ${errors.length ? JSON.stringify(errors) : "none"}`);
     if (errors.length) fail("page errors during the voice conversation");
   } finally {
@@ -418,7 +405,7 @@ async function checkVoiceConversation(wavPath) {
 
 if (!BACKEND_URL || !FRONTEND_URL) fail("BACKEND_URL and FRONTEND_URL must be set");
 const clips = await checkTtsDirect();
-await checkVoiceCoachDirect();
+await checkCoachRoutingDirect();
 const helper = await chromium.launch();
 await checkListenHandshake(helper);
 const wavPath = await decodeToWav(helper, clips.partner);

@@ -23,9 +23,25 @@ class TokenAnnotation(BaseModel):
     literal: str = ""
 
 
+class ThreadEntryIn(BaseModel):
+    role: str
+    kind: str
+    text: str = ""
+    # JSON-encoded structured detail (a check's verdict/options/pick).
+    data: str = ""
+
+
+class ThreadEntryOut(ThreadEntryIn):
+    id: int
+
+
 class ChatTurnRequest(BaseModel):
     message: str
     session_id: str
+    # The coach checks the learner ran before sending this message - stored
+    # as the sent message's thread so the deliberation stays viewable under
+    # it instead of cluttering the main conversation.
+    thread: list[ThreadEntryIn] = []
 
 
 class ChatTurnResponse(BaseModel):
@@ -87,6 +103,7 @@ class ChatHistoryMessage(BaseModel):
     # or if the interpret call failed when this message was first sent.
     native: str = ""
     target: str = ""
+    thread: list[ThreadEntryOut] = []
 
 
 class ChatHistoryResponse(BaseModel):
@@ -190,6 +207,14 @@ class GlossSpansResponse(BaseModel):
 class CoachDraftRequest(BaseModel):
     text: str
     session_id: str
+    # The message whose thread is currently open on screen, if any - lets
+    # a bare follow-up ("llamas?") be read as another question about it
+    # rather than a new attempt, and anchors the tutor's answer there.
+    thread_message_id: int | None = None
+    # The learner's escape hatch when the automatic routing guessed wrong:
+    # "attempt" = check this as something to say to the partner, "ask" =
+    # this is a question for the tutor. None = let the model decide.
+    force: str | None = None
 
 
 # The streamed /translate/coach endpoint sends these as SSE events
@@ -202,7 +227,9 @@ class CoachDraftRequest(BaseModel):
 # /translate/gloss-spans (GlossSpansRequest/Response above) only once an
 # option is actually picked, same as any hand-typed draft text.
 class CoachVerdictEvent(BaseModel):
-    verdict: str  # "clean" | "minor" | "fix"
+    # "clean" | "minor" | "fix" for an attempt; "ask" when the learner's
+    # text is a question for the tutor instead (see the thread_* events).
+    verdict: str
 
 
 class CoachMeaningChunkEvent(BaseModel):
@@ -249,51 +276,22 @@ class CoachErrorEvent(BaseModel):
     message: str
 
 
-# Voice mode's spoken coach (POST /voice/coach, streamed as SSE - see
-# app/routes/voice.py and app.translate.llm_translate.voice_coach_stream).
-class VoiceWord(BaseModel):
-    word: str
-    confidence: float
+# The "ask" branch of /translate/coach: the learner asked the tutor about
+# a message instead of trying to say something. The answer is anchored to
+# (and stored in the thread of) `message_id`.
+class CoachThreadAnchorEvent(BaseModel):
+    message_id: int | None  # None when there's no message to anchor to yet
+    question: str
 
 
-class VoiceDialogTurn(BaseModel):
-    role: str  # "learner" | "coach"
-    text: str
-
-
-class VoiceCoachRequest(BaseModel):
-    # What the learner just said, as transcribed (may be mixed Spanish/
-    # English, may contain mis-heard words - see `words`).
-    transcript: str
-    # Per-word recognizer confidence for `transcript`, so the coach can
-    # call out likely mis-hearings ("it sounded like X - did you mean Y?").
-    words: list[VoiceWord] = []
-    # The back-and-forth with the coach about the CURRENT attempt so far
-    # (client-held, reset once something is sent).
-    coach_dialog: list[VoiceDialogTurn] = []
-    session_id: str
-
-
-class VoiceCoachIntentEvent(BaseModel):
-    # attempt | question | clarify | confirm | pick | cancel | translate_last
-    intent: str
-
-
-class VoiceCoachVerdictEvent(BaseModel):
-    verdict: str  # "ready" | "revise" | "none"
-
-
-class VoiceCoachDraftEvent(BaseModel):
-    # The single best Spanish sentence to send right now ("" if none).
-    draft: str
-
-
-class VoiceCoachSayChunkEvent(BaseModel):
+class CoachAnswerChunkEvent(BaseModel):
     delta: str
 
 
-class VoiceCoachSayCompleteEvent(BaseModel):
-    say: str
+class CoachAnswerCompleteEvent(BaseModel):
+    answer: str
+    # The persisted question/answer entries (empty if nothing to anchor to).
+    entries: list[ThreadEntryOut] = []
 
 
 class RewardEventRequest(BaseModel):

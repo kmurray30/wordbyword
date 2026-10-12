@@ -197,3 +197,26 @@ def test_no_write_lock_is_held_while_the_model_streams(tmp_path):
     assert "event: done" in raw
     route_session.close()
     other_session.close()
+
+
+
+def test_coach_checks_sent_with_the_message_become_its_thread():
+    from app.routes.chat import get_history
+    from app.schemas import ThreadEntryIn
+
+    session = _session()
+    check = ThreadEntryIn(role="coach", kind="check", text="hola amigo", data='{"verdict": "minor"}')
+    junk = ThreadEntryIn(role="hacker", kind="check", text="x")
+    with (
+        patch("app.routes.chat.model_chat_stream", return_value=iter(["Hola"])),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+    ):
+        response = take_turn_stream(
+            ChatTurnRequest(session_id="s1", message="Hola, amigo.", thread=[check, junk]), session=session
+        )
+        asyncio.run(_collect(response.body_iterator))
+    history = get_history("s1", session=session)
+    user = next(m for m in history.messages if m.role == "user")
+    assert [(e.kind, e.text, e.data) for e in user.thread] == [("check", "hola amigo", '{"verdict": "minor"}')]
+    assistant = next(m for m in history.messages if m.role == "assistant")
+    assert assistant.thread == []

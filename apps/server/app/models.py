@@ -60,6 +60,12 @@ class ChatMessage(Base):
     tokens: Mapped[list["MessageToken"]] = relationship(
         back_populates="message", cascade="all, delete-orphan", order_by="MessageToken.position"
     )
+    # The side conversation hanging off this message (see ThreadEntry) -
+    # the main chat shows only the phrases actually exchanged; everything
+    # said ABOUT a message lives here.
+    thread: Mapped[list["ThreadEntry"]] = relationship(
+        back_populates="message", cascade="all, delete-orphan", order_by="ThreadEntry.position"
+    )
 
 
 class MessageToken(Base):
@@ -85,3 +91,27 @@ class MessageToken(Base):
     literal: Mapped[str] = mapped_column(String(512), default="")
 
     message: Mapped[ChatMessage] = relationship(back_populates="tokens")
+
+
+class ThreadEntry(Base):
+    """One step of the side conversation attached to a chat message:
+    - kind "check": a coach check of a draft the learner ran before sending
+      this (user) message. `text` is the draft as checked; `data` is the
+      JSON of the coach's result (verdict, meaning, suggestion, options,
+      which option was picked).
+    - kind "question" / "answer": a learner question about this message and
+      the tutor's answer (drill-downs on words, grammar, "break that down").
+    """
+
+    __tablename__ = "thread_entry"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("chat_message.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    role: Mapped[str] = mapped_column(String(16))  # "learner" | "coach" | "tutor"
+    kind: Mapped[str] = mapped_column(String(16))  # "check" | "question" | "answer"
+    text: Mapped[str] = mapped_column(Text, default="")
+    data: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    message: Mapped[ChatMessage] = relationship(back_populates="thread")

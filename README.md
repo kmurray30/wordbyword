@@ -60,7 +60,7 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key for voice mode's coach voice (`/tts/speak` with `role: "coach"`); the coach falls silent (text still shown) if unset |
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | ElevenLabs model - must be multilingual (the coach mixes English and Spanish in one sentence); `eleven_flash_v2_5` is the faster/cheaper option |
 | `ELEVENLABS_COACH_VOICE_ID` | *(none - auto-picked)* | which ElevenLabs voice the coach speaks with; unset, the server picks one of the account's own premade (English) voices at first use - the free plan rejects "library" voice ids via the API, so a well-known id like Rachel's does NOT work there |
-| `OPENAI_VOICE_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the spoken coach (`POST /voice/coach`) - latency matters more here than for text coaching |
+| `OPENAI_TUTOR_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the tutor's answers to questions about a message (read aloud as they stream, so latency matters) |
 
 ### Frontend
 
@@ -199,55 +199,52 @@ never any of Kokoro's other languages' voices. `POST /tts/speak` takes an
 optional `voice` field and rejects one that isn't valid for the given
 `language` with a 400.
 
-## Voice mode
+## Voice, read-aloud, and the tutor
 
-The 🎤 button next to Send turns the chat into a spoken conversation - in
-place, not on a separate screen: what you say appears in the draft box
-(with the same hoverable word glosses), the coach's spoken reply appears in
-the same docked popover the text "Check" uses, a ready verdict lights the
-Send button green, and the sent message and the partner's reply are
-ordinary chat bubbles. The microphone streams to `WS /voice/listen`
-(`app/routes/voice.py`), which proxies it to Deepgram's live transcription
-(`app/stt/deepgram_client.py`) using Nova-3's code-switching mode
-(`language=multi`) - the learner's speech is genuinely mixed Spanish and
-English in one breath, and a single-language model would mangle whichever
-half it wasn't told about. Turn-taking comes from Deepgram's server-side
-endpointing, so there's no "stop" button to tap. The learner's own recent
-word-bank lemmas are passed as `keyterm` hints so the words they're
-studying are the ones the recognizer is biased toward.
+**Voice input is dictation.** Tap 🎤 and your words stream into the chat
+box as you speak (`WS /voice/listen` in `app/routes/voice.py`, proxying
+Deepgram's live transcription in `app/stt/deepgram_client.py` with Nova-3's
+code-switching mode, `language=multi`, so mixed Spanish/English in one
+breath comes through; your recent word-bank lemmas are passed as `keyterm`
+hints). A pause does nothing. The mic button becomes **✓ Done**; tapping it
+waits for the last words and then submits the text exactly as if you had
+typed it - same check, same coach popover, same Send.
 
-When the learner stops talking, `POST /voice/coach`
-(`app.translate.llm_translate.voice_coach_stream`) classifies what they
-said (an attempt, a question, "no I meant…", "yes send it", a pick among
-options, cancel, "what did they say?"), decides whether there's now a
-correct Spanish sentence worth sending, and streams what the coach says
-back out loud - written to work as audio alone: options are read aloud
-with spoken labels, a word the recognizer wasn't sure about gets an "it
-sounded like X - did you mean Y?", and the key fix is explained in one
-short sentence. The coach speaks through ElevenLabs' multilingual model
-(`app/tts/elevenlabs_client.py`, `role: "coach"` on `/tts/speak`) because
-its speech is English with Spanish phrases inside it; the partner's reply
-keeps the Kokoro Spanish voice. Once a sentence is good (or the learner
-says so), it goes through the normal send path and the partner's reply is
-spoken. The mic is muted while either voice is playing.
+**One submit path.** Whatever you submit goes to `POST /translate/coach`
+(`app.translate.llm_translate.coach_draft_stream`). Its first token decides
+what the text is: `CLEAN` / `MINOR` / `FIX` for something you want to say
+to your partner (the usual check), or `ASK` for a question for the tutor
+("what does llamas mean?", "break that down", "I didn't understand").
+`ASK` stops the coach right there and hands the text to
+`tutor_answer_stream`, which answers in the thread of the message it's
+about. If the routing guesses wrong, the popover has "that was a question"
+and the tutor's answer has "I meant to say that to my partner".
 
-**Screen off.** iOS treats the two ways of opening the app differently:
-a page in a plain Safari tab keeps its microphone across lock as long as
-audio is playing (voice mode keeps a near-silent loop going, with Media
-Session metadata so the lock screen shows it and its pause button ends the
-chat), while a home-screen ("Add to Home Screen") app loses the mic the
-moment the screen locks - no web page can change that. In that case voice
-mode falls back to keeping the screen on with the Screen Wake Lock API -
-the chat stays visible as usual; the coach popover suggests turning the
-brightness down. `public/voice-spike.html`
-is the standalone page used to verify this on a real phone: open it, tap
-Start, lock the phone for a minute, and its summary says whether the mic,
-timers and socket kept flowing.
+**Threads.** The main chat shows only the phrases actually exchanged.
+Everything said *about* a message lives in a collapsible thread under it
+(💬, stored as `thread_entry` rows and returned by `/chat/history`): the
+coach checks you ran before sending a message, and your questions about a
+message with the tutor's answers. While a thread is open, a bare
+follow-up ("llamas?") continues it.
+
+**Read aloud** (☰ menu, on by default, per device) speaks the coach's
+result as it streams ("Did you mean …? If so, try «…», which means «…».
+Or, more casually: …"), the tutor's answers sentence by sentence, and the
+partner's replies. The coach and tutor use ElevenLabs' multilingual model
+(`app/tts/elevenlabs_client.py`, `role: "coach"` on `/tts/speak`), because
+their speech is English with Spanish inside it; the partner keeps the
+Kokoro Spanish voice. All of it goes through one queue
+(`src/voice/speech.ts`), so voices never overlap, and starting to dictate
+stops whatever is playing.
+
+Hands-free use with the screen off is not a goal of this design: Done and
+Send are taps. `public/voice-spike.html` remains as a standalone diagnostic
+for microphone/audio behaviour on a phone.
 
 Rough cost at personal-use volumes: Deepgram streaming ≈ $0.0077/min of
 listening, ElevenLabs multilingual ≈ $0.12/min of coach speech
 (`eleven_flash_v2_5` is about half that), Kokoro and the coach LLM calls are
-negligible by comparison.
+negligible by comparison (the tutor and coach run on the lighter translation model by default).
 
 ## Deployed on Railway
 

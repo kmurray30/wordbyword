@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.chat.prompt_builder import build_messages
+from app.chat.threads import append_entries, entry_out
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
 from app.models import ChatMessage, MessageToken
@@ -18,6 +19,7 @@ from app.schemas import (
     ClearHistoryResponse,
     SaveUserInterpretationRequest,
     SaveUserInterpretationResponse,
+    ThreadEntryIn,
     TokenAnnotation,
 )
 from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
@@ -105,6 +107,7 @@ def get_history(session_id: str, session: Session = Depends(get_session)) -> Cha
             ],
             native=row.native_text,
             target=row.target_text,
+            thread=[entry_out(e) for e in row.thread],
         )
         for row in rows
     ]
@@ -142,7 +145,13 @@ def clear_history(session_id: str, session: Session = Depends(get_session)) -> C
     return ClearHistoryResponse(cleared=len(rows))
 
 
-def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str, user_message: ChatMessage) -> ChatTurnResponse:
+def _gloss_and_persist_reply(
+    session: Session,
+    session_id: str,
+    reply_text: str,
+    user_message: ChatMessage,
+    user_thread: list[ThreadEntryIn] | None = None,
+) -> ChatTurnResponse:
     """Shared by both /chat/turn and /chat/turn/stream - everything that
     happens once the model's full reply text is known: one LLM call glosses
     every word/group in the reply using its meaning IN CONTEXT, and returns
@@ -169,6 +178,9 @@ def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str,
 
     session.add(user_message)
     session.flush()  # assigns user_message.id without committing yet - needed below
+    if user_thread:
+        # The coach checks behind this message, kept as its thread.
+        append_entries(session, user_message.id, user_thread)
 
     tokens = analyze(reply_text)
     matched_spans = match_spans(reply_text, raw_spans)
@@ -261,7 +273,7 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
         raise HTTPException(status_code=502, detail="Model returned an empty reply")
 
     user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
-    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message)
+    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, req.thread)
 
 
 @router.post("/turn/stream")
@@ -317,7 +329,7 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
             # history either.
             yield _sse("error", ChatTurnErrorEvent(message="Model returned an empty reply").model_dump_json())
             return
-        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message)
+        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, req.thread)
         yield _sse("done", result.model_dump_json())
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)

@@ -55,7 +55,26 @@ type CoachDraftRequest =
 // ChatInput.tsx's handleSelectCoachOption, which fetches it lazily via the
 // existing /translate/gloss-spans instead.
 export interface CoachVerdictEvent {
-  verdict: "clean" | "minor" | "fix";
+  // "ask": the text was a question for the tutor, not an attempt - the
+  // thread_anchor/answer_* events follow instead of the coach's fields.
+  verdict: "clean" | "minor" | "fix" | "ask";
+}
+
+export type ThreadEntry = components["schemas"]["ThreadEntryOut"];
+export type ThreadEntryIn = components["schemas"]["ThreadEntryIn"];
+
+export interface CoachThreadAnchorEvent {
+  message_id: number | null;
+  question: string;
+}
+
+export interface CoachAnswerChunkEvent {
+  delta: string;
+}
+
+export interface CoachAnswerCompleteEvent {
+  answer: string;
+  entries: ThreadEntry[];
 }
 
 export interface CoachMeaningChunkEvent {
@@ -98,6 +117,9 @@ export type CoachStreamEvent =
   | { type: "suggestion_complete"; data: CoachSuggestionCompleteEvent }
   | { type: "option_chunk"; data: CoachOptionChunkEvent }
   | { type: "option_complete"; data: CoachOptionCompleteEvent }
+  | { type: "thread_anchor"; data: CoachThreadAnchorEvent }
+  | { type: "answer_chunk"; data: CoachAnswerChunkEvent }
+  | { type: "answer_complete"; data: CoachAnswerCompleteEvent }
   | { type: "error"; data: CoachErrorEvent };
 
 // Reads any `event: <name>\ndata: <json>\n\n`-framed SSE response body
@@ -142,6 +164,9 @@ const COACH_EVENT_NAMES = new Set([
   "suggestion_complete",
   "option_chunk",
   "option_complete",
+  "thread_anchor",
+  "answer_chunk",
+  "answer_complete",
   "error",
 ]);
 
@@ -196,38 +221,6 @@ export function voiceListenUrl(): string {
   return `${BASE_URL.replace(/^http/, "ws")}/voice/listen`;
 }
 
-// POST /voice/coach - the spoken coach's turn (see app/routes/voice.py and
-// app.translate.llm_translate.voice_coach_stream).
-export type VoiceCoachRequest =
-  paths["/voice/coach"]["post"]["requestBody"]["content"]["application/json"];
-export type VoiceDialogTurn = VoiceCoachRequest["coach_dialog"][number];
-export type VoiceCoachStreamEvent =
-  | { type: "intent"; data: { intent: string } }
-  | { type: "verdict"; data: { verdict: string } }
-  | { type: "draft"; data: { draft: string } }
-  | { type: "say_chunk"; data: { delta: string } }
-  | { type: "say_complete"; data: { say: string } }
-  | { type: "error"; data: { message: string } };
-
-const VOICE_COACH_EVENT_NAMES = new Set(["intent", "verdict", "draft", "say_chunk", "say_complete", "error"]);
-
-async function* voiceCoachStream(body: VoiceCoachRequest, signal?: AbortSignal): AsyncGenerator<VoiceCoachStreamEvent> {
-  const response = await fetchWithColdStartRetry(`${BASE_URL}/voice/coach`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!response.ok || !response.body) {
-    const detail = response.body ? await response.text() : "";
-    throw new Error(`/voice/coach failed (${response.status}): ${detail}`);
-  }
-  for await (const { event, data } of readServerSentEvents(response)) {
-    if (VOICE_COACH_EVENT_NAMES.has(event)) {
-      yield { type: event, data: JSON.parse(data) } as VoiceCoachStreamEvent;
-    }
-  }
-}
 
 export type ChatTurnStreamEvent =
   | { type: "chunk"; data: ChatTurnChunkEvent }
@@ -393,7 +386,6 @@ export const api = {
   saveUserInterpretation: (body: SaveUserInterpretationRequest) =>
     post<SaveUserInterpretationRequest, SaveUserInterpretationResponse>("/chat/message/interpretation", body),
   coachDraftStream,
-  voiceCoachStream,
   chatTurnStream,
   rewardEvent: (body: RewardEventRequest) =>
     post<RewardEventRequest, RewardEventResponse>("/events/reward", body),

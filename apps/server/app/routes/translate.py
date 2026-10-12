@@ -7,8 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
+from app.chat.threads import append_entries, entry_out
 from app.models import ChatMessage
 from app.schemas import (
+    CoachAnswerChunkEvent,
+    CoachAnswerCompleteEvent,
     CoachDraftRequest,
     CoachErrorEvent,
     CoachMeaningChunkEvent,
@@ -17,6 +20,7 @@ from app.schemas import (
     CoachOptionCompleteEvent,
     CoachSuggestionChunkEvent,
     CoachSuggestionCompleteEvent,
+    CoachThreadAnchorEvent,
     CoachVerdictEvent,
     DraftSpan,
     DraftToken,
@@ -29,6 +33,7 @@ from app.schemas import (
     TranslateCandidate,
     TranslateTextRequest,
     TranslateTextResponse,
+    ThreadEntryIn,
 )
 from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
@@ -133,23 +138,121 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     partway through the "fix" options just means the rest weren't ready -
     whatever DID arrive stays fully usable (see coach_draft_stream's own
     docstring on this graceful-degradation philosophy)."""
-    history_rows = session.scalars(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == req.session_id)
-        .order_by(ChatMessage.id.desc())
-        .limit(_COACH_HISTORY_TURNS)
-    ).all()
-    history = [(row.role, row.text) for row in reversed(history_rows)]
+    history_rows = list(
+        reversed(
+            session.scalars(
+                select(ChatMessage)
+                .where(ChatMessage.session_id == req.session_id)
+                .order_by(ChatMessage.id.desc())
+                .limit(_COACH_HISTORY_TURNS)
+            ).all()
+        )
+    )
+    history = [(row.role, row.text) for row in history_rows]
+
+    # The message a question would be about by default: the thread open on
+    # screen (if it's really one of this session's messages), else the
+    # partner's latest message.
+    by_id = {row.id: row for row in history_rows}
+    anchor = by_id.get(req.thread_message_id) if req.thread_message_id is not None else None
+    if anchor is None and req.thread_message_id is not None:
+        candidate = session.get(ChatMessage, req.thread_message_id)
+        if candidate is not None and candidate.session_id == req.session_id:
+            anchor = candidate
+    open_thread_anchor = anchor
+    if anchor is None:
+        anchor = next((row for row in reversed(history_rows) if row.role == "assistant"), None)
+
+    def thread_turns(message: ChatMessage | None) -> list[tuple[str, str]]:
+        if message is None:
+            return []
+        return [
+            ("learner" if e.kind == "question" else "tutor", e.text)
+            for e in message.thread
+            if e.kind in ("question", "answer")
+        ]
+
+    open_thread = (
+        (open_thread_anchor.text, thread_turns(open_thread_anchor)) if open_thread_anchor is not None else None
+    )
+    numbered = [
+        {
+            "number": i + 1,
+            "role": row.role,
+            "text": row.text,
+            "glosses": "; ".join(f"{t.surface} = {t.gloss}" for t in row.tokens if t.gloss)[:600],
+        }
+        for i, row in enumerate(history_rows)
+    ]
+    number_to_row = {i + 1: row for i, row in enumerate(history_rows)}
+    default_number = next((n for n, row in number_to_row.items() if anchor is not None and row.id == anchor.id), None)
+    default_turns = thread_turns(anchor)
+
+    def tutor_events():
+        about_row = anchor
+        answer = ""
+        for item in iter_with_keepalive(
+            llm_translate.tutor_answer_stream(
+                req.text, numbered, default_number, default_turns, NATIVE_LANGUAGE, TARGET_LANGUAGE
+            )
+        ):
+            if item is None:
+                yield KEEPALIVE_LINE
+                continue
+            kind, *rest = item
+            if kind == "about":
+                about_row = number_to_row.get(rest[0], anchor) if rest[0] is not None else anchor
+                yield _sse(
+                    "thread_anchor",
+                    CoachThreadAnchorEvent(
+                        message_id=about_row.id if about_row is not None else None, question=req.text
+                    ).model_dump_json(),
+                )
+            elif kind == "answer_chunk":
+                yield _sse("answer_chunk", CoachAnswerChunkEvent(delta=rest[0]).model_dump_json())
+            elif kind == "answer_complete":
+                answer = rest[0]
+        # Persisted only now, after every model call - a short write, so the
+        # SQLite write lock is never held while the model streams (see
+        # routes/chat.py's _gloss_and_persist_reply).
+        entries = []
+        if about_row is not None and answer:
+            rows = append_entries(
+                session,
+                about_row.id,
+                [
+                    ThreadEntryIn(role="learner", kind="question", text=req.text),
+                    ThreadEntryIn(role="tutor", kind="answer", text=answer),
+                ],
+            )
+            session.commit()
+            entries = [entry_out(r) for r in rows]
+        yield _sse("answer_complete", CoachAnswerCompleteEvent(answer=answer, entries=entries).model_dump_json())
 
     def events():
         try:
+            if req.force == "ask":
+                yield _sse("verdict", CoachVerdictEvent(verdict="ask").model_dump_json())
+                yield from tutor_events()
+                return
             for item in iter_with_keepalive(
-                llm_translate.coach_draft_stream(req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+                llm_translate.coach_draft_stream(
+                    req.text,
+                    history,
+                    NATIVE_LANGUAGE,
+                    TARGET_LANGUAGE,
+                    open_thread=open_thread,
+                    allow_ask=req.force != "attempt",
+                )
             ):
                 if item is None:
                     yield KEEPALIVE_LINE
                     continue
                 kind, *rest = item
+                if kind == "verdict" and rest[0] == "ask":
+                    yield _sse("verdict", CoachVerdictEvent(verdict="ask").model_dump_json())
+                    yield from tutor_events()
+                    return
                 if kind == "verdict":
                     yield _sse("verdict", CoachVerdictEvent(verdict=rest[0]).model_dump_json())
                 elif kind == "meaning_chunk":

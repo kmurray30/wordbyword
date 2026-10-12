@@ -1,13 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api/client";
+import type { ThreadEntry, ThreadEntryIn } from "./api/client";
 import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
+import type { ChatInputControl, TutorEvent } from "./components/ChatInput";
+import { MessageThread } from "./components/MessageThread";
+import type { LiveTutorAnswer } from "./components/MessageThread";
 import { SegmentedControl } from "./components/SegmentedControl";
 import { getSessionId } from "./lib/session";
+import { isReadAloudOn, setReadAloud, speakPartner, subscribeReadAloud } from "./voice/speech";
 import "./App.css";
 
 let nextLocalId = -1;
+
+// The backend's id for a message (a freshly sent user message only learns
+// it from the turn's "done" event - see handleSend).
+function serverIdOf(m: DisplayMessage): number | null {
+  if (m.serverId !== undefined) return m.serverId;
+  return m.id > 0 ? m.id : null;
+}
 
 const VOICE_STORAGE_KEY = "wordbyword.voice";
 
@@ -37,6 +49,19 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [voices, setVoices] = useState<string[]>([]);
+  const readAloud = useSyncExternalStore(subscribeReadAloud, isReadAloudOn);
+  // Which messages have their side conversation expanded (by display id).
+  const [openThreads, setOpenThreads] = useState<Set<number>>(new Set());
+  // The thread the learner is currently in: follow-up questions continue
+  // it. Cleared when they say something to the partner.
+  const [activeThreadId, setActiveThreadId] = useState<number | null>(null);
+  // The tutor's answer while it streams, and which message it's about
+  // (null = no message to anchor to yet, shown at the end of the chat).
+  const [liveTutor, setLiveTutor] = useState<(LiveTutorAnswer & { messageId: number | null }) | null>(null);
+  // Q&A that had no message to attach to (asked before any conversation).
+  const [looseThread, setLooseThread] = useState<ThreadEntry[]>([]);
+  const inputControlRef = useRef<ChatInputControl | null>(null);
+  const threadAnchorRef = useRef<HTMLDivElement | null>(null);
   const [voice, setVoice] = useState<string | null>(() => {
     try {
       return localStorage.getItem(VOICE_STORAGE_KEY);
@@ -67,6 +92,7 @@ function App() {
           fromHistory: true,
           native: m.native,
           target: m.target,
+          thread: m.thread,
         }));
         // This fetch can resolve after the user has already sent a message
         // (a cold-started backend makes it slow enough for that to happen) -
@@ -98,7 +124,12 @@ function App() {
     setClearing(true);
     api
       .clearChatHistory(sessionId)
-      .then(() => setMessages([]))
+      .then(() => {
+        setMessages([]);
+        setLooseThread([]);
+        setActiveThreadId(null);
+        setOpenThreads(new Set());
+      })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setClearing(false));
     setMenuOpen(false);
@@ -113,17 +144,19 @@ function App() {
     }
   };
 
-  // Resolves with the partner's completed reply (voice mode speaks it), or
-  // null if the turn failed.
-  const handleSend = async (text: string): Promise<{ text: string } | null> => {
+  // Resolves with the partner's completed reply, or null if the turn
+  // failed. `thread` = the coach checks behind this message.
+  const handleSend = async (text: string, thread: ThreadEntryIn[] = []): Promise<{ text: string } | null> => {
     setError(null);
+    setActiveThreadId(null);
     const userLocalId = nextLocalId--;
-    setMessages((prev) => [...prev, { id: userLocalId, role: "user", text }]);
+    const localThread: ThreadEntry[] = thread.map((e) => ({ ...e, id: nextLocalId-- }));
+    setMessages((prev) => [...prev, { id: userLocalId, role: "user", text, thread: localThread }]);
     setStreamingText("");
     let reply: { text: string } | null = null;
 
     try {
-      for await (const event of api.chatTurnStream({ message: text, session_id: sessionId })) {
+      for await (const event of api.chatTurnStream({ message: text, session_id: sessionId, thread })) {
         if (event.type === "chunk") {
           setStreamingText((prev) => (prev ?? "") + event.data.delta);
         } else if (event.type === "error") {
@@ -131,6 +164,7 @@ function App() {
         } else {
           const res = event.data;
           reply = { text: res.text };
+          speakPartner(res.text, voice ?? undefined);
           setMessages((prev) => [
             // Patches the real backend id onto the user message just sent
             // (see ChatMessage.tsx's persist effect) without touching its
@@ -150,6 +184,71 @@ function App() {
     return reply;
   };
 
+  const openThreadFor = (messageId: number | null) => {
+    if (messageId === null) return;
+    const target = messages.find((m) => serverIdOf(m) === messageId);
+    if (target) setOpenThreads((prev) => new Set(prev).add(target.id));
+  };
+
+  // Mirrors liveTutor synchronously: events arrive faster than renders, and
+  // "done" needs the question/anchor that "start" set.
+  const liveTutorRef = useRef<(LiveTutorAnswer & { messageId: number | null }) | null>(null);
+  const handleTutorEvent = (event: TutorEvent) => {
+    if (event.type === "start") {
+      liveTutorRef.current = { messageId: event.messageId, question: event.question, answer: "", error: null };
+      setLiveTutor(liveTutorRef.current);
+      setActiveThreadId(event.messageId);
+      openThreadFor(event.messageId);
+    } else if (event.type === "chunk") {
+      setLiveTutor((prev) => (prev ? { ...prev, answer: prev.answer + event.delta } : prev));
+    } else if (event.type === "done") {
+      const live = liveTutorRef.current;
+      liveTutorRef.current = null;
+      setLiveTutor(null);
+      const anchorId = live?.messageId ?? null;
+      const entries: ThreadEntry[] = event.entries.length
+        ? event.entries
+        : [
+            { id: nextLocalId--, role: "learner", kind: "question", text: live?.question ?? "", data: "" },
+            { id: nextLocalId--, role: "tutor", kind: "answer", text: event.answer, data: "" },
+          ];
+      if (anchorId === null) {
+        setLooseThread((prev) => [...prev, ...entries]);
+      } else {
+        setMessages((prev) =>
+          prev.map((m) => (serverIdOf(m) === anchorId ? { ...m, thread: [...(m.thread ?? []), ...entries] } : m)),
+        );
+      }
+    } else if (event.type === "error") {
+      setLiveTutor((prev) =>
+        prev ? { ...prev, error: event.message } : { messageId: null, question: "", answer: "", error: event.message },
+      );
+    }
+  };
+
+  const toggleThread = (m: DisplayMessage) => {
+    const open = !openThreads.has(m.id);
+    setOpenThreads((prev) => {
+      const next = new Set(prev);
+      if (open) next.add(m.id);
+      else next.delete(m.id);
+      return next;
+    });
+    // An open thread is the one follow-up questions continue.
+    setActiveThreadId(open ? serverIdOf(m) : null);
+  };
+
+  const handleSayInstead = (question: string) => {
+    liveTutorRef.current = null;
+    setLiveTutor(null);
+    setActiveThreadId(null);
+    inputControlRef.current?.submitAsAttempt(question);
+  };
+
+  // Keep the streaming answer in view.
+  useEffect(() => {
+    if (liveTutor) threadAnchorRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [liveTutor]);
   return (
     <div className="app">
       <header className="app__header">
@@ -168,6 +267,17 @@ function App() {
           </button>
           {menuOpen && (
             <div className="app__menu-dropdown">
+              <div className="app__voice-picker">
+                Read aloud:{" "}
+                <SegmentedControl
+                  value={readAloud ? "on" : "off"}
+                  onChange={(v) => setReadAloud(v === "on")}
+                  options={[
+                    { value: "on", label: "On" },
+                    { value: "off", label: "Off" },
+                  ]}
+                />
+              </div>
               {voices.length > 0 && voice && (
                 <div className="app__voice-picker">
                   Voice:{" "}
@@ -193,9 +303,21 @@ function App() {
         {historyLoaded && messages.length === 0 && (
           <p className="app__empty">Say hello to start a conversation - ¡Hola!</p>
         )}
-        {messages.map((m) => (
-          <ChatMessage key={m.id} message={m} voice={voice ?? undefined} />
-        ))}
+        {messages.map((m) => {
+          const live = liveTutor && liveTutor.messageId !== null && liveTutor.messageId === serverIdOf(m) ? liveTutor : null;
+          return (
+            <div key={m.id} ref={live ? threadAnchorRef : undefined}>
+              <ChatMessage
+                message={m}
+                voice={voice ?? undefined}
+                threadOpen={openThreads.has(m.id) || !!live}
+                onToggleThread={() => toggleThread(m)}
+                liveTutor={live}
+                onSayInstead={handleSayInstead}
+              />
+            </div>
+          );
+        })}
         {streamingText !== null && (
           <div className="chat-message chat-message--assistant">
             <div className="chat-message__column">
@@ -203,10 +325,25 @@ function App() {
             </div>
           </div>
         )}
+        {(looseThread.length > 0 || (liveTutor && liveTutor.messageId === null)) && (
+          <div ref={liveTutor && liveTutor.messageId === null ? threadAnchorRef : undefined}>
+            <MessageThread
+              entries={looseThread}
+              live={liveTutor && liveTutor.messageId === null ? liveTutor : null}
+              onSayInstead={handleSayInstead}
+            />
+          </div>
+        )}
         {error && <p className="app__error">{error}. Is the backend running and configured correctly?</p>}
       </main>
 
-      <ChatInput onSend={handleSend} sessionId={sessionId} partnerVoice={voice ?? undefined} />
+      <ChatInput
+        onSend={handleSend}
+        sessionId={sessionId}
+        activeThreadId={activeThreadId}
+        onTutorEvent={handleTutorEvent}
+        controlRef={inputControlRef}
+      />
     </div>
   );
 }

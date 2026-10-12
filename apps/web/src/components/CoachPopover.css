@@ -79,46 +79,18 @@
   font-size: 0.8rem;
 }
 
-/* Voice mode's state line inside the same popover (see VoiceCoachPopover). */
-.coach-popover__voice-state {
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: #9aa1b1;
+/* Re-routes a draft the coach treated as an attempt to the tutor. */
+.coach-popover__ask-instead {
+  all: unset;
+  align-self: flex-start;
+  cursor: pointer;
+  font-size: 0.75rem;
+  opacity: 0.6;
+  text-decoration: underline;
 }
 
-.coach-popover__voice-state--listening {
-  color: #2fae5a;
-  animation: coach-popover-voice-pulse 1.4s ease-in-out infinite;
-}
-
-.coach-popover__voice-state--thinking,
-.coach-popover__voice-state--sending {
-  color: #f2c14e;
-}
-
-.coach-popover__voice-state--speaking_coach,
-.coach-popover__voice-state--speaking_partner {
-  color: #82aaff;
-}
-
-.coach-popover__voice-state--error {
-  color: #ff8a8a;
-}
-
-@keyframes coach-popover-voice-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
-}
-
-.coach-popover__voice-say {
-  font-size: 0.9rem;
+.coach-popover__ask-instead:hover {
+  opacity: 1;
 }
 
 .coach-popover__confirm-send {
