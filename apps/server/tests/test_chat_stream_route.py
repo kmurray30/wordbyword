@@ -149,3 +149,51 @@ def test_whitespace_only_reply_also_counts_as_empty():
 
     assert [name for name, _ in parsed] == ["chunk", "chunk", "error"]
     assert parsed[-1][1]["message"] == "Model returned an empty reply"
+
+
+def test_no_write_lock_is_held_while_the_model_streams(tmp_path):
+    # Seen live: the reward events the frontend fires at the moment of
+    # sending failed with "database is locked" because the user message
+    # was flushed (taking SQLite's single write lock) BEFORE the model
+    # call, and held until the commit after it. A second writer must be
+    # able to commit mid-stream. Needs a real file DB with two separate
+    # connections - a shared in-memory connection can't contend with
+    # itself.
+    from app import models  # noqa: F401
+    from app.wordbank import store
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'lock.db'}", connect_args={"check_same_thread": False, "timeout": 1}
+    )
+    Base.metadata.create_all(bind=engine)
+    make_session = sessionmaker(bind=engine)
+    route_session = make_session()
+    other_session = make_session()
+    with other_session.begin():
+        store.get_or_create(other_session, "correr", pos="VERB", translation="to run")
+
+    outcomes: list[str] = []
+
+    def deltas():
+        yield "Hola"
+        # Mid-generation: another request's write must go straight through.
+        try:
+            store.apply_reward_event(other_session, "userTypedSpanishWord", "correr")
+            other_session.commit()
+            outcomes.append("ok")
+        except Exception as exc:  # noqa: BLE001 - the assertion below reports it
+            other_session.rollback()
+            outcomes.append(repr(exc))
+        yield ", ¿qué tal?"
+
+    with (
+        patch("app.routes.chat.model_chat_stream", return_value=deltas()),
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+    ):
+        response = take_turn_stream(ChatTurnRequest(session_id="s1", message="hola"), session=route_session)
+        raw = "".join(asyncio.run(_collect(response.body_iterator)))
+
+    assert outcomes == ["ok"]
+    assert "event: done" in raw
+    route_session.close()
+    other_session.close()

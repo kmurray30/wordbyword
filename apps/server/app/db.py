@@ -8,7 +8,14 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# timeout: how long a write waits for SQLite's single write lock before
+# failing with "database is locked" (the driver's default is 5s). Every
+# route keeps its write transaction short (see routes/chat.py's
+# _gloss_and_persist_reply), so a wait only ever covers another request's
+# brief commit - a generous ceiling here just means a burst of concurrent
+# writes (the reward events fired at send time, say) queues instead of
+# erroring.
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 

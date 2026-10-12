@@ -142,18 +142,33 @@ def clear_history(session_id: str, session: Session = Depends(get_session)) -> C
     return ClearHistoryResponse(cleared=len(rows))
 
 
-def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str, user_message_id: int) -> ChatTurnResponse:
+def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str, user_message: ChatMessage) -> ChatTurnResponse:
     """Shared by both /chat/turn and /chat/turn/stream - everything that
     happens once the model's full reply text is known: one LLM call glosses
     every word/group in the reply using its meaning IN CONTEXT, and returns
     the whole-sentence translation from that exact same pass - one
     consistent source for both. No dictionary/MT fallback for a word it
     missed or a failed call - that word just gets no gloss until a later
-    turn supplies one (see store.record_exposure below)."""
+    turn supplies one (see store.record_exposure below).
+
+    `user_message` is the learner's own just-sent turn, NOT yet added to
+    the session: it's added (and flushed, which is what assigns its id)
+    only here, after the gloss call below - the FIRST write of the whole
+    turn. SQLite has one writer at a time, and a flush takes that write
+    lock until commit: flushing the user message up front, before the
+    model call (as both routes used to), held the lock for the entire
+    reply generation (10s+), so any other write landing in that window -
+    the reward events the frontend fires at the moment of sending, in
+    particular - timed out with "database is locked" (seen live). Now the
+    lock is held only for the few milliseconds between this flush and the
+    commit at the end."""
     try:
         translation, raw_spans = llm_translate.gloss_reply(reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE)
     except llm_translate.TranslationUnavailableError:
         translation, raw_spans = "", []
+
+    session.add(user_message)
+    session.flush()  # assigns user_message.id without committing yet - needed below
 
     tokens = analyze(reply_text)
     matched_spans = match_spans(reply_text, raw_spans)
@@ -220,7 +235,7 @@ def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str,
         text=reply_text,
         tokens=annotations,
         translation=translation,
-        user_message_id=user_message_id,
+        user_message_id=user_message.id,
     )
 
 
@@ -246,10 +261,7 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
         raise HTTPException(status_code=502, detail="Model returned an empty reply")
 
     user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
-    session.add(user_message)
-    session.flush()  # assigns user_message.id without committing yet - needed below
-
-    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message.id)
+    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message)
 
 
 @router.post("/turn/stream")
@@ -264,10 +276,10 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
     payload either way, just delivered progressively here."""
     history = _recent_history(session, req.session_id)
     messages = build_messages(history, req.message)
+    # Not added to the session until the reply is in (see
+    # _gloss_and_persist_reply) - no DB write, and so no SQLite write lock,
+    # is held while the model streams.
     user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
-    session.add(user_message)
-    session.flush()  # assigns user_message.id without committing yet - needed below
-    user_message_id = user_message.id
 
     def events():
         # A leading SSE comment line (any line starting with ":" - part of
@@ -300,12 +312,12 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
             # events at all (the frontend's "…" placeholder never fills
             # in), so surface it the same way: an "error" event instead of
             # silently persisting (and then "done"-ing with) a blank
-            # assistant turn. The pending user-message add above is never
-            # committed in this branch, so it doesn't leave a dangling
-            # user-only turn in history either.
+            # assistant turn. The user message is never added in this
+            # branch, so it doesn't leave a dangling user-only turn in
+            # history either.
             yield _sse("error", ChatTurnErrorEvent(message="Model returned an empty reply").model_dump_json())
             return
-        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message_id)
+        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message)
         yield _sse("done", result.model_dump_json())
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
