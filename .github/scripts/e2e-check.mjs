@@ -24,15 +24,13 @@
 //     dictionary/Argos fallback anywhere - a miss just means no gloss),
 //     and whether it grouped multiple words into one span (e.g. "miss
 //     you") is eyeballed, not asserted, since that varies run to run with
-//     a small model. Finally streams /brainstorm/turn (the Brainstorm
-//     field's coach - Server-Sent Events, not a single JSON response) using
-//     this session's own recent history for context, confirms
-//     /brainstorm/open holds both persisted turns, then sends a chat turn
-//     (which stamps that open log onto the new user message) and folds it
-//     into notes via /brainstorm/fold.
-//  3. Confirm GET /chat/history reflects what stages 1/2 just sent
-//     (including the brainstorm log attached to stage 2's last user
-//     message), and that POST /chat/history/clear actually empties it.
+//     a small model. Finally streams /translate/coach (the combined Send
+//     button's "check first" mode backend - Server-Sent Events, not a
+//     single JSON response, so the "core" and "translations" phases of one
+//     underlying LLM call are checked separately) using this session's own
+//     recent history for context.
+//  3. Confirm GET /chat/history reflects what stages 1/2 just sent, and
+//     that POST /chat/history/clear actually empties it.
 //  4. If those pass, drive the real site with Playwright end to end: confirm
 //     the LLM-readiness gate isn't blocking the page (the model server is
 //     already known warm by this point), send a message, hover AND click a
@@ -50,18 +48,21 @@
 //     word, not just in a gap between them) and confirm it shows one
 //     phrase translation (in whichever direction the selected words'
 //     majority language calls for) rather than a leftover single-word
-//     popover, then brainstorm with the coach in the Brainstorm field
-//     (focusing it must not get stolen back by the Reply field's focus
-//     keeper) and confirm its streamed answer lands in the log and its
-//     proposed sentence fills the Reply field, send that reply, and wait
-//     for the sent bubble's notes dropdown to settle (the brainstorm log
-//     folded into notes) - all of that before touching TTS at all, same
-//     reasoning as stages 1-2 before 5-6 - then play the assistant
-//     message's audio, switch the voice picker (a button-based
-//     SegmentedControl, not a native <select> - see SegmentedControl.tsx)
-//     and confirm that request carries the chosen voice, confirm the
-//     composer's two textareas (Brainstorm + Reply) are the only native
-//     form controls left on the page (the point of removing the native
+//     popover, switch the combined Send button into "check first" mode
+//     (press-and-hold it, see setSendMode below) and confirm clicking it
+//     on a rough draft opens a streaming coach popover docked below the
+//     input bar (not above - reads out of the way of the draft), that its
+//     ✕ button closes it and returns focus to the draft while leaving the
+//     Send button primed to just send (the check already completed), that
+//     applying an option updates the draft WITHOUT closing the popover (so
+//     another option can still be compared afterward), and that clicking
+//     Send afterward actually sends rather than re-checking - all of that
+//     before touching TTS at all, same reasoning as stages 1-2 before 5-6
+//     - then play the assistant message's audio, switch the
+//     voice picker (a button-based SegmentedControl, not a native <select>
+//     - see SegmentedControl.tsx) and confirm that request carries the
+//     chosen voice, confirm the chat textarea is the only native form
+//     control left on the page (the point of removing the native
 //     select/checkbox controls - keeps iOS Safari's keyboard accessory bar
 //     from showing field-navigation arrows), then reload and clear the chat.
 //  5. Hit the backend's /tts/speak directly - isolates "is DeepInfra TTS
@@ -91,6 +92,28 @@ function fail(message) {
   process.exit(1);
 }
 
+// Switches the combined Send button's mode via its press-and-hold bubble
+// (see ChatInput.tsx) - requires some non-empty draft in the textarea
+// first, since the button is disabled (and so can't start the hold) on an
+// empty one. A plain .click() is too fast to trigger the hold timer, so
+// this does a real mousedown -> wait past the threshold -> mouseup, which
+// (like a genuine user gesture) still fires a native click on mouseup -
+// the app's own long-press-vs-tap detection (sendLongPressFiredRef) relies
+// on exactly that ordering to tell the two apart.
+async function setSendMode(page, mode) {
+  const sendButton = page.locator(".chat-input__send");
+  const box = await sendButton.boundingBox();
+  if (!box) fail("Send button not found/visible - can't switch send mode");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(650); // past ChatInput.tsx's SEND_LONG_PRESS_MS (500ms)
+  await page.mouse.up();
+  await page.waitForSelector(".send-mode-picker", { timeout: 3_000 });
+  const label = mode === "direct" ? "Send directly" : "Check first";
+  await page.locator(".send-mode-picker .segmented-control__option", { hasText: label }).click();
+  await page.waitForSelector(".send-mode-picker", { state: "hidden", timeout: 3_000 });
+}
+
 async function chatTurn(message) {
   const start = Date.now();
   const controller = new AbortController();
@@ -116,7 +139,7 @@ async function chatTurn(message) {
   if (!data.text || data.text.trim().length === 0) {
     fail(`/chat/turn (${JSON.stringify(message)}) returned 200 but empty text: ${JSON.stringify(data)}`);
   }
-  return { elapsed, text: data.text, tokens: data.tokens ?? [], data };
+  return { elapsed, text: data.text, tokens: data.tokens ?? [] };
 }
 
 async function checkBackendDirect() {
@@ -300,126 +323,59 @@ async function checkEnglishInputAndTranslation() {
       : '  (eyeball) no multi-word group this run - the model tagged every word individually',
   );
 
-  // The Brainstorm field's coach - streamed as Server-Sent Events
-  // ("intent", "verdict", "draft", "say_chunk"s, "say_complete", then
-  // "saved" once both turns are persisted; "error" if nothing usable came
-  // back - see app/routes/brainstorm.py). Uses this session's recent
-  // history (stage 1's "Hola" and this function's own hobbies question)
-  // for context, so runs after there's actually some history to use. A
-  // rough Spanish attempt, so the coach should normally propose a draft.
-  console.log(`[2/6] Checking /brainstorm/turn (streamed SSE) ...`);
-  const brainstormText = "me gusta mucho leer libros de historia, y tu?";
-  const brainstormRes = await fetch(`${BACKEND_URL}/brainstorm/turn`, {
+  // The input's "help" button - streamed as Server-Sent Events (one
+  // underlying LLM call, in two ordered phases: "core" - the feedback +
+  // options themselves, usable immediately - then "translations" - each
+  // option's own English translation + word-by-word breakdown, a bit
+  // later). Uses this session's recent history (stage 1's "Hola" and this
+  // function's own hobbies question) for context, so runs after there's
+  // actually some history to use.
+  console.log(`[2/6] Checking /translate/coach (streamed SSE) ...`);
+  const coachRes = await fetch(`${BACKEND_URL}/translate/coach`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: TEST_SESSION_ID, text: brainstormText, words: [], reply_draft: "", source: "text" }),
+    body: JSON.stringify({ text: "me gusta mucho leer libros", session_id: TEST_SESSION_ID }),
   });
-  if (!brainstormRes.ok) fail(`/brainstorm/turn returned ${brainstormRes.status}: ${await brainstormRes.text()}`);
-  const brainstormEvents = await readSseEvents(brainstormRes);
-  const brainstormEvent = (name) => brainstormEvents.find((e) => e.event === name)?.data;
-  const brainstormError = brainstormEvent("error");
-  if (brainstormError) fail(`/brainstorm/turn sent an "error" event: ${JSON.stringify(brainstormError)}`);
-  const brainstormIntent = brainstormEvent("intent")?.intent;
-  if (!brainstormIntent) fail(`/brainstorm/turn never sent an "intent" event: ${JSON.stringify(brainstormEvents)}`);
-  const brainstormSay = brainstormEvent("say_complete")?.say;
-  if (!brainstormSay || !brainstormSay.trim()) {
-    fail(`/brainstorm/turn never sent a non-empty "say_complete" event: ${JSON.stringify(brainstormEvents)}`);
+  if (!coachRes.ok) fail(`/translate/coach returned ${coachRes.status}: ${await coachRes.text()}`);
+  const coachEvents = await readSseEvents(coachRes);
+  const coachCore = coachEvents.find((e) => e.event === "core")?.data;
+  if (!coachCore) fail(`/translate/coach never sent a "core" event: ${JSON.stringify(coachEvents)}`);
+  if (!coachCore.options || coachCore.options.length === 0) {
+    fail(`/translate/coach's "core" event had no options: ${JSON.stringify(coachCore)}`);
   }
-  const brainstormSaved = brainstormEvent("saved");
-  if (!brainstormSaved?.learner_turn_id || !brainstormSaved?.coach_turn_id) {
-    fail(`/brainstorm/turn never sent a usable "saved" event: ${JSON.stringify(brainstormEvents)}`);
+  for (const opt of coachCore.options) {
+    if (!opt.spanish) fail(`/translate/coach option missing spanish text: ${JSON.stringify(opt)}`);
   }
-  const brainstormVerdict = brainstormEvent("verdict")?.verdict;
-  const brainstormDraft = brainstormEvent("draft")?.draft ?? "";
-  console.log(`  intent: ${JSON.stringify(brainstormIntent)}, verdict: ${JSON.stringify(brainstormVerdict)}`);
-  console.log(`  draft: ${JSON.stringify(brainstormDraft)}`);
-  console.log(`  say: ${JSON.stringify(brainstormSay)}`);
-  console.log(`  OK - streamed intent/say_complete/saved (turn ids ${brainstormSaved.learner_turn_id}/${brainstormSaved.coach_turn_id})`);
+  console.log(`  meaning: ${JSON.stringify(coachCore.meaning)}`);
+  console.log(`  feedback: ${JSON.stringify(coachCore.feedback)}`);
+  console.log(`  options (core): ${JSON.stringify(coachCore.options)}`);
 
-  // Both sides of that exchange are the session's open brainstorm log now.
-  console.log(`[2/6] Checking GET /brainstorm/open holds both turns ...`);
-  const openRes = await fetch(`${BACKEND_URL}/brainstorm/open?session_id=${encodeURIComponent(TEST_SESSION_ID)}`);
-  if (!openRes.ok) fail(`/brainstorm/open returned ${openRes.status}: ${await openRes.text()}`);
-  const openData = await openRes.json();
-  const openTurns = openData.turns ?? [];
-  const openLearner = openTurns.find((t) => t.id === brainstormSaved.learner_turn_id);
-  const openCoach = openTurns.find((t) => t.id === brainstormSaved.coach_turn_id);
-  if (openTurns.length !== 2 || openLearner?.role !== "learner" || openCoach?.role !== "coach") {
-    fail(`/brainstorm/open should hold exactly the learner + coach turns just saved: ${JSON.stringify(openData)}`);
-  }
-  if (openLearner.text !== brainstormText) {
-    fail(`/brainstorm/open's learner turn text ${JSON.stringify(openLearner.text)} != what was sent ${JSON.stringify(brainstormText)}`);
-  }
-  console.log(`  OK - open log holds the learner + coach turns`);
+  // When the draft is judged already correct (empty feedback, exactly one
+  // "neutral" option - see coach_draft_stream's own "Speed" docs and
+  // ChatInput.tsx's coachClean), PART 2's breakdown is intentionally
+  // skipped - the backend still emits one placeholder option with empty
+  // english/spans for that single core option (see app/routes/
+  // translate.py's coach_draft, which always builds one CoachOption per
+  // core option), not a product bug to assert against.
+  const coachIsClean = coachCore.feedback.trim() === "" && coachCore.options.length === 1;
 
-  // Sending a reply closes the open log (stamped onto the new user
-  // message - has_brainstorm in the turn's response), and
-  // /brainstorm/fold then turns it into notes. Idempotent, and scoped to
-  // the session that owns the message.
-  console.log(`[2/6] Sending a chat turn that closes the open brainstorm log ...`);
-  const foldTurn = await chatTurn(brainstormDraft.trim() || "Me gusta mucho leer libros de historia. ¿Y a ti?");
-  console.log(`  reply: ${JSON.stringify(foldTurn.text)}`);
-  if (foldTurn.data.has_brainstorm !== true) {
-    fail(`/chat/turn after brainstorming should report has_brainstorm=true: ${JSON.stringify({ has_brainstorm: foldTurn.data.has_brainstorm, user_message_id: foldTurn.data.user_message_id })}`);
-  }
-  const foldUserMessageId = foldTurn.data.user_message_id;
-  if (!foldUserMessageId) fail(`/chat/turn returned no user_message_id: ${JSON.stringify(foldTurn.data)}`);
-  console.log(`  OK - has_brainstorm=true, user_message_id=${foldUserMessageId}`);
-
-  const openAfterRes = await fetch(`${BACKEND_URL}/brainstorm/open?session_id=${encodeURIComponent(TEST_SESSION_ID)}`);
-  if (!openAfterRes.ok) fail(`/brainstorm/open (after send) returned ${openAfterRes.status}`);
-  const openAfterData = await openAfterRes.json();
-  if ((openAfterData.turns ?? []).length !== 0) {
-    fail(`/brainstorm/open still has turns after the reply closed the log: ${JSON.stringify(openAfterData)}`);
-  }
-  console.log(`  OK - the open log is empty once the reply is sent`);
-
-  console.log(`[2/6] Checking POST /brainstorm/fold ...`);
-  const foldStart = Date.now();
-  const foldRes = await fetch(`${BACKEND_URL}/brainstorm/fold`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: TEST_SESSION_ID, user_message_id: foldUserMessageId }),
-  });
-  if (foldRes.status !== 200) fail(`/brainstorm/fold returned ${foldRes.status}: ${await foldRes.text()}`);
-  const foldData = await foldRes.json();
-  if (!Array.isArray(foldData.messages)) fail(`/brainstorm/fold returned no "messages" array: ${JSON.stringify(foldData)}`);
-  for (const entry of foldData.messages) {
-    if (typeof entry.message_id !== "number" || !Array.isArray(entry.notes)) {
-      fail(`/brainstorm/fold entry is malformed: ${JSON.stringify(entry)}`);
+  const coachTranslations = coachEvents.find((e) => e.event === "translations")?.data;
+  if (!coachTranslations) {
+    console.log('  (eyeball) no "translations" event this run - PART 2 can be skipped under token pressure, not a hard failure');
+  } else if (coachIsClean) {
+    console.log('  OK - draft judged already correct, PART 2\'s breakdown intentionally skipped (see coach_draft_stream)');
+  } else {
+    for (const opt of coachTranslations.options) {
+      if (!opt.english) fail(`/translate/coach "translations" option missing english text: ${JSON.stringify(opt)}`);
     }
+    console.log(`  options (translations): ${JSON.stringify(coachTranslations.options)}`);
   }
-  console.log(`  OK in ${Date.now() - foldStart}ms - notes: ${JSON.stringify(foldData.messages)}`);
-  if (foldData.messages.length === 0) {
-    console.log("  (eyeball) the fold found nothing worth noting this run - allowed, model-dependent");
-  }
-
-  // Idempotent: asking again returns the same notes rather than re-folding.
-  const foldAgainRes = await fetch(`${BACKEND_URL}/brainstorm/fold`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: TEST_SESSION_ID, user_message_id: foldUserMessageId }),
-  });
-  if (foldAgainRes.status !== 200) fail(`/brainstorm/fold (repeat) returned ${foldAgainRes.status}: ${await foldAgainRes.text()}`);
-  const foldAgainData = await foldAgainRes.json();
-  if (JSON.stringify(foldAgainData) !== JSON.stringify(foldData)) {
-    fail(`/brainstorm/fold isn't idempotent: first ${JSON.stringify(foldData)}, then ${JSON.stringify(foldAgainData)}`);
-  }
-  // ...and refuses a message from a different session.
-  const foldWrongRes = await fetch(`${BACKEND_URL}/brainstorm/fold`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: `${TEST_SESSION_ID}-other`, user_message_id: foldUserMessageId }),
-  });
-  if (foldWrongRes.status !== 404) fail(`/brainstorm/fold for the wrong session returned ${foldWrongRes.status}, expected 404`);
-  console.log("  OK - fold is idempotent and 404s for another session's message");
-  return { foldUserMessageId };
 }
 
 // Reads a Server-Sent Events response body to completion and parses it
-// into { event, data } pairs - used for /brainstorm/turn, which streams
-// rather than returning a single JSON response (see brainstorm_stream in
-// app/translate/llm_translate.py and the route in app/routes/brainstorm.py).
+// into { event, data } pairs - used for /translate/coach, which streams
+// rather than returning a single JSON response (see coach_draft_stream in
+// app/translate/llm_translate.py and the route in app/routes/translate.py).
 async function readSseEvents(response) {
   const text = await response.text();
   const events = [];
@@ -447,35 +403,17 @@ async function waitForGlossReady(pageOrFrame, timeout = 10_000) {
   await pageOrFrame.waitForSelector(".word-candidates-popover__loading", { state: "hidden", timeout });
 }
 
-async function checkHistoryAndClear({ foldUserMessageId }) {
+async function checkHistoryAndClear() {
   console.log(`[3/6] Checking GET /chat/history reflects this session's turns ...`);
   const historyRes = await fetch(`${BACKEND_URL}/chat/history?session_id=${encodeURIComponent(TEST_SESSION_ID)}`);
   if (!historyRes.ok) fail(`/chat/history returned ${historyRes.status}: ${await historyRes.text()}`);
   const historyData = await historyRes.json();
-  // 3 chatTurn() calls so far (stage 1's family question, stage 2's
-  // hobbies question and its post-brainstorm reply) = 6 messages
-  // (user+assistant each). Brainstorm turns are kept apart from these -
-  // they never count as chat messages.
-  if (historyData.messages.length !== 6) {
-    fail(`/chat/history returned ${historyData.messages.length} messages, expected 6: ${JSON.stringify(historyData)}`);
+  // 2 chatTurn() calls so far (stage 1's "Hola", stage 4's hobbies
+  // question) = 4 messages (user+assistant each).
+  if (historyData.messages.length !== 4) {
+    fail(`/chat/history returned ${historyData.messages.length} messages, expected 4: ${JSON.stringify(historyData)}`);
   }
   console.log(`  OK - ${historyData.messages.length} messages recorded for this session`);
-
-  // Stage 2's post-brainstorm reply carries its brainstorm log (both
-  // turns), and - already folded - is no longer pending.
-  const foldedMessage = historyData.messages.find((m) => m.id === foldUserMessageId);
-  if (!foldedMessage) fail(`/chat/history has no message with id ${foldUserMessageId} (stage 2's post-brainstorm reply)`);
-  const foldedLog = foldedMessage.brainstorm ?? [];
-  if (foldedLog.length !== 2 || foldedLog[0].role !== "learner" || foldedLog[1].role !== "coach") {
-    fail(`stage 2's post-brainstorm reply should carry its learner + coach brainstorm turns: ${JSON.stringify(foldedMessage)}`);
-  }
-  if (foldedMessage.notes_pending !== false) {
-    fail(`stage 2's post-brainstorm reply is still notes_pending after /brainstorm/fold: ${JSON.stringify(foldedMessage)}`);
-  }
-  if (historyData.messages.some((m) => !Array.isArray(m.notes))) {
-    fail(`/chat/history messages should all carry a "notes" array: ${JSON.stringify(historyData.messages)}`);
-  }
-  console.log(`  OK - the post-brainstorm reply carries its brainstorm log (${foldedLog.length} turns) and is folded`);
 
   console.log(`[3/6] Clearing this session's history via POST /chat/history/clear ...`);
   const clearRes = await fetch(`${BACKEND_URL}/chat/history/clear?session_id=${encodeURIComponent(TEST_SESSION_ID)}`, {
@@ -483,8 +421,8 @@ async function checkHistoryAndClear({ foldUserMessageId }) {
   });
   if (!clearRes.ok) fail(`/chat/history/clear returned ${clearRes.status}: ${await clearRes.text()}`);
   const clearData = await clearRes.json();
-  if (clearData.cleared !== 6) {
-    fail(`/chat/history/clear reported clearing ${clearData.cleared} messages, expected 6`);
+  if (clearData.cleared !== 4) {
+    fail(`/chat/history/clear reported clearing ${clearData.cleared} messages, expected 4`);
   }
 
   const afterRes = await fetch(`${BACKEND_URL}/chat/history?session_id=${encodeURIComponent(TEST_SESSION_ID)}`);
@@ -515,25 +453,27 @@ async function checkBrowserEndToEnd() {
     // never in the DOM at all, not just if it disappears.
     await page.waitForSelector(".llm-gate", { state: "hidden", timeout: 15_000 });
     console.log("  OK - LLM gate isn't blocking the page once the model server is warm");
-    // The composer has two textareas now - the Brainstorm field
-    // (textarea.brainstorm__textarea) and the Reply field
-    // (textarea.chat-input__textarea, the one that actually gets sent) -
-    // so every Reply-field selector here is scoped to its class.
-    await page.waitForSelector("textarea.chat-input__textarea", { timeout: 15_000 });
-    await page.waitForSelector("textarea.brainstorm__textarea", { timeout: 15_000 });
+    await page.waitForSelector("textarea", { timeout: 15_000 });
     await page.screenshot({ path: "e2e-1-loaded.png" });
 
-    // The Reply field's Send button always just sends (no "check first"
-    // mode anymore - checking moved to the Brainstorm field).
-    await page.fill("textarea.chat-input__textarea", "x");
-    const defaultSendLabel = (await page.locator(".chat-input__send").innerText()).trim();
-    if (defaultSendLabel !== "Send") {
-      fail(`the Send button should read "Send", got ${JSON.stringify(defaultSendLabel)}`);
+    // The combined Send button (see ChatInput.tsx) defaults to "check
+    // first" mode for a learner who's never set a preference - confirmed
+    // here by typing something and seeing the button itself offer to
+    // check rather than just send. Switched to "direct" right after for
+    // the rest of this script's otherwise-unrelated checks, which all
+    // assume Enter/Send fires the real /chat/turn call immediately; the
+    // dedicated section below switches back to specifically exercise
+    // "check first" mode.
+    await page.fill("textarea", "x");
+    const defaultSendLabel = await page.locator(".chat-input__send").innerText();
+    if (!defaultSendLabel.includes("Check")) {
+      fail(`default send mode should be "check first" (expected the button to offer a check, got ${JSON.stringify(defaultSendLabel)})`);
     }
-    console.log('  OK - the Send button reads "Send"');
-    await page.fill("textarea.chat-input__textarea", "");
+    console.log('  OK - the Send button defaults to "check first" mode');
+    await setSendMode(page, "direct");
+    await page.fill("textarea", "");
 
-    await page.fill("textarea.chat-input__textarea", "Hola");
+    await page.fill("textarea", "Hola");
     await page.keyboard.press("Enter");
 
     // The reply now streams in token-by-token (see App.tsx's streamingText)
@@ -624,9 +564,9 @@ async function checkBrowserEndToEnd() {
       }
       console.log("  OK - clicking a word token pins it open with a highlight, no underline");
 
-      const activeAfterWordClick = await page.evaluate(() => document.activeElement?.className ?? document.activeElement?.tagName);
-      if (!String(activeAfterWordClick).includes("chat-input__textarea")) {
-        fail(`clicking a chat-bubble word left focus on ${JSON.stringify(activeAfterWordClick)}, not the Reply textarea - the keyboard would drop`);
+      const activeAfterWordClick = await page.evaluate(() => document.activeElement?.tagName);
+      if (activeAfterWordClick !== "TEXTAREA") {
+        fail(`clicking a chat-bubble word left focus on ${activeAfterWordClick}, not the input textarea - the keyboard would drop`);
       } else {
         console.log("  OK - clicking a bubble word returns focus to the draft (keyboard stays up)");
       }
@@ -728,7 +668,7 @@ async function checkBrowserEndToEnd() {
     // one clear sense, one column) - the closest apples-to-apples visual
     // comparison to the phrase popover below, which is also always a single
     // candidate. Both should render the exact same widget.
-    const textarea = page.locator("textarea.chat-input__textarea");
+    const textarea = page.locator("textarea");
     const gatoTagPromise = page.waitForResponse(
       (res) => res.url().includes("/translate/tag-input") && res.request().method() === "POST",
       { timeout: 10_000 }
@@ -983,7 +923,7 @@ async function checkBrowserEndToEnd() {
         await touchPage.waitForSelector(".word-candidates-popover", { timeout: 3_000 }).catch(() => {});
         const tapPopoverVisible = await touchPage.locator(".word-candidates-popover").first().isVisible().catch(() => false);
         if (!tapPopoverVisible) fail('a tap on "amigo" in the input did not open its translation popover');
-        const stillFocused = await touchPage.evaluate(() => !!document.activeElement?.classList.contains("chat-input__textarea"));
+        const stillFocused = await touchPage.evaluate(() => document.activeElement?.tagName === "TEXTAREA");
         if (!stillFocused) fail("tapping a word in the input lost focus on the textarea (keyboard would drop)");
         if (tapPopoverVisible && stillFocused) {
           console.log('  OK - tapping "amigo" in the input (real touch emulation) opens its popover and keeps the textarea focused');
@@ -1006,161 +946,164 @@ async function checkBrowserEndToEnd() {
       await touchContext.close();
     }
 
-    // The Brainstorm field (replaces the old "check first" Send mode and
-    // its coach popover): a side chat with the coach about the next reply,
-    // kept apart from the Reply field. Its answer streams into the log
-    // above the field, and a proposed Spanish sentence auto-fills the
-    // Reply field - but a typed brainstorm turn never sends on its own.
-    const brainstormTextarea = page.locator("textarea.brainstorm__textarea");
+    // The combined Send button's "check first" mode (replaces the old
+    // standalone help button) - switch into it via the press-and-hold
+    // bubble, same as a real learner would.
+    await textarea.fill("x");
+    await setSendMode(page, "checkFirst");
+    await textarea.fill("quiero ir playa manana");
     const sendButton = page.locator(".chat-input__send");
-    const failWithScreenshot = async (path, message) => {
-      await page.screenshot({ path }).catch(() => {});
-      fail(message);
-    };
-
-    // The Reply field's focus keeper (see ChatInput.tsx) puts focus back
-    // on the Reply after a tap elsewhere - but NOT when that tap lands on
-    // another real form control, and the Brainstorm field is one.
-    await textarea.fill("");
-    await textarea.focus();
-    await brainstormTextarea.click();
-    await page.waitForTimeout(150);
-    const focusAfterBrainstormClick = await page.evaluate(() => document.activeElement?.className ?? "");
-    if (!focusAfterBrainstormClick.includes("brainstorm__textarea")) {
-      await failWithScreenshot(
-        "e2e-debug-brainstorm-focus.png",
-        `clicking the Brainstorm field (with the Reply focused) left focus on ${JSON.stringify(focusAfterBrainstormClick)} - the Reply's focus keeper stole it`,
-      );
+    await sendButton.click();
+    await page.waitForSelector(".coach-popover", { timeout: 10_000 });
+    await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
+      timeout: 10_000,
+    });
+    const coachBox = await page.locator(".coach-popover").first().boundingBox();
+    const viewport = page.viewportSize();
+    // Docking it below the input bar can push it past the bottom of a
+    // short viewport - DockedPopover scrolls it into view on open (see
+    // DockedPopover.tsx) rather than leaving it silently off-screen; allow
+    // a hair of slack for subpixel rounding in that scroll math.
+    if (coachBox.y < -1 || coachBox.y + coachBox.height > viewport.height + 1) {
+      fail(`coach popover isn't scrolled into view: y=${coachBox.y} height=${coachBox.height} viewport=${viewport.height}`);
     }
-    console.log("  OK - focusing the Brainstorm field isn't stolen back by the Reply field's focus keeper");
-
-    const brainstormAttempt = "quiero ir playa manana";
-    const coachTurnsBefore = await page.locator(".brainstorm__turn--coach:not(.brainstorm__turn--live)").count();
-    await brainstormTextarea.fill(brainstormAttempt);
-    await page.locator(".brainstorm__ask").click();
-    // The learner's own line joins the log right away, and the field clears.
-    await page
-      .waitForSelector(".brainstorm__turn--learner", { timeout: 5_000 })
-      .catch(() => failWithScreenshot("e2e-debug-brainstorm-no-learner-turn.png", "asking the coach didn't add the learner's line to the brainstorm log"));
-    const brainstormValueAfterAsk = await brainstormTextarea.inputValue();
-    if (brainstormValueAfterAsk !== "") {
-      fail(`the Brainstorm field should clear once its line is asked, still has ${JSON.stringify(brainstormValueAfterAsk)}`);
-    }
-    // Wait for the coach's answer to finish streaming (the --live turn is
-    // replaced by a finished one), or for the panel's error line.
-    await page
-      .waitForFunction(
-        (before) =>
-          document.querySelectorAll(".brainstorm__turn--coach:not(.brainstorm__turn--live)").length > before ||
-          !!document.querySelector(".brainstorm__error"),
-        coachTurnsBefore,
-        { timeout: CHAT_TIMEOUT_MS },
-      )
-      .catch(() => failWithScreenshot("e2e-debug-brainstorm-timeout.png", "the coach's brainstorm answer never finished streaming"));
-    const brainstormErrorText = await page.locator(".brainstorm__error").innerText().catch(() => null);
-    if (brainstormErrorText) {
-      await failWithScreenshot("e2e-debug-brainstorm-error.png", `the Brainstorm panel showed an error: ${JSON.stringify(brainstormErrorText)}`);
-    }
-    const coachTurn = page.locator(".brainstorm__turn--coach:not(.brainstorm__turn--live)").last();
-    const coachTurnText = (await coachTurn.innerText()).trim();
-    if (!coachTurnText) await failWithScreenshot("e2e-debug-brainstorm-empty.png", "the coach's finished brainstorm turn is empty");
-    console.log(`  OK - the coach answered in the brainstorm log: ${JSON.stringify(coachTurnText)}`);
-    await page.screenshot({ path: "e2e-debug-brainstorm.png" });
-
-    // A rough Spanish attempt should normally get a proposed sentence (the
-    // turn's "↓ ..." draft chip), which must have been auto-filled into the
-    // Reply field. A model that only answered without one isn't a hard
-    // failure (model-dependent) - fill a reply by hand so the send/notes
-    // flow below still runs.
-    const draftChip = coachTurn.locator(".brainstorm__draft");
-    let replyToSend;
-    if ((await draftChip.count()) > 0) {
-      const chipDraft = (await draftChip.first().innerText()).replace(/^↓\s*/, "").trim();
-      const replyValue = (await textarea.inputValue()).trim();
-      if (!replyValue) {
-        await failWithScreenshot("e2e-debug-brainstorm-no-fill.png", `the coach proposed ${JSON.stringify(chipDraft)} but the Reply field is still empty`);
-      }
-      if (replyValue !== chipDraft) {
-        fail(`the Reply field holds ${JSON.stringify(replyValue)}, not the coach's proposed draft ${JSON.stringify(chipDraft)}`);
-      }
-      if (replyValue.toLowerCase().includes("manana") && !/mañana/i.test(replyValue)) {
-        console.log(`  (eyeball) the draft kept "manana" without the ñ: ${JSON.stringify(replyValue)}`);
-      }
-      console.log(`  OK - the coach's draft auto-filled the Reply field: ${JSON.stringify(replyValue)}`);
-      const sendReady = await sendButton.evaluate((el) => el.classList.contains("chat-input__send--ready"));
-      console.log(`  (eyeball) Send button marked ready (coach judged the draft ready): ${sendReady}`);
-      replyToSend = replyValue;
+    // Docked flush against the input bar's own BOTTOM edge (moved below the
+    // draft so it reads out of the way of the text being edited - see
+    // ChatInput.tsx), not above it and not floating somewhere else on
+    // screen based on where the Send button sits.
+    const coachInputBarBox = await page.locator(".chat-input").boundingBox();
+    const coachDockGap = coachBox.y - (coachInputBarBox.y + coachInputBarBox.height);
+    if (Math.abs(coachDockGap) > 2) {
+      fail(`coach popover isn't flush against the bottom of the input bar (gap=${coachDockGap.toFixed(1)}px)`);
     } else {
-      console.log("  (eyeball) the coach proposed no draft for this attempt - not failing, model-dependent; filling the reply by hand");
-      replyToSend = "Quiero ir a la playa mañana.";
-      await textarea.fill(replyToSend);
+      console.log("  OK - coach popover sits flush below the input bar, not above or floating");
     }
-    // A typed brainstorm turn must never send by itself.
-    const userBubblesBeforeSend = await page.locator(".chat-message--user").count();
-    const sendLabel = (await sendButton.innerText()).trim();
-    if (sendLabel !== "Send") fail(`the Send button should still read "Send", got ${JSON.stringify(sendLabel)}`);
+    const coachText = await page.locator(".coach-popover").innerText();
+    console.log(`  OK - Send button (check-first mode) opened coach popover on a rough draft: ${JSON.stringify(coachText)}`);
+    await page.screenshot({ path: "e2e-debug-coach-popover.png" });
 
-    // Sending closes the open brainstorm log: it goes under the sent
-    // bubble ("Organizing notes…" while POST /brainstorm/fold runs) and the
-    // Brainstorm panel starts fresh.
+    // Picking an option updates the draft WITHOUT closing the popover -
+    // the whole point of #9 is that it stays up so another option can
+    // still be compared, until explicitly closed (✕) or regenerated (↻).
+    // Done BEFORE closing (unlike the old help-button flow) since closing
+    // now leaves the Send button primed to just send (see below) rather
+    // than re-opening on another click - there's no "reopen" step anymore.
+    const firstOption = page.locator(".coach-popover__option").first();
+    const optionText = await firstOption.locator(".coach-popover__option-text").innerText();
+    await firstOption.locator(".coach-popover__option-main").click();
+    await page.waitForTimeout(150);
+    const draftAfterApply = await textarea.inputValue();
+    if (draftAfterApply !== optionText) {
+      fail(`clicking a coach option set the draft to ${JSON.stringify(draftAfterApply)}, expected ${JSON.stringify(optionText)}`);
+    }
+    const coachStillOpenAfterApply = await page.locator(".coach-popover").isVisible().catch(() => false);
+    if (!coachStillOpenAfterApply) fail("coach popover closed after applying an option - it should stay open (see #9)");
+    const firstOptionSelected = await firstOption.evaluate((el) => el.classList.contains("coach-popover__option--selected"));
+    if (!firstOptionSelected) fail("applied coach option isn't visually marked as selected");
+    console.log("  OK - clicking a coach option applies it to the draft and leaves the popover open, marked as selected");
+
+    // Its own English translation (from the SAME streamed call's second
+    // phase) should show up for the now-selected option - eyeballed on
+    // content (model-dependent wording) but the row itself must appear.
+    await page
+      .waitForSelector(".coach-popover__option--selected .coach-popover__option-english", { timeout: 10_000 })
+      .catch(() => {});
+    const selectedEnglish = await firstOption
+      .locator(".coach-popover__option-english")
+      .innerText()
+      .catch(() => "(none)");
+    console.log(`  (eyeball) selected option's English translation: ${JSON.stringify(selectedEnglish)}`);
+
+    // Picking a DIFFERENT option afterward should still work, with the
+    // popover still open the whole time - no need to reopen it.
+    const options = page.locator(".coach-popover__option");
+    if ((await options.count()) > 1) {
+      const secondOption = options.nth(1);
+      const secondOptionText = await secondOption.locator(".coach-popover__option-text").innerText();
+      await secondOption.locator(".coach-popover__option-main").click();
+      await page.waitForTimeout(150);
+      const draftAfterSecondApply = await textarea.inputValue();
+      if (draftAfterSecondApply !== secondOptionText) {
+        fail(`switching to a second coach option set the draft to ${JSON.stringify(draftAfterSecondApply)}, expected ${JSON.stringify(secondOptionText)}`);
+      }
+      const stillOpenAfterSwitch = await page.locator(".coach-popover").isVisible().catch(() => false);
+      if (!stillOpenAfterSwitch) fail("coach popover closed after switching to a different option");
+      console.log("  OK - picking a different option updates the draft again, still without closing the popover");
+    }
+
+    // The regenerate (↻) button is the explicit way to force a fresh
+    // streamed call for the same draft.
+    const regenerateButton = page.locator(".coach-popover__regenerate");
+    if ((await regenerateButton.count()) === 0) {
+      fail("coach popover has no visible regenerate (↻) button");
+    }
+    await regenerateButton.click();
+    await page.waitForFunction(() => document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
+      timeout: 5_000,
+    });
+    await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
+      timeout: 10_000,
+    });
+    console.log("  OK - the regenerate button re-runs the coaching call");
+
+    // Closing (✕) now leaves this draft's check result in place - it's
+    // still just as verified as it was a moment ago, so the Send button
+    // should read "Send" (not "💡 Check") rather than needing another
+    // check on the next click.
+    const coachCloseButton2 = page.locator(".coach-popover__close");
+    await coachCloseButton2.click();
+    const closedAfterRegenerate = (await page.locator(".coach-popover").count()) === 0;
+    if (!closedAfterRegenerate) fail("coach popover's ✕ button did not close it after regenerating");
+    const focusAfterClose = await page.evaluate(() => document.activeElement?.className ?? "");
+    if (!focusAfterClose.includes("chat-input__textarea")) {
+      fail(`closing the coach popover left focus on ${JSON.stringify(focusAfterClose)}, not the draft textarea`);
+    }
+    const sendLabelAfterClose = await sendButton.innerText();
+    if (!sendLabelAfterClose.includes("Send") || sendLabelAfterClose.includes("Check")) {
+      fail(`Send button should read "Send" once this draft is already checked, got ${JSON.stringify(sendLabelAfterClose)}`);
+    }
+    console.log('  OK - the ✕ button closes the popover, returns focus to the draft, and leaves Send primed to just send');
+
+    // Clicking Send now should send the CURRENT draft text directly - no
+    // re-check - since it's already been verified. This is the actual
+    // point of combining the two buttons: "clicking one text replaces it
+    // into your box. The send button at this point is just send."
     const assistantCountBeforeSend = await page.locator(".chat-message--assistant").count();
+    const draftBeforeDirectSend = await textarea.inputValue();
     await sendButton.click();
     await page.waitForFunction((count) => document.querySelectorAll(".chat-message--assistant").length > count, assistantCountBeforeSend, {
       timeout: CHAT_TIMEOUT_MS,
     });
-    const draftAfterSend = await textarea.inputValue();
-    if (draftAfterSend !== "") fail(`the Reply should be cleared after sending, still has ${JSON.stringify(draftAfterSend)}`);
-    if ((await page.locator(".chat-message--user").count()) !== userBubblesBeforeSend + 1) {
-      fail("clicking Send didn't add exactly one user bubble");
-    }
-    const openLogAfterSend = await page.locator(".brainstorm__turn").count();
-    if (openLogAfterSend !== 0) fail(`the Brainstorm log should start fresh after sending, still shows ${openLogAfterSend} turns`);
-    console.log(`  OK - Send sent ${JSON.stringify(replyToSend)} and the brainstorm log moved off the composer`);
+    const draftAfterDirectSend = await textarea.inputValue();
+    if (draftAfterDirectSend !== "") fail(`draft should be cleared after sending, still has ${JSON.stringify(draftAfterDirectSend)}`);
+    console.log(`  OK - clicking an already-checked Send button sent ${JSON.stringify(draftBeforeDirectSend)} directly, no re-check`);
 
-    const sentBubble = page.locator(".chat-message--user").last();
-    const notesToggle = sentBubble.locator(".message-notes__toggle:not(.message-notes__toggle--nested)").first();
-    await notesToggle
-      .waitFor({ state: "visible", timeout: 15_000 })
-      .catch(() => failWithScreenshot("e2e-debug-notes-missing.png", "the sent bubble never got a notes dropdown (.message-notes__toggle)"));
-    // Folding is one more LLM call - generous timeout. It ends as
-    // "Notes (n)", or "Brainstorm" (just the log) if nothing was worth
-    // noting or the fold failed and will retry on the next load.
-    await page
-      .waitForFunction(
-        (el) => !!el && !el.textContent.includes("Organizing notes"),
-        await notesToggle.elementHandle(),
+    // The OTHER branch: a draft the model judges basically already correct
+    // (empty feedback) shows a compact "looks good" confirmation instead
+    // of the full suggestions list - best-effort/eyeballed since "clean"
+    // vs. "needs correction" is the model's own call, not asserted on for
+    // a specific phrase, but a simple, plainly correct greeting should
+    // reliably land here.
+    await textarea.fill("Hola, ¿cómo estás?");
+    await sendButton.click();
+    await page.waitForSelector(".coach-popover", { timeout: 10_000 });
+    await page.waitForFunction(() => !document.querySelector(".coach-popover")?.textContent?.includes("Thinking"), {
+      timeout: 10_000,
+    });
+    const confirmSendButton = page.locator(".coach-popover__confirm-send");
+    if ((await confirmSendButton.count()) > 0) {
+      const assistantCountBeforeConfirm = await page.locator(".chat-message--assistant").count();
+      await confirmSendButton.click();
+      await page.waitForFunction(
+        (count) => document.querySelectorAll(".chat-message--assistant").length > count,
+        assistantCountBeforeConfirm,
         { timeout: CHAT_TIMEOUT_MS },
-      )
-      .catch(() => failWithScreenshot("e2e-debug-notes-pending.png", 'the sent bubble\'s notes never settled (still "Organizing notes…")'));
-    const notesLabel = (await notesToggle.innerText()).trim();
-    if (!/Notes \(\d+\)|Brainstorm/.test(notesLabel)) {
-      await failWithScreenshot("e2e-debug-notes-label.png", `unexpected notes toggle label ${JSON.stringify(notesLabel)}`);
-    }
-    console.log(`  OK - the sent bubble's notes settled: ${JSON.stringify(notesLabel)}`);
-
-    // Open it: the folded notes (if any) plus the raw brainstorm log.
-    await notesToggle.click();
-    await sentBubble.locator(".message-notes__body").waitFor({ state: "visible", timeout: 3_000 });
-    const noteItems = await sentBubble.locator(".message-notes__list li").allInnerTexts();
-    console.log(`  (eyeball) notes on the sent reply: ${JSON.stringify(noteItems)}`);
-    const logToggle = sentBubble.locator(".message-notes__toggle--nested");
-    if ((await logToggle.count()) === 0) fail("the sent bubble's notes have no nested \"Brainstorm log\" toggle");
-    await logToggle.click();
-    const learnerLogTurns = await sentBubble.locator(".message-notes__turn--learner").count();
-    const coachLogTurns = await sentBubble.locator(".message-notes__turn--coach").count();
-    if (learnerLogTurns < 1 || coachLogTurns < 1) {
-      await failWithScreenshot(
-        "e2e-debug-notes-log.png",
-        `the sent bubble's brainstorm log should hold the learner + coach turns, got ${learnerLogTurns} learner / ${coachLogTurns} coach`,
       );
+      console.log('  OK - a clean draft showed the compact "looks good" confirmation, and its Send button sent it');
+    } else {
+      console.log('  (eyeball) "Hola, ¿cómo estás?" got full suggestions instead of the clean confirmation - not failing, model-dependent');
+      await textarea.fill("");
     }
-    console.log(`  OK - the sent bubble's brainstorm log holds ${learnerLogTurns} learner / ${coachLogTurns} coach turn(s)`);
-    const partnerNotes = await page.locator(".chat-message--assistant .message-notes__toggle").allInnerTexts();
-    console.log(`  (eyeball) partner bubbles' notes toggles: ${JSON.stringify(partnerNotes)}`);
-    await page.screenshot({ path: "e2e-debug-message-notes.png" });
-    // Collapse it again so it doesn't push later steps around.
-    await notesToggle.click();
-    await page.mouse.move(0, 0);
 
     // Click the speaker button and confirm the browser's own /tts/speak
     // request (not just our direct fetch earlier) actually succeeds and the
@@ -1199,8 +1142,8 @@ async function checkBrowserEndToEnd() {
     // Switch the voice picker to a non-default voice and confirm the next
     // speak request actually carries that voice - not just that the
     // control renders. This is a button-based SegmentedControl, not a
-    // native <select> (removed so the composer's textareas are the page's
-    // only native form controls - see SegmentedControl.tsx - which otherwise
+    // native <select> (removed so the chat textarea is the page's only
+    // native form control - see SegmentedControl.tsx - which otherwise
     // made iOS Safari show its keyboard accessory bar's field-navigation
     // arrows).
     const voiceOptions = page.locator(".app__voice-picker .segmented-control__option");
@@ -1227,18 +1170,16 @@ async function checkBrowserEndToEnd() {
       fail("no voice picker (.app__voice-picker .segmented-control__option) found in the header");
     }
 
-    // Regression check for the iOS keyboard accessory bar fix: the
-    // composer's two textareas (Brainstorm + Reply) should be the only
-    // native form controls left on the page (see SegmentedControl.tsx -
-    // the voice picker is button-based).
-    const formControls = await page.evaluate(() =>
-      [...document.querySelectorAll("input, select, textarea")].map((el) => `${el.tagName}.${el.className}`),
+    // Regression check for the iOS keyboard accessory bar fix: the chat
+    // textarea should be the only native form control left on the page
+    // (see SegmentedControl.tsx - the voice picker is button-based).
+    const formControlTagNames = await page.evaluate(() =>
+      [...document.querySelectorAll("input, select, textarea")].map((el) => el.tagName),
     );
-    const expectedControls = ["TEXTAREA.brainstorm__textarea", "TEXTAREA.chat-input__textarea"];
-    if (JSON.stringify([...formControls].sort()) !== JSON.stringify(expectedControls)) {
-      fail(`expected only the Brainstorm + Reply textareas as native form controls, found: ${JSON.stringify(formControls)}`);
+    if (formControlTagNames.length !== 1 || formControlTagNames[0] !== "TEXTAREA") {
+      fail(`expected only the chat textarea as a native form control, found: ${JSON.stringify(formControlTagNames)}`);
     } else {
-      console.log("  OK - the Brainstorm + Reply textareas are the only native form controls on the page (no stray select/checkbox)");
+      console.log("  OK - the chat textarea is the only native form control on the page (no stray select/checkbox)");
     }
 
     // Reload and confirm history hydration actually restores the
@@ -1275,8 +1216,8 @@ async function checkBrowserEndToEnd() {
 }
 
 await checkBackendDirect();
-const brainstormResult = await checkEnglishInputAndTranslation();
-await checkHistoryAndClear(brainstormResult);
+await checkEnglishInputAndTranslation();
+await checkHistoryAndClear();
 await checkBrowserEndToEnd();
 await checkTTSDirect();
 await checkVoicesDirect();
