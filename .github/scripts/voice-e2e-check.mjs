@@ -377,7 +377,10 @@ async function checkVoiceConversation(wavPath) {
     }
     const bubblesBefore = await page.locator(".chat-message__bubble").count();
     await page.click(SEND);
-    await page.waitForFunction((n) => document.querySelectorAll(".chat-message--assistant .chat-message__bubble").length >= 1 && document.querySelectorAll(".chat-message__bubble").length >= n + 2, bubblesBefore, { timeout: 120_000 });
+    // Wait for the partner's reply to be a real, saved message (it has an
+    // actions row; the bubble shown while it streams doesn't) - a question
+    // asked before that has no message to be about yet.
+    await page.waitForFunction((n) => document.querySelectorAll(".chat-message--assistant .chat-message__actions").length >= 1 && document.querySelectorAll(".chat-message__bubble").length >= n + 2, bubblesBefore, { timeout: 120_000 });
     const bubbles = await page.$$eval(".chat-message__bubble", (els) => els.map((e) => e.textContent.trim()).slice(-2));
     console.log(`chat: ${JSON.stringify(bubbles)}`);
     await page.waitForTimeout(2000);

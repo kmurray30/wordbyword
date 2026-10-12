@@ -101,10 +101,13 @@ function quoted(text: string): string {
 }
 
 export function coachMeaningSpeech(verdict: string, meaning: string): string {
-  const m = meaning.trim().replace(/[.?!]+$/, "");
+  const m = meaning.trim();
   if (!m) return "";
-  if (verdict === "fix") return `Did you mean: ${m}? If so,`;
-  if (verdict === "minor") return `Almost. You mean: ${m}.`;
+  // "Did you mean: …?" wraps the meaning in its own question; otherwise the
+  // meaning keeps its own punctuation ("Do you like running?" stays a
+  // question).
+  if (verdict === "fix") return `Did you mean: ${m.replace(/[.?!]+$/, "")}? If so,`;
+  if (verdict === "minor") return `Almost. You mean: ${sentence(m)}`;
   return `Sounds good. ${sentence(m)}`;
 }
 
