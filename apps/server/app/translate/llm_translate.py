@@ -236,41 +236,6 @@ def _looks_spanish(text: str) -> bool:
     return sum(1 for t in words if t.is_spanish) > len(words) / 2
 
 
-def _correct_option_languages(spanish_text: str, english_text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
-    """Post-hoc sanity check for one coach_draft_stream FIX-verdict option's
-    Spanish suggestion plus its own English back-translation - the plain-
-    text, marker-delimited protocol has no structural anchor (unlike the
-    old JSON-keyed one) forcing the model to keep each field in the
-    language its marker name promises, and a small/fast model sometimes
-    drifts. Reuses the same _looks_spanish classifier and the same
-    target_lang=="es"/native_lang=="en" scoping interpret_user_input's own
-    swap-correction already relies on, extended to the two cases a plain
-    swap doesn't cover: either field just never got translated out of the
-    OTHER language at all. Degrades to the original pair, uncorrected, if
-    the extra translate_text call this needs is itself unavailable."""
-    if target_lang != "es" or native_lang != "en" or not spanish_text or not english_text:
-        return spanish_text, english_text
-
-    spanish_is_spanish = _looks_spanish(spanish_text)
-    english_is_spanish = _looks_spanish(english_text)
-
-    if spanish_is_spanish and not english_is_spanish:
-        return spanish_text, english_text
-
-    try:
-        if not spanish_is_spanish and english_is_spanish:
-            # Classic swap - the right content landed under the wrong label.
-            return english_text, spanish_text
-        if not spanish_is_spanish and not english_is_spanish:
-            # The "Spanish" field was never actually translated into Spanish.
-            return translate_text(spanish_text, native_lang, target_lang), english_text
-        # Both fields look Spanish - the "English" field was never
-        # translated into English.
-        return spanish_text, translate_text(english_text, target_lang, native_lang)
-    except TranslationUnavailableError:
-        return spanish_text, english_text
-
-
 def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
     """Given raw learner input that may mix native_lang and target_lang, and
     may have grammar/spelling mistakes in either, return (corrected_native_
@@ -575,297 +540,10 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
 
 
-# Shared across the WHOLE call (verdict + meaning + up to 3x(spanish +
-# english) for a FIX verdict) rather than split per-field, same reasoning
-# the old PART1/PART2 split budget this replaces had for not splitting
-# further: a hard per-field cap risks one field starving a later one with
-# no way for the model to redistribute leftover budget, and that only gets
-# worse the more fields there are (8 here vs. 2 before). Lower than the
-# old combined 2800 despite more fields: the whole protocol is plain text
-# now, no JSON braces/keys/quoting overhead anywhere, and - the single
-# biggest token sink the old protocol had, per _COACH_TRANSLATIONS_MAX_
-# TOKENS's own history below - a picked option's word-by-word gloss
-# breakdown is no longer part of this call at all; it's fetched lazily via
-# /translate/gloss-spans only once an option is actually picked (see
-# ChatInput.tsx's handleSelectCoachOption). Still treat this as a starting
-# point to tune against real output, not a settled number: this model
-# (OPENAI_CHAT_MODEL, a reasoning-style model - see openai_client.py's own
-# comment on requiring max_completion_tokens) has repeatedly come back
-# completely empty under budget pressure elsewhere in this file
-# (_TAG_DRAFT_MAX_TOKENS's history is the clearest example) when its own
-# internal reasoning tokens alone exhausted a tight cap before any visible
-# output - the same failure mode remains possible here.
-_COACH_STREAM_MAX_TOKENS = 2400
-_COACH_HISTORY_TURNS = 8
-_COACH_FORMALITIES = ("neutral", "casual", "formal")  # fixed, positional - never parsed from the model
-_COACH_VERDICTS = {"clean", "minor", "fix"}
-
-# Written literally into the prompt and watched for verbatim in the
-# streamed reply, same convention every marker in this file already
-# follows - each one terminates the field named after it. Unlike the
-# two-marker protocol this replaces, there are now up to 8 of these in one
-# call (a verdict, a meaning, then up to 6 per-option fields for a FIX
-# verdict) - app.translate.sequential_stream.stream_sequential_fields
-# drives the whole sequence generically; see its own docstring for how the
-# marker-safe-tail withholding generalizes across all of them at once.
-_COACH_VERDICT_MARKER = "<<<VERDICT>>>"
-_COACH_MEANING_MARKER = "<<<MEANING>>>"
-_COACH_SUGGESTION_MARKER = "<<<SUGGESTION>>>"
-_COACH_OPT_MARKERS = (
-    "<<<OPT1_ES>>>",
-    "<<<OPT1_EN>>>",
-    "<<<OPT2_ES>>>",
-    "<<<OPT2_EN>>>",
-    "<<<OPT3_ES>>>",
-    "<<<OPT3_EN>>>",
-)
-
-
-def _run_sequential_fields(chunks, fields, initial_buffer: str = ""):
-    """Drives sequential_stream.stream_sequential_fields and exposes its
-    leftover-buffer return value to a plain caller - a generator's own
-    `return <value>` is only visible via `StopIteration.value`, which a
-    normal `for` loop has no way to capture, so this hands it back instead
-    as the second element of the returned tuple (an itself-exhausted-by-
-    then single-item list, filled in once the wrapped generator truly
-    finishes - read it only AFTER fully iterating the first element)."""
-    leftover_box: list[str] = []
-
-    def driver():
-        gen = stream_sequential_fields(chunks, fields, initial_buffer)
-        while True:
-            try:
-                item = next(gen)
-            except StopIteration as stop:
-                leftover_box.append(stop.value or "")
-                return
-            yield item
-
-    return driver(), leftover_box
-
-
-def coach_draft_stream(
-    draft: str,
-    history: list[tuple[str, str]],
-    native_lang: str,
-    target_lang: str,
-):
-    """For a message the learner is still drafting (not yet sent): decides
-    whether it's already good to go, restates what it thinks they meant,
-    and - only if real correction is needed - suggests the ideal phrasing
-    at a few formality levels, given the recent conversation's tone and
-    context. ONE streamed LLM call, entirely plain text (no JSON anywhere,
-    unlike this function's earlier JSON-blob-based protocol - removes a
-    whole class of truncation/parse failure this file has hit repeatedly
-    elsewhere), driven field-by-field via app.translate.sequential_stream:
-
-    First, a VERDICT - "clean" (nothing to fix at all), "minor" (fine to
-    send as-is, but one small cosmetic suggestion follows), or "fix" (real
-    correction needed) - yielded as ("verdict", "clean"|"minor"|"fix") the
-    moment it's parsed, before anything else has streamed. This is the one
-    piece of the old "core" event's `feedback`/`options` a caller actually
-    needs INSTANTLY: it's what lets the Send button light up the moment a
-    draft is known good, well before the explanation has finished
-    streaming (see ChatInput.tsx's coachReady vs. the slower-to-settle
-    coachVerified).
-
-    Then the restated meaning streams live, delta by delta - the one part
-    of the reply worth reading char-by-char while it's still generating,
-    same "zipper" feel /chat/turn/stream's own reply tokens have -
-    yielded as ("meaning_chunk", delta) per newly-arrived, marker-safe
-    piece of text, then ("meaning_complete", full_text) once settled.
-
-    What follows depends on the verdict:
-    - "clean": nothing further - the generator simply ends.
-    - "minor": a single corrected suggestion streams the same way -
-      ("suggestion_chunk", delta) then ("suggestion_complete", full_text).
-    - "fix": three formality-ranked suggestions stream in order (index 0 =
-      neutral, 1 = casual, 2 = formal - see _COACH_FORMALITIES), each
-      INTERLEAVED with its own whole-sentence native_lang back-translation
-      immediately after - not batched together at the end the way the old
-      protocol's PART 3 was: ("option_spanish_chunk", i, delta) /
-      ("option_spanish_complete", i, text), then ("option_english_chunk",
-      i, delta) / ("option_english_complete", i, text), repeated for i in
-      0, 1, 2. A picked option's word-by-word gloss breakdown is
-      DELIBERATELY not part of this stream at all - see
-      _COACH_STREAM_TOKENS's own comment on why, and ChatInput.tsx's
-      handleSelectCoachOption for where it's fetched instead.
-
-    Unlike every other LLM-backed helper here, this does NOT retry on a
-    garbled/unusable reply - earlier fields may already have been yielded
-    (and acted on by the caller) by the time a later one turns out
-    unusable, so there's nothing to cleanly retry; a field that never
-    completes (chunks ran out, or the model skipped straight past it)
-    just means the generator yields one fewer event than the full
-    sequence - whatever DID complete stays fully usable (see
-    sequential_stream's own docstring on why fields are independent this
-    way). Raises TranslationUnavailableError only when NOTHING at all is
-    usable - the verdict marker itself never arrived."""
-    if not draft.strip():
-        return
-
-    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
-
-    recent = history[-_COACH_HISTORY_TURNS:]
-    transcript = "\n".join(f"{'Learner' if role == 'user' else 'Partner'}: {text}" for role, text in recent)
-    context_block = f"The conversation so far:\n{transcript}\n\n" if transcript else ""
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                f"You are a warm, encouraging writing coach for someone learning "
-                f"{target_name}, whose native language is {native_name}. They are "
-                f"drafting their NEXT message in the conversation below - it may "
-                f"mix {native_name} and {target_name}, and may have grammar or "
-                f"spelling mistakes in either.\n\n"
-                f"{context_block}"
-                f"FIRST, decide a VERDICT for their draft - exactly one word, "
-                f"nothing else:\n"
-                f"- CLEAN: the draft is already completely correct {target_name} - "
-                f"not even a trivial issue. If you would change literally nothing, "
-                f"it's CLEAN.\n"
-                f"- MINOR: the draft is understandable, natural-enough "
-                f"{target_name} that could be sent as-is, but has ONE small "
-                f"cosmetic issue - a missing or wrong accent mark, a punctuation "
-                f"slip (missing ¿/¡, a wrong comma), or an obvious one-letter "
-                f"spelling typo. Nothing about word choice, verb conjugation, or "
-                f"sentence structure is wrong - only surface-level polish. If in "
-                f"doubt between MINOR and FIX, and the issue is purely visual/"
-                f"orthographic, choose MINOR.\n"
-                f"- FIX: anything else - a wrong verb form, wrong word choice, "
-                f"missing words, unnatural phrasing, structural or grammar "
-                f"problems, or the draft is in {native_name}/mixed and needs real "
-                f"translation.\n\n"
-                f"Write exactly one of CLEAN, MINOR, or FIX, then immediately "
-                f"write this marker: {_COACH_VERDICT_MARKER}\n\n"
-                f"THEN, PLAIN TEXT ONLY - no quotes, no labels, no JSON: state "
-                f"their intent as a concise {native_name} sentence - if what they "
-                f"typed is ALREADY clear, grammatical {native_name}, just copy it "
-                f"verbatim; otherwise give the shortest natural {native_name} "
-                f"phrasing of what they meant, not a description of their intent. "
-                f"Nothing else - no preamble, no explanation.\n\n"
-                f"Immediately after that, write exactly this marker: "
-                f"{_COACH_MEANING_MARKER}\n\n"
-                f"THEN, depending on which VERDICT you chose above:\n\n"
-                f"IF YOU CHOSE CLEAN: write nothing further at all - stop "
-                f"immediately after {_COACH_MEANING_MARKER}.\n\n"
-                f"IF YOU CHOSE MINOR: write ONE corrected version of their whole "
-                f"draft, fixing ONLY that small issue - plain {target_name} text, "
-                f"no quotes, no labels - then immediately write this marker: "
-                f"{_COACH_SUGGESTION_MARKER}\n\n"
-                f"IF YOU CHOSE FIX: write THREE suggested rephrasings in "
-                f"{target_name}, each one natural sentence ready to send as-is, "
-                f"each immediately followed by its OWN whole-sentence "
-                f"{native_name} back-translation (so the learner can double "
-                f"check it) - in this exact order, each piece followed "
-                f"immediately by its own marker. Each marker's name tells you "
-                f"which language that piece MUST be written in - never put "
-                f"{target_name} text after an _EN marker's content, and never "
-                f"put {native_name} text after an _ES marker's content:\n"
-                f"1. A natural/neutral way to say it, in {target_name}, then "
-                f"{_COACH_OPT_MARKERS[0]}\n"
-                f"2. That SAME suggestion's back-translation, in {native_name}, "
-                f"then {_COACH_OPT_MARKERS[1]}\n"
-                f"3. A more casual/informal way to say it, in {target_name}, "
-                f"then {_COACH_OPT_MARKERS[2]}\n"
-                f"4. That suggestion's back-translation, in {native_name}, then "
-                f"{_COACH_OPT_MARKERS[3]}\n"
-                f"5. A more formal/polite way to say it, in {target_name}, then "
-                f"{_COACH_OPT_MARKERS[4]}\n"
-                f"6. That suggestion's back-translation, in {native_name}, then "
-                f"{_COACH_OPT_MARKERS[5]}\n"
-                f"Keep each {target_name} suggestion to one natural sentence or "
-                f"short exchange - not a lecture, and don't repeat the same "
-                f"phrasing across formality levels if you can genuinely vary it. "
-                f"If a formality distinction doesn't make sense for this "
-                f"particular message, it's fine for two to be similar, but still "
-                f"write all three suggestions and all three back-translations.\n\n"
-                f"No markdown fences, no explanation, no extra text anywhere "
-                f"beyond exactly what's specified above."
-            ),
-        },
-        {"role": "user", "content": draft},
-    ]
-
-    try:
-        chunks = model_chat_stream(messages, max_tokens=_COACH_STREAM_MAX_TOKENS)
-
-        verdict_iter, verdict_leftover = _run_sequential_fields(chunks, [Field("verdict", _COACH_VERDICT_MARKER)])
-        verdict_raw: str | None = None
-        for kind, text in verdict_iter:
-            if kind == "verdict_complete":
-                verdict_raw = text
-
-        if verdict_raw is None:
-            # The verdict marker never arrived at all - nothing downstream
-            # (not even which fields to expect next) can be trusted.
-            raise TranslationUnavailableError("Model reply had no usable verdict")
-
-        verdict = verdict_raw.strip().lower()
-        if verdict not in _COACH_VERDICTS:
-            # An unrecognized token defaults to the FULL correction flow,
-            # never to "looks good" - showing three suggestions for a
-            # draft that was secretly fine is harmless; silently telling
-            # the learner a genuinely broken draft is fine to send is not.
-            logger.warning("coach_draft_stream: unrecognized verdict token %r, defaulting to fix", verdict_raw)
-            verdict = "fix"
-
-        yield ("verdict", verdict)
-
-        fields = [Field("meaning", _COACH_MEANING_MARKER)]
-        if verdict == "minor":
-            fields.append(Field("suggestion", _COACH_SUGGESTION_MARKER))
-        elif verdict == "fix":
-            for i in range(3):
-                fields.append(Field("option_spanish", _COACH_OPT_MARKERS[2 * i], extra=(i,)))
-                fields.append(Field("option_english", _COACH_OPT_MARKERS[2 * i + 1], extra=(i,)))
-
-        rest_iter, _rest_leftover = _run_sequential_fields(chunks, fields, initial_buffer=verdict_leftover[0])
-        # Stashes each FIX option's Spanish text, by index, the moment it
-        # completes - needed because the Spanish/English language check
-        # below (_correct_option_languages) can only run once BOTH halves
-        # of an option are known, which is only true once its own
-        # option_english_complete arrives.
-        pending_option_spanish: dict[int, str] = {}
-        for kind, *rest in rest_iter:
-            if kind == "meaning_chunk":
-                yield ("meaning_chunk", rest[0])
-            elif kind == "meaning_complete":
-                yield ("meaning_complete", rest[0].strip())
-            elif kind == "suggestion_chunk":
-                yield ("suggestion_chunk", rest[0])
-            elif kind == "suggestion_complete":
-                yield ("suggestion_complete", rest[0].strip())
-            elif kind == "option_spanish_chunk":
-                yield ("option_spanish_chunk", rest[0], rest[1])
-            elif kind == "option_spanish_complete":
-                index, text = rest[0], rest[1].strip()
-                pending_option_spanish[index] = text
-                yield ("option_spanish_complete", index, text)
-            elif kind == "option_english_chunk":
-                yield ("option_english_chunk", rest[0], rest[1])
-            elif kind == "option_english_complete":
-                index, english_text = rest[0], rest[1].strip()
-                spanish_text = pending_option_spanish.get(index, "")
-                corrected_spanish, corrected_english = _correct_option_languages(
-                    spanish_text, english_text, native_lang, target_lang
-                )
-                if corrected_spanish != spanish_text:
-                    # A corrective second option_spanish_complete for the
-                    # same index - the frontend reducer already just
-                    # overwrites that field's state on a repeat event, so
-                    # no new frontend handling is needed for this.
-                    yield ("option_spanish_complete", index, corrected_spanish)
-                yield ("option_english_complete", index, corrected_english)
-    except ModelServerUnavailableError as exc:
-        raise TranslationUnavailableError(str(exc)) from exc
-
-
-# Voice mode's spoken coach. Same plain-text marker protocol as
-# coach_draft_stream above, but the field list is FIXED (no branching on an
-# early field), so one stream_sequential_fields call parses the whole reply.
+# The brainstorm coach - the learner's side channel for thinking out loud
+# (typed or spoken) about their next message. A plain-text marker protocol
+# with a FIXED field list, so one stream_sequential_fields call parses the
+# whole reply.
 # Small decision-bearing fields first (so the client can act before the
 # long part has finished), the spoken text last so it can stream straight
 # into sentence-by-sentence TTS.
@@ -895,18 +573,22 @@ def _strip_voice_label(text: str) -> str:
     return _VOICE_LABEL_RE.sub("", text, count=1)
 
 
-def voice_coach_stream(
+def brainstorm_stream(
     transcript: str,
     words: list[dict],
     coach_dialog: list[tuple[str, str]],
     history: list[tuple[str, str]],
     native_lang: str,
     target_lang: str,
+    reply_draft: str = "",
+    spoken: bool = True,
 ):
-    """The coach half of a spoken conversation: the learner SAID something
-    (`transcript`, speech-to-text - possibly mixed languages, possibly
-    mis-heard; `words` carries per-word recognizer confidence), and this
-    decides what it was and what to say back, out loud.
+    """One brainstorm turn: the learner said or typed something in the
+    brainstorm field (`transcript` - possibly mixed languages; when
+    `spoken`, it's speech-to-text and may be mis-heard, and `words` carries
+    per-word recognizer confidence), and this decides what it was and what
+    to answer. `reply_draft` is what's in the separate Reply box right now,
+    so "is this right?" can be about it.
 
     Yields, in order: ("intent", one of _VOICE_INTENTS) - what the
     utterance IS (an attempt at their message, a question, a clarification,
@@ -914,14 +596,14 @@ def voice_coach_stream(
     they say?"); ("verdict", "ready"|"revise"|"none") - whether there is
     now a correct Spanish sentence worth sending; ("draft", text) - that
     sentence, or ""; then ("say_chunk", delta) / ("say_complete", text) -
-    the coach's spoken reply, streamed. Everything the coach says has to
-    work as audio alone (the phone's screen may be off), which the prompt
-    spells out. `coach_dialog` is the learner<->coach exchange about THIS
-    attempt so far; `history` is the partner conversation, for tone.
+    the coach's reply, streamed. When `spoken`, everything the coach says
+    has to work as audio alone (the phone's screen may be off), which the
+    prompt spells out. `coach_dialog` is the open brainstorm log so far;
+    `history` is the partner conversation.
 
-    Like coach_draft_stream: no retry (fields already yielded may already
-    have been acted on); raises TranslationUnavailableError only when the
-    intent marker never arrives at all."""
+    No retry (fields already yielded may already have been acted on);
+    raises TranslationUnavailableError only when the intent marker never
+    arrives at all."""
     if not transcript.strip():
         return
 
@@ -934,7 +616,12 @@ def voice_coach_stream(
     dialog_block = ""
     if coach_dialog:
         dialog_lines = "\n".join(f"{'Learner' if role == 'learner' else 'Coach'}: {text}" for role, text in coach_dialog)
-        dialog_block = f"What you and the learner have said to each other about THIS attempt so far:\n{dialog_lines}\n\n"
+        dialog_block = f"What you and the learner have said to each other about THIS next message so far:\n{dialog_lines}\n\n"
+    reply_block = (
+        f"The Reply box (the message that will actually be sent) currently contains:\n{reply_draft.strip()}\n\n"
+        if reply_draft.strip()
+        else "The Reply box (the message that will actually be sent) is currently empty.\n\n"
+    )
     low_confidence = [w for w in words if float(w.get("confidence", 1.0)) < _VOICE_LOW_CONFIDENCE and w.get("word")]
     confidence_block = ""
     if low_confidence:
@@ -944,23 +631,39 @@ def voice_coach_stream(
             f"mis-heard near-homophones, e.g. 'te gustas' for 'te gusta', 'corre' for 'correr': {listed}\n\n"
         )
 
+    if spoken:
+        intro = (
+            f"You are a warm, concise spoken {target_name} coach, talking OUT LOUD to a learner whose "
+            f"native language is {native_name}. They are SPEAKING into their phone, often with the "
+            f"screen off, so everything you say must work as audio alone - never refer to anything on "
+            f"screen.\n\n"
+        )
+        misheard = ", and since it is speech-to-text it may contain mis-heard words"
+    else:
+        intro = (
+            f"You are a warm, concise {target_name} coach for a learner whose native language is "
+            f"{native_name}. They are typing to you.\n\n"
+        )
+        misheard = ""
+
     messages = [
         {
             "role": "system",
             "content": (
-                f"You are a warm, concise spoken {target_name} coach, talking OUT LOUD to a learner whose "
-                f"native language is {native_name}. They are SPEAKING into their phone, often with the "
-                f"screen off, so everything you say must work as audio alone - never refer to anything on "
-                f"screen.\n\n"
-                f"The learner is composing their next message to a {target_name}-speaking conversation "
-                f"partner. What they just said arrives as speech-to-text: it may mix {native_name} and "
-                f"{target_name}, may have grammar mistakes, and may contain mis-heard words.\n\n"
-                f"{context_block}{dialog_block}{confidence_block}"
+                f"{intro}"
+                f"The learner is chatting with a {target_name}-speaking conversation partner. Separately "
+                f"from that chat, they talk things through with you: brainstorming their next message, "
+                f"asking what the partner meant, asking grammar or vocabulary questions. Whatever you put "
+                f"in DRAFT is placed into their Reply box, where they can edit it before sending. What "
+                f"they just said may mix {native_name} and {target_name} and may have grammar "
+                f"mistakes{misheard}.\n\n"
+                f"{context_block}{dialog_block}{reply_block}{confidence_block}"
                 f"Reply with exactly four fields, in this order, each immediately followed by its marker. "
                 f"Write only each field's content - never the field's name (do not write 'INTENT', "
                 f"'VERDICT', 'DRAFT' or 'SAY' themselves). No other text anywhere.\n\n"
                 f"1. INTENT - exactly one word, what the learner's utterance IS:\n"
                 f"- attempt: an attempt at the message they want to send (in {target_name}, {native_name}, or a mix)\n"
+                f"- (asking whether the Reply box is right counts as attempt - judge what is in it)\n"
                 f"- question: asking you something ('how do I say...', 'what does X mean', 'why...')\n"
                 f"- clarify: correcting what they meant ('no, I meant...') after your suggestion\n"
                 f"- confirm: accepting your suggestion or telling you to send it ('yes', 'sí', 'send it', 'that one', 'mándalo')\n"
@@ -981,9 +684,9 @@ def voice_coach_stream(
                 f"{target_name} only, no quotes, no explanation. MUST be filled when the verdict is ready. "
                 f"If you are offering several options, put your top recommendation here. Leave it empty "
                 f"when there is nothing to send. Then write {_VOICE_DRAFT_MARKER}\n\n"
-                f"4. SAY - what you say out loud, then write {_VOICE_SAY_MARKER}. Rules:\n"
-                f"- Spoken {native_name}, short sentences, warm but brief: one to four sentences unless they "
-                f"asked for an explanation.\n"
+                f"4. SAY - your reply to the learner, then write {_VOICE_SAY_MARKER}. Rules:\n"
+                f"- {'Spoken ' if spoken else ''}{native_name}, short sentences, warm but brief: one to four "
+                f"sentences unless they asked for an explanation.\n"
                 f"- Any {target_name} you say goes in whole quoted phrases, never single {target_name} words "
                 f"scattered through a {native_name} sentence - keep the two languages in separate sentences "
                 f"or clauses.\n"
@@ -1024,7 +727,7 @@ def voice_coach_stream(
             if kind == "intent_complete":
                 intent = _strip_voice_label(rest[0]).strip().lower()
                 if intent not in _VOICE_INTENTS:
-                    logger.warning("voice_coach_stream: unrecognized intent %r, treating as attempt", rest[0])
+                    logger.warning("brainstorm_stream: unrecognized intent %r, treating as attempt", rest[0])
                     intent = "attempt"
                 yield ("intent", intent)
             elif kind == "verdict_complete":
@@ -1032,7 +735,7 @@ def voice_coach_stream(
                 if verdict not in _VOICE_VERDICTS:
                     # Never default to "ready" - sending something the
                     # learner didn't approve is the harmful direction.
-                    logger.warning("voice_coach_stream: unrecognized verdict %r, treating as revise", rest[0])
+                    logger.warning("brainstorm_stream: unrecognized verdict %r, treating as revise", rest[0])
                     verdict = "revise"
                 # `draft` hasn't arrived yet; the ready-needs-a-draft check
                 # happens once it has, below.
@@ -1040,7 +743,7 @@ def voice_coach_stream(
                 draft = _strip_voice_label(rest[0]).strip()
                 if draft and target_lang == "es" and native_lang == "en" and not _looks_spanish(draft):
                     # The model wrote the "Spanish only" field in English -
-                    # same post-hoc guard coach_draft_stream's options use.
+                    # same post-hoc guard the old text coach used.
                     try:
                         draft = translate_text(draft, native_lang, target_lang)
                     except TranslationUnavailableError:
@@ -1072,3 +775,86 @@ def voice_coach_stream(
             raise TranslationUnavailableError("Model reply had no usable intent")
     except ModelServerUnavailableError as exc:
         raise TranslationUnavailableError(str(exc)) from exc
+
+
+# Room for two short bullet lists, plus the hidden reasoning a reasoning-
+# style translate model spends out of the same budget (see
+# _TAG_DRAFT_MAX_TOKENS's history).
+_FOLD_BRAINSTORM_MAX_TOKENS = 1600
+
+
+def _coerce_notes(raw) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def fold_brainstorm(
+    brainstorm: list[tuple[str, str]],
+    partner_message: str,
+    sent_reply: str,
+    native_lang: str,
+    target_lang: str,
+) -> tuple[list[str], list[str]]:
+    """Turns one finished brainstorm log (the learner<->coach side chat that
+    led up to `sent_reply`) into short study notes, split by what they're
+    about: (notes about the partner's message `partner_message`, notes about
+    composing the learner's own reply). Either list may be empty. Raises
+    TranslationUnavailableError if no usable JSON comes back after retries."""
+    if not brainstorm:
+        return [], []
+
+    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
+    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    log = "\n".join(f"{'Learner' if role == 'learner' else 'Coach'}: {text}" for role, text in brainstorm)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"A {target_name} learner (native language: {native_name}) is chatting with a "
+                f"{target_name}-speaking partner. Before sending each reply they talk it through with a "
+                f"coach in a side chat. Turn that side chat into short study notes the learner can glance "
+                f"at later. Split them by topic:\n"
+                f"- about_partner_message: what the learner figured out about the PARTNER'S message - what "
+                f"it meant, words or grammar in it they asked about.\n"
+                f"- about_reply: what they worked out while COMPOSING their own reply - how to say "
+                f"something, corrections they got, grammar points, useful alternatives.\n"
+                f"Each note is one short {native_name} line; quote {target_name} words and phrases "
+                f'exactly ("te gusta", not te gusta). Keep only what is worth remembering - skip '
+                f"chit-chat, 'send it', and anything already obvious from the final reply. Usually 1-4 "
+                f"notes total; an empty list is fine. Reply with ONLY a JSON object, no markdown fences: "
+                f'{{"about_partner_message": ["..."], "about_reply": ["..."]}}'
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Partner's message: {partner_message or '(none - this was the first message)'}\n\n"
+                f"Side chat with the coach:\n{log}\n\n"
+                f"Reply the learner finally sent: {sent_reply}"
+            ),
+        },
+    ]
+
+    last_reply = ""
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            last_reply = model_chat(messages, max_tokens=_FOLD_BRAINSTORM_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
+        except ModelServerUnavailableError as exc:
+            raise TranslationUnavailableError(str(exc)) from exc
+        match = _JSON_OBJECT_RE.search(last_reply or "")
+        if not match or _looks_garbled(last_reply):
+            last_error = ValueError("no JSON object")
+            continue
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            logger.warning("fold_brainstorm attempt %d/2: unparseable reply (len=%d)", attempt + 1, len(last_reply))
+            continue
+        if not isinstance(data, dict):
+            last_error = ValueError("not an object")
+            continue
+        return _coerce_notes(data.get("about_partner_message")), _coerce_notes(data.get("about_reply"))
+    raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")

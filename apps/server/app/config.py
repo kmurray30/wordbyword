@@ -14,9 +14,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-6-luna")
 
 # Model used for the pure translation/glossing calls (translate_text,
-# gloss_reply, interpret_user_input, tag_draft - everything in
-# llm_translate.py except coach_draft_stream, which mixes conversational
-# feedback with translation and so stays on the main chat model). Defaults
+# gloss_reply, interpret_user_input, tag_draft, fold_brainstorm). Defaults
 # to OPENAI_CHAT_MODEL (no behavior change out of the box) - override with
 # a smaller/faster model id if translation latency matters more than
 # matching the chat model's quality for this app's short, simple spans.
@@ -86,9 +84,9 @@ ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingu
 # API"), while the voices GET /v1/voices lists for the account itself work.
 ELEVENLABS_COACH_VOICE_ID = os.environ.get("ELEVENLABS_COACH_VOICE_ID", "")
 
-# Model for the spoken-conversation coach (llm_translate.voice_coach_stream).
-# Latency-critical - it sits between the learner finishing a sentence and
-# the coach starting to talk - so it defaults to the lighter translation
+# Model for the Brainstorm coach (llm_translate.brainstorm_stream), typed or
+# spoken - the name predates typed brainstorming. Latency-critical - it sits
+# between the learner finishing a sentence and the coach answering - so it defaults to the lighter translation
 # model rather than the main chat model (see the reasoning-overhead notes
 # on MAX_REPLY_TOKENS above).
 OPENAI_VOICE_COACH_MODEL = os.environ.get("OPENAI_VOICE_COACH_MODEL", OPENAI_TRANSLATE_MODEL)

@@ -3,8 +3,7 @@
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 8px 12px 12px;
 }
 
 .chat-input__editor {
@@ -113,112 +112,14 @@
   cursor: default;
 }
 
-/* Lights up the instant the coach's "verdict" event comes back good
-   (clean or minor - see ChatInput.tsx's coachReady), well before the rest
-   of the check has finished streaming - a distinct color from the default
-   blue, not just a label change, so the learner sees it without having
-   to read the button text. Needs ".chat-input > button" in the selector
-   too (not just the modifier class alone) - that rule's own specificity
-   (one class + one element) would otherwise beat a bare single-class
-   selector and silently keep the background blue. */
+/* The Reply matches a draft the coach judged ready to send (or voice mode
+   is about to send it) - a distinct color from the default blue, not just
+   a label change. Needs ".chat-input > button" in the selector too - that
+   rule's own specificity would otherwise keep the background blue. */
 .chat-input > button.chat-input__send--ready {
   background: #2fae5a;
 }
 
 .chat-input > button.chat-input__send--ready:hover {
   background: #39c468;
-}
-
-/* Dictation. The mic button sits between the editor and Send; it inherits
-   ".chat-input > button"'s shape above but is deliberately neutral so the
-   (blue/green) Send button stays the one that reads as "primary". */
-.chat-input > button.chat-input__mic {
-  background: #2a2f3b;
-  padding: 10px 12px;
-  font-size: 1rem;
-  line-height: 1;
-}
-
-/* A voice chat is on (any state) - red; pulses only while actually
-   listening, so "the coach is talking" reads as steady. */
-.chat-input > button.chat-input__mic--active {
-  background: #c43d3d;
-}
-
-.chat-input > button.chat-input__mic--listening {
-  animation: chat-input-mic-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes chat-input-mic-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(196, 61, 61, 0.55);
-  }
-  50% {
-    box-shadow: 0 0 0 7px rgba(196, 61, 61, 0);
-  }
-}
-
-/* Live preview of the words still being spoken (Deepgram's "interim"
-   results) - shown over the editor's top edge rather than written into
-   the draft, which only ever gets settled "final" text. */
-.chat-input__mic-pill {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  top: -30px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: #1f2430;
-  color: #b9c0d0;
-  font-size: 0.8rem;
-  font-style: italic;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  pointer-events: none;
-  z-index: 3;
-}
-
-.chat-input__mic-pill--error {
-  color: #ff8a8a;
-  font-style: normal;
-}
-
-/* The press-and-hold bubble for choosing the Send button's mode. */
-.send-mode-picker {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  background: #1f2430;
-  color: #f2f2f2;
-  border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  padding: 10px 36px 10px 12px;
-  font-size: 0.85rem;
-}
-
-.send-mode-picker__label {
-  font-weight: 700;
-  opacity: 0.6;
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-}
-
-.send-mode-picker__close {
-  all: unset;
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  cursor: pointer;
-  opacity: 0.6;
-  font-size: 0.8rem;
-  padding: 4px;
-}
-
-.send-mode-picker__close:hover {
-  opacity: 1;
 }

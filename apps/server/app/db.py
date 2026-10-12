@@ -53,6 +53,8 @@ def add_missing_columns(target_engine) -> None:
                 conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN native_text VARCHAR(1024) DEFAULT ''")
             if "target_text" not in existing:
                 conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN target_text VARCHAR(1024) DEFAULT ''")
+            if "notes_folded" not in existing:
+                conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN notes_folded BOOLEAN DEFAULT 0")
 
         if table_exists("message_token"):
             existing_token_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(message_token)")}

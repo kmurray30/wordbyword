@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api/client";
+import type { BrainstormLogTurn, FoldBrainstormResponse } from "./api/client";
 import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
@@ -31,6 +32,9 @@ function App() {
   // effect against text that's still incomplete.
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  // Bumped by "Clear chat" to remount the composer, which drops its (now
+  // server-deleted) open brainstorm log along with everything else.
+  const [composerEpoch, setComposerEpoch] = useState(0);
   // Clear chat + the voice picker used to sit directly in the header,
   // taking up a full extra row under the title - folded into this
   // dropdown instead to keep the header to one line.
@@ -55,6 +59,30 @@ function App() {
       .catch(() => {});
   }, []);
 
+  // Notes from one fold land on whichever bubbles they're about - the
+  // learner's reply and/or the partner message before it. Matched by server
+  // id (a fresh user bubble keeps its local id as its React key).
+  const applyFold = (userMessageId: number, res: FoldBrainstormResponse | null) => {
+    setMessages((prev) =>
+      prev.map((m) => {
+        const serverId = m.serverId ?? m.id;
+        const hit = res?.messages.find((entry) => entry.message_id === serverId);
+        let next = hit ? { ...m, notes: hit.notes } : m;
+        if (serverId === userMessageId) next = { ...next, notesPending: false };
+        return next;
+      }),
+    );
+  };
+
+  // Turns a sent reply's brainstorm log into notes. If it fails, the
+  // server still has the fold marked pending, so the next page load retries.
+  const foldBrainstorm = (userMessageId: number) => {
+    api
+      .foldBrainstorm({ session_id: sessionId, user_message_id: userMessageId })
+      .then((res) => applyFold(userMessageId, res))
+      .catch(() => applyFold(userMessageId, null));
+  };
+
   useEffect(() => {
     api
       .chatHistory(sessionId)
@@ -67,6 +95,9 @@ function App() {
           fromHistory: true,
           native: m.native,
           target: m.target,
+          notes: m.notes,
+          brainstorm: m.brainstorm,
+          notesPending: m.notes_pending,
         }));
         // This fetch can resolve after the user has already sent a message
         // (a cold-started backend makes it slow enough for that to happen) -
@@ -78,6 +109,7 @@ function App() {
           const notInHistory = prev.filter((m) => !historyIds.has(m.id));
           return [...historyMessages, ...notInHistory];
         });
+        historyMessages.filter((m) => m.notesPending).forEach((m) => foldBrainstorm(m.id));
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setHistoryLoaded(true));
@@ -98,7 +130,10 @@ function App() {
     setClearing(true);
     api
       .clearChatHistory(sessionId)
-      .then(() => setMessages([]))
+      .then(() => {
+        setMessages([]);
+        setComposerEpoch((n) => n + 1);
+      })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setClearing(false));
     setMenuOpen(false);
@@ -114,11 +149,16 @@ function App() {
   };
 
   // Resolves with the partner's completed reply (voice mode speaks it), or
-  // null if the turn failed.
-  const handleSend = async (text: string): Promise<{ text: string } | null> => {
+  // null if the turn failed. `brainstorm` is the open log this reply
+  // closes - shown under the bubble right away, folded into notes once the
+  // server confirms it attached it.
+  const handleSend = async (text: string, brainstorm: BrainstormLogTurn[]): Promise<{ text: string } | null> => {
     setError(null);
     const userLocalId = nextLocalId--;
-    setMessages((prev) => [...prev, { id: userLocalId, role: "user", text }]);
+    setMessages((prev) => [
+      ...prev,
+      { id: userLocalId, role: "user", text, brainstorm, notesPending: brainstorm.length > 0 },
+    ]);
     setStreamingText("");
     let reply: { text: string } | null = null;
 
@@ -137,13 +177,23 @@ function App() {
             // `id` - that's still used as this list's React key, and
             // swapping it for the server's id here would remount that
             // bubble instead of just updating a prop.
-            ...prev.map((m) => (m.id === userLocalId ? { ...m, serverId: res.user_message_id } : m)),
+            ...prev.map((m) =>
+              m.id === userLocalId
+                ? { ...m, serverId: res.user_message_id, notesPending: res.has_brainstorm }
+                : m,
+            ),
             { id: res.message_id, role: "assistant", text: res.text, tokens: res.tokens, translation: res.translation },
           ]);
+          if (res.has_brainstorm) foldBrainstorm(res.user_message_id);
         }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      // The server never attached the log to this failed turn - the
+      // composer puts it back in the open brainstorm instead.
+      setMessages((prev) =>
+        prev.map((m) => (m.id === userLocalId ? { ...m, brainstorm: undefined, notesPending: false } : m)),
+      );
     } finally {
       setStreamingText(null);
     }
@@ -206,7 +256,7 @@ function App() {
         {error && <p className="app__error">{error}. Is the backend running and configured correctly?</p>}
       </main>
 
-      <ChatInput onSend={handleSend} sessionId={sessionId} partnerVoice={voice ?? undefined} />
+      <ChatInput key={composerEpoch} onSend={handleSend} sessionId={sessionId} partnerVoice={voice ?? undefined} />
     </div>
   );
 }

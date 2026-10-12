@@ -1,14 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.chat.prompt_builder import build_messages, build_vocab_block
 from app.config import CONTEXTUAL_VOCAB_ENABLED, NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
-from app.models import ChatMessage, MessageToken
+from app.models import BrainstormTurn, ChatMessage, MessageToken
+from app.routes.brainstorm import to_log_turn
 from app.schemas import (
+    BrainstormLogTurn,
     ChatHistoryMessage,
     ChatHistoryResponse,
     ChatTurnChunkEvent,
@@ -83,6 +85,19 @@ def _recent_history(session: Session, session_id: str) -> list[tuple[str, str]]:
     return [(row.role, row.text) for row in rows]
 
 
+def _brainstorm_cutoff(session: Session, session_id: str) -> int:
+    """The newest open brainstorm turn at the moment a reply is sent - only
+    turns up to here belong to that reply. Captured up front because the
+    stamping itself only happens once the partner's answer has finished
+    streaming, and the learner may well start brainstorming about that
+    answer before then; those newer turns must stay open."""
+    return session.scalar(
+        select(func.max(BrainstormTurn.id)).where(
+            BrainstormTurn.session_id == session_id, BrainstormTurn.user_message_id.is_(None)
+        )
+    ) or 0
+
+
 def _prepare_turn(
     session: Session, req: ChatTurnRequest
 ) -> tuple[list[dict[str, str]], "vocab_suggest.TurnSuggestions | None"]:
@@ -105,6 +120,13 @@ def get_history(session_id: str, session: Session = Depends(get_session)) -> Cha
     rows = session.scalars(
         select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.id)
     ).all()
+    logs: dict[int, list[BrainstormLogTurn]] = {}
+    for turn in session.scalars(
+        select(BrainstormTurn)
+        .where(BrainstormTurn.session_id == session_id, BrainstormTurn.user_message_id.is_not(None))
+        .order_by(BrainstormTurn.id)
+    ).all():
+        logs.setdefault(turn.user_message_id, []).append(to_log_turn(turn))
     messages = [
         ChatHistoryMessage(
             id=row.id,
@@ -124,6 +146,9 @@ def get_history(session_id: str, session: Session = Depends(get_session)) -> Cha
             ],
             native=row.native_text,
             target=row.target_text,
+            notes=[note.text for note in row.notes],
+            brainstorm=logs.get(row.id, []),
+            notes_pending=bool(logs.get(row.id)) and not row.notes_folded,
         )
         for row in rows
     ]
@@ -158,6 +183,7 @@ def clear_history(session_id: str, session: Session = Depends(get_session)) -> C
     for row in rows:
         session.delete(row)
     clear_summary(session, session_id)
+    session.execute(delete(BrainstormTurn).where(BrainstormTurn.session_id == session_id))
     session.commit()
     return ClearHistoryResponse(cleared=len(rows))
 
@@ -168,6 +194,7 @@ def _gloss_and_persist_reply(
     reply_text: str,
     user_message: ChatMessage,
     suggestions: "vocab_suggest.TurnSuggestions | None" = None,
+    brainstorm_cutoff: int = 0,
 ) -> ChatTurnResponse:
     """Shared by both /chat/turn and /chat/turn/stream - everything that
     happens once the model's full reply text is known: one LLM call glosses
@@ -200,6 +227,18 @@ def _gloss_and_persist_reply(
 
     session.add(user_message)
     session.flush()  # assigns user_message.id without committing yet - needed below
+    # Sending closes the open brainstorm log: it now belongs to this reply
+    # (and gets folded into notes by POST /brainstorm/fold) - up to the
+    # cutoff taken when the reply was sent (see _brainstorm_cutoff).
+    stamped = session.execute(
+        update(BrainstormTurn)
+        .where(
+            BrainstormTurn.session_id == session_id,
+            BrainstormTurn.user_message_id.is_(None),
+            BrainstormTurn.id <= brainstorm_cutoff,
+        )
+        .values(user_message_id=user_message.id)
+    ).rowcount
 
     tokens = analyze(reply_text)
     matched_spans = match_spans(reply_text, raw_spans)
@@ -277,12 +316,14 @@ def _gloss_and_persist_reply(
         tokens=annotations,
         translation=translation,
         user_message_id=user_message.id,
+        has_brainstorm=bool(stamped),
     )
 
 
 @router.post("/turn", response_model=ChatTurnResponse)
 def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
     messages, suggestions = _prepare_turn(session, req)
+    brainstorm_cutoff = _brainstorm_cutoff(session, req.session_id)
 
     try:
         reply_text = model_chat(messages)
@@ -301,7 +342,7 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
         raise HTTPException(status_code=502, detail="Model returned an empty reply")
 
     user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
-    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, suggestions)
+    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, suggestions, brainstorm_cutoff)
 
 
 @router.post("/turn/stream")
@@ -315,6 +356,7 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
     shape /chat/turn returns - so the frontend ends up with one consistent
     payload either way, just delivered progressively here."""
     messages, suggestions = _prepare_turn(session, req)
+    brainstorm_cutoff = _brainstorm_cutoff(session, req.session_id)
     # Not added to the session until the reply is in (see
     # _gloss_and_persist_reply) - no DB write, and so no SQLite write lock,
     # is held while the model streams.
@@ -356,7 +398,9 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
             # history either.
             yield _sse("error", ChatTurnErrorEvent(message="Model returned an empty reply").model_dump_json())
             return
-        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, suggestions)
+        result = _gloss_and_persist_reply(
+            session, req.session_id, reply_text, user_message, suggestions, brainstorm_cutoff
+        )
         yield _sse("done", result.model_dump_json())
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)

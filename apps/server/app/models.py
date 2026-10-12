@@ -63,8 +63,17 @@ class ChatMessage(Base):
     native_text: Mapped[str] = mapped_column(String(1024), default="")
     target_text: Mapped[str] = mapped_column(String(1024), default="")
 
+    # Only meaningful for role == "user": whether this message's brainstorm
+    # log (see BrainstormTurn) has been folded into MessageNotes yet. False
+    # with a non-empty log means the fold is still owed (e.g. the page was
+    # reloaded mid-fold) - /chat/history reports that as notes_pending.
+    notes_folded: Mapped[bool] = mapped_column(Boolean, default=False)
+
     tokens: Mapped[list["MessageToken"]] = relationship(
         back_populates="message", cascade="all, delete-orphan", order_by="MessageToken.position"
+    )
+    notes: Mapped[list["MessageNote"]] = relationship(
+        cascade="all, delete-orphan", order_by="MessageNote.position", foreign_keys="MessageNote.message_id"
     )
 
 
@@ -136,3 +145,36 @@ class VocabSuggestion(Base):
     # reward event) - the strongest signal the suggestion paid off.
     picked_up: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class BrainstormTurn(Base):
+    """One line of the learner's side chat with the coach (the Brainstorm
+    field - typed or spoken) about their next message. `user_message_id` is
+    NULL while the turn is part of the open, not-yet-sent log; sending a
+    reply stamps every open turn with that reply's message id."""
+
+    __tablename__ = "brainstorm_turn"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    role: Mapped[str] = mapped_column(String(16))  # "learner" | "coach"
+    text: Mapped[str] = mapped_column(Text)
+    # Coach turns only: the Spanish sentence it proposed for the Reply box.
+    draft: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    user_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True, default=None)
+
+
+class MessageNote(Base):
+    """One folded study note shown in a chat bubble's Notes dropdown -
+    summarized from the brainstorm log of `source_user_message_id`. Lands on
+    either the learner's own reply (composition notes) or the partner
+    message before it (notes about what the partner said)."""
+
+    __tablename__ = "message_note"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("chat_message.id"), index=True)
+    source_user_message_id: Mapped[int] = mapped_column(Integer, index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    text: Mapped[str] = mapped_column(Text)

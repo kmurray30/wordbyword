@@ -134,3 +134,14 @@ def test_adds_bandit_columns_to_pre_existing_word_bank_table(tmp_path):
     with engine.connect() as c:
         row = c.execute(text("SELECT suggest_alpha, suggest_beta FROM word_bank")).first()
     assert (row.suggest_alpha, row.suggest_beta) == (1.0, 1.0)
+
+
+def test_adds_notes_folded_column_to_pre_existing_chat_message_table(tmp_path):
+    db_path = tmp_path / "old.db"
+    _make_old_schema_db(db_path)
+    engine = create_engine(f"sqlite:///{db_path}")
+    add_missing_columns(engine)
+
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT notes_folded FROM chat_message")).first()
+    assert row.notes_folded == 0

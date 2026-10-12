@@ -110,6 +110,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/brainstorm/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Open */
+        get: operations["get_open_brainstorm_open_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/brainstorm/turn": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Brainstorm Turn
+         * @description SSE: "intent", "verdict", "draft" (for the Reply box, possibly ""),
+         *     "say_chunk"/"say_complete" (the coach's answer), then "saved" once both
+         *     turns are persisted. "error" means nothing usable came back. See
+         *     llm_translate.brainstorm_stream for the field semantics.
+         */
+        post: operations["brainstorm_turn_brainstorm_turn_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/brainstorm/fold": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fold
+         * @description Idempotent: a message that's already folded just returns its notes,
+         *     so the frontend can safely re-ask after a reload (notes_pending).
+         */
+        post: operations["fold_brainstorm_fold_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/translate/text": {
         parameters: {
             query?: never;
@@ -145,51 +206,6 @@ export interface paths {
          *     (and possibly nonsensical) pass.
          */
         post: operations["interpret_input_translate_interpret_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/translate/coach": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Coach Draft
-         * @description For a message the learner is still drafting (not yet sent) - unlike
-         *     /interpret above, which corrects a single message in isolation, this
-         *     pulls the session's recent conversation for context so the suggested
-         *     phrasing actually fits the tone of what's been said so far, and returns
-         *     feedback on the attempt plus phrasing options at a few formality
-         *     levels rather than a single flat correction.
-         *
-         *     Streamed as Server-Sent Events, one event per field of the SAME
-         *     underlying LLM call (app.translate.llm_translate.coach_draft_stream -
-         *     see its own docstring for the full field-by-field sequence). First, a
-         *     "verdict" event ("clean"/"minor"/"fix") - usable INSTANTLY, before
-         *     anything else has streamed, to decide whether the draft is already
-         *     good to go (see ChatInput.tsx's coachReady). Then "meaning_chunk"/
-         *     "meaning_complete" carry the restatement live, delta by delta - the
-         *     same token-by-token feel /chat/turn/stream's own reply already has.
-         *     What follows depends on the verdict: nothing further for "clean";
-         *     "suggestion_chunk"/"suggestion_complete" (one lightweight corrected-
-         *     text suggestion) for "minor"; or, for "fix", three formality-ranked
-         *     options streamed via "option_chunk"/"option_complete" events (each
-         *     carrying `index` 0/1/2 and `field` "spanish"/"english"), each option's
-         *     own English back-translation streaming in right after its own Spanish
-         *     text - not batched together at the end. An "error" event means
-         *     nothing at all was usable (not even the verdict); a stream that ends
-         *     partway through the "fix" options just means the rest weren't ready -
-         *     whatever DID arrive stays fully usable (see coach_draft_stream's own
-         *     docstring on this graceful-degradation philosophy).
-         */
-        post: operations["coach_draft_translate_coach_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -298,31 +314,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/voice/coach": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Voice Coach
-         * @description The spoken coach's turn, streamed as SSE in the same style as
-         *     /translate/coach: "intent", then "verdict" + "draft" (what to send, if
-         *     anything), then "say_chunk"/"say_complete" for the spoken reply (the
-         *     client turns each completed sentence into coach-voice TTS as it
-         *     arrives). "error" means nothing was usable. See
-         *     llm_translate.voice_coach_stream for the field semantics.
-         */
-        post: operations["voice_coach_voice_coach_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/health": {
         parameters: {
             query?: never;
@@ -369,6 +360,47 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** BrainstormLogTurn */
+        BrainstormLogTurn: {
+            /** Id */
+            id: number;
+            /** Role */
+            role: string;
+            /** Text */
+            text: string;
+            /**
+             * Draft
+             * @default
+             */
+            draft: string;
+        };
+        /** BrainstormOpenResponse */
+        BrainstormOpenResponse: {
+            /** Turns */
+            turns: components["schemas"]["BrainstormLogTurn"][];
+        };
+        /** BrainstormTurnRequest */
+        BrainstormTurnRequest: {
+            /** Session Id */
+            session_id: string;
+            /** Text */
+            text: string;
+            /**
+             * Words
+             * @default []
+             */
+            words: components["schemas"]["VoiceWord"][];
+            /**
+             * Reply Draft
+             * @default
+             */
+            reply_draft: string;
+            /**
+             * Source
+             * @default text
+             */
+            source: string;
+        };
         /** ChatHistoryMessage */
         ChatHistoryMessage: {
             /** Id */
@@ -392,6 +424,21 @@ export interface components {
              * @default
              */
             target: string;
+            /**
+             * Notes
+             * @default []
+             */
+            notes: string[];
+            /**
+             * Brainstorm
+             * @default []
+             */
+            brainstorm: components["schemas"]["BrainstormLogTurn"][];
+            /**
+             * Notes Pending
+             * @default false
+             */
+            notes_pending: boolean;
         };
         /** ChatHistoryResponse */
         ChatHistoryResponse: {
@@ -423,18 +470,16 @@ export interface components {
              * @default 0
              */
             user_message_id: number;
+            /**
+             * Has Brainstorm
+             * @default false
+             */
+            has_brainstorm: boolean;
         };
         /** ClearHistoryResponse */
         ClearHistoryResponse: {
             /** Cleared */
             cleared: number;
-        };
-        /** CoachDraftRequest */
-        CoachDraftRequest: {
-            /** Text */
-            text: string;
-            /** Session Id */
-            session_id: string;
         };
         /** DraftSpan */
         DraftSpan: {
@@ -472,6 +517,18 @@ export interface components {
             /** End */
             end: number;
         };
+        /** FoldBrainstormRequest */
+        FoldBrainstormRequest: {
+            /** Session Id */
+            session_id: string;
+            /** User Message Id */
+            user_message_id: number;
+        };
+        /** FoldBrainstormResponse */
+        FoldBrainstormResponse: {
+            /** Messages */
+            messages: components["schemas"]["MessageNotesOut"][];
+        };
         /** GlossSpansRequest */
         GlossSpansRequest: {
             /** Text */
@@ -503,6 +560,13 @@ export interface components {
         LlmHealthResponse: {
             /** Ready */
             ready: boolean;
+        };
+        /** MessageNotesOut */
+        MessageNotesOut: {
+            /** Message Id */
+            message_id: number;
+            /** Notes */
+            notes: string[];
         };
         /** RewardEventRequest */
         RewardEventRequest: {
@@ -633,30 +697,6 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
-        };
-        /** VoiceCoachRequest */
-        VoiceCoachRequest: {
-            /** Transcript */
-            transcript: string;
-            /**
-             * Words
-             * @default []
-             */
-            words: components["schemas"]["VoiceWord"][];
-            /**
-             * Coach Dialog
-             * @default []
-             */
-            coach_dialog: components["schemas"]["VoiceDialogTurn"][];
-            /** Session Id */
-            session_id: string;
-        };
-        /** VoiceDialogTurn */
-        VoiceDialogTurn: {
-            /** Role */
-            role: string;
-            /** Text */
-            text: string;
         };
         /** VoiceWord */
         VoiceWord: {
@@ -835,6 +875,103 @@ export interface operations {
             };
         };
     };
+    get_open_brainstorm_open_get: {
+        parameters: {
+            query: {
+                session_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrainstormOpenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    brainstorm_turn_brainstorm_turn_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BrainstormTurnRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fold_brainstorm_fold_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FoldBrainstormRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FoldBrainstormResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     translate_text_translate_text_post: {
         parameters: {
             query?: never;
@@ -888,39 +1025,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InterpretInputResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    coach_draft_translate_coach_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CoachDraftRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -1074,39 +1178,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["TTSRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    voice_coach_voice_coach_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VoiceCoachRequest"];
             };
         };
         responses: {
