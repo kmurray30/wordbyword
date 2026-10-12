@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { BrainstormStreamEvent, VoiceTranscriptEvent, VoiceTranscriptWord } from "../api/client";
-import type { BrainstormAsk } from "../brainstorm/useBrainstorm";
+import type { VoiceDialogTurn, VoiceTranscriptEvent, VoiceTranscriptWord } from "../api/client";
 import { AudioQueue } from "./audioQueue";
 import { playEarcon } from "./earcons";
 import { takeCompleteSentences } from "./sentences";
@@ -23,17 +22,10 @@ interface UseVoiceSessionOptions {
   // once the turn is done, or null if it failed.
   onSend: (text: string) => Promise<{ text: string } | null>;
   partnerVoice?: string;
-  // Everything spoken is brainstorming: each finished utterance becomes a
-  // Brainstorm turn (useBrainstorm's `stream`), and the coach's answer is
-  // spoken back.
-  streamBrainstorm: (ask: BrainstormAsk) => AsyncGenerator<BrainstormStreamEvent>;
-  // What's in the Reply box right now - sent to the coach as context, and
-  // what actually gets sent on a hands-free "send it" (so the learner's own
-  // edits to the coach's draft win).
-  getReplyDraft: () => string;
-  // What the learner has said so far in the current utterance (shown in
-  // the Brainstorm field; "" once it's been handed to the coach), and the
-  // coach's proposed sentence for the Reply box.
+  // Mirrors of the spoken exchange into the chat input, so voice mode IS
+  // the chat rather than a separate surface: what the learner has said so
+  // far in the current utterance (every settled segment), and the coach's
+  // current best sentence to send.
   onTranscript?: (text: string) => void;
   onDraft?: (draft: string) => void;
 }
@@ -51,17 +43,11 @@ interface UseVoiceSessionOptions {
 // ends until the last clip has finished playing, so the phone's speaker
 // never gets transcribed as the learner. Everything is driven by mic/WS/
 // audio events, not timers (iOS throttles timers with the screen off).
-export function useVoiceSession({
-  sessionId,
-  onSend,
-  partnerVoice,
-  streamBrainstorm,
-  getReplyDraft,
-  onTranscript,
-  onDraft,
-}: UseVoiceSessionOptions) {
+export function useVoiceSession({ sessionId, onSend, partnerVoice, onTranscript, onDraft }: UseVoiceSessionOptions) {
   const [state, setState] = useState<VoiceState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [coachSay, setCoachSay] = useState("");
+  const [draft, setDraft] = useState("");
   // True from the moment a "ready" verdict (with a draft) is known until
   // the send happens - lights the Send button green while the coach is
   // still saying "Sending: ...".
@@ -82,12 +68,15 @@ export function useVoiceSession({
   // its per-word confidences - becomes one coach turn at utterance_end.
   const finalsRef = useRef<string[]>([]);
   const wordsRef = useRef<VoiceTranscriptWord[]>([]);
+  // The back-and-forth with the coach about the CURRENT attempt - context
+  // for the coach, reset once something is sent.
+  const dialogRef = useRef<VoiceDialogTurn[]>([]);
   const busyRef = useRef(false);
   const runRef = useRef(0);
-  const optionsRef = useRef({ onSend, partnerVoice, streamBrainstorm, getReplyDraft, onTranscript, onDraft });
+  const optionsRef = useRef({ onSend, partnerVoice, onTranscript, onDraft });
   useEffect(() => {
-    optionsRef.current = { onSend, partnerVoice, streamBrainstorm, getReplyDraft, onTranscript, onDraft };
-  }, [onSend, partnerVoice, streamBrainstorm, getReplyDraft, onTranscript, onDraft]);
+    optionsRef.current = { onSend, partnerVoice, onTranscript, onDraft };
+  }, [onSend, partnerVoice, onTranscript, onDraft]);
 
   const micEvent = useCallback((event: VoiceTranscriptEvent) => {
     if (event.type === "final") {
@@ -99,10 +88,7 @@ export function useVoiceSession({
       const words = wordsRef.current;
       finalsRef.current = [];
       wordsRef.current = [];
-      if (transcript && !busyRef.current) {
-        optionsRef.current.onTranscript?.("");
-        void handleUtterance(transcript, words);
-      }
+      if (transcript && !busyRef.current) void handleUtterance(transcript, words);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -122,13 +108,17 @@ export function useVoiceSession({
     playEarcon(micRef.current.audioContext(), "heard");
     setState("thinking");
     setError(null);
+    setCoachSay("");
     markReady(false);
     skipSpeechRef.current = false;
     sendOverrideRef.current = null;
+    const dialogBefore = dialogRef.current;
+    dialogRef.current = [...dialogBefore, { role: "learner", text: transcript }];
 
     let intent = "attempt";
     let verdict = "revise";
     let nextDraft = "";
+    let say = "";
     let buffer = "";
     const speak = (sentence: string) => {
       if (!live() || skipSpeechRef.current) return;
@@ -139,41 +129,49 @@ export function useVoiceSession({
     };
 
     try {
-      for await (const event of optionsRef.current.streamBrainstorm({
-        text: transcript,
+      for await (const event of api.voiceCoachStream({
+        transcript,
         words,
-        reply_draft: optionsRef.current.getReplyDraft(),
-        source: "voice",
+        coach_dialog: dialogBefore,
+        session_id: sessionId,
       })) {
         if (!live()) return;
         if (event.type === "intent") intent = event.data.intent;
         else if (event.type === "verdict") verdict = event.data.verdict;
         else if (event.type === "draft") {
           nextDraft = event.data.draft;
+          setDraft(nextDraft);
           if (nextDraft) optionsRef.current.onDraft?.(nextDraft);
           if (nextDraft && (verdict === "ready" || intent === "confirm" || intent === "pick")) markReady(true);
         } else if (event.type === "say_chunk") {
           buffer += event.data.delta;
+          say += event.data.delta;
+          setCoachSay(say);
           const { sentences, rest } = takeCompleteSentences(buffer);
           buffer = rest;
           sentences.forEach(speak);
         } else if (event.type === "say_complete") {
+          say = event.data.say;
+          setCoachSay(say);
           if (buffer.trim()) speak(buffer.trim());
           buffer = "";
+        } else if (event.type === "error") {
+          throw new Error(event.data.message);
         }
       }
       if (buffer.trim()) speak(buffer.trim());
       await queue.drain();
       if (!live()) return;
 
+      dialogRef.current = [...dialogRef.current, { role: "coach", text: say }];
+
       const shouldSend = Boolean(nextDraft) && (verdict === "ready" || intent === "confirm" || intent === "pick");
       if (intent === "cancel") {
+        dialogRef.current = [];
+        setDraft("");
         optionsRef.current.onDraft?.("");
       } else if (shouldSend) {
-        // Whatever the Reply box holds now - the coach's draft, plus any
-        // edits the learner made while it was talking.
-        const text = sendOverrideRef.current ?? (optionsRef.current.getReplyDraft().trim() || nextDraft);
-        await deliver(text, live);
+        await deliver(sendOverrideRef.current ?? nextDraft, live);
       }
     } catch (err) {
       if (live()) {
@@ -194,7 +192,10 @@ export function useVoiceSession({
     playEarcon(micRef.current.audioContext(), "sent");
     const reply = await optionsRef.current.onSend(text);
     if (!live()) return;
+    dialogRef.current = [];
+    setDraft("");
     markReady(false);
+    setCoachSay("");
     if (reply?.text) {
       setState("speaking_partner");
       await queue
@@ -257,6 +258,9 @@ export function useVoiceSession({
     queueRef.current!.unlock();
     keepAwake.start();
     setError(null);
+    dialogRef.current = [];
+    setCoachSay("");
+    setDraft("");
     markReady(false);
     await micRef.current.start();
     playEarcon(micRef.current.audioContext(), "listening");
@@ -273,6 +277,7 @@ export function useVoiceSession({
     finalsRef.current = [];
     wordsRef.current = [];
     markReady(false);
+    setCoachSay("");
     setState("idle");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -290,6 +295,8 @@ export function useVoiceSession({
   return {
     state,
     error,
+    coachSay,
+    draft,
     readyToSend,
     interim: mic.interim,
     keepAwakeMode: keepAwake.mode,

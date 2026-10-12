@@ -1,9 +1,23 @@
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
+from app.db import get_session
+from app.models import ChatMessage
 from app.schemas import (
+    CoachDraftRequest,
+    CoachErrorEvent,
+    CoachMeaningChunkEvent,
+    CoachMeaningCompleteEvent,
+    CoachOptionChunkEvent,
+    CoachOptionCompleteEvent,
+    CoachSuggestionChunkEvent,
+    CoachSuggestionCompleteEvent,
+    CoachVerdictEvent,
     DraftSpan,
     DraftToken,
     GlossSpansRequest,
@@ -16,17 +30,21 @@ from app.schemas import (
     TranslateTextRequest,
     TranslateTextResponse,
 )
+from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
 from app.translate.span_matching import match_spans
 
 logger = logging.getLogger(__name__)
 
+_COACH_HISTORY_TURNS = 8
+
 router = APIRouter(prefix="/translate", tags=["translate"])
 
 
 def _build_draft_spans(text: str, raw_spans: list[dict[str, str]]) -> list[DraftSpan]:
-    """For /gloss-spans - matches raw surface/gloss/note/translation/
+    """Shared between /gloss-spans and the coach's streaming "translations"
+    phase below - matches raw surface/gloss/note/translation/
     alternate_gloss dicts back to exact offsets in `text` (app.translate.
     span_matching) and builds the DraftSpan shape the frontend's word-
     candidate popover already knows how to render, whichever endpoint the
@@ -51,6 +69,18 @@ def _build_draft_spans(text: str, raw_spans: list[dict[str, str]]) -> list[Draft
     return spans
 
 
+def _sse(event: str, data: str) -> str:
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+# See app/routes/chat.py's own _SSE_HEADERS for why: a reverse proxy
+# between the browser and this server (Railway's edge, in production) can
+# buffer a whole SSE response before forwarding it rather than relaying
+# each chunk as it's yielded - these are the standard headers that hint a
+# proxy to not do that.
+_SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+
+
 @router.post("/text", response_model=TranslateTextResponse)
 def translate_text(req: TranslateTextRequest) -> TranslateTextResponse:
     try:
@@ -73,6 +103,87 @@ def interpret_input(req: InterpretInputRequest) -> InterpretInputResponse:
         msg = f"(translation unavailable: {exc})"
         return InterpretInputResponse(native=msg, target=msg)
     return InterpretInputResponse(native=native, target=target)
+
+
+@router.post("/coach")
+def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session)) -> StreamingResponse:
+    """For a message the learner is still drafting (not yet sent) - unlike
+    /interpret above, which corrects a single message in isolation, this
+    pulls the session's recent conversation for context so the suggested
+    phrasing actually fits the tone of what's been said so far, and returns
+    feedback on the attempt plus phrasing options at a few formality
+    levels rather than a single flat correction.
+
+    Streamed as Server-Sent Events, one event per field of the SAME
+    underlying LLM call (app.translate.llm_translate.coach_draft_stream -
+    see its own docstring for the full field-by-field sequence). First, a
+    "verdict" event ("clean"/"minor"/"fix") - usable INSTANTLY, before
+    anything else has streamed, to decide whether the draft is already
+    good to go (see ChatInput.tsx's coachReady). Then "meaning_chunk"/
+    "meaning_complete" carry the restatement live, delta by delta - the
+    same token-by-token feel /chat/turn/stream's own reply already has.
+    What follows depends on the verdict: nothing further for "clean";
+    "suggestion_chunk"/"suggestion_complete" (one lightweight corrected-
+    text suggestion) for "minor"; or, for "fix", three formality-ranked
+    options streamed via "option_chunk"/"option_complete" events (each
+    carrying `index` 0/1/2 and `field` "spanish"/"english"), each option's
+    own English back-translation streaming in right after its own Spanish
+    text - not batched together at the end. An "error" event means
+    nothing at all was usable (not even the verdict); a stream that ends
+    partway through the "fix" options just means the rest weren't ready -
+    whatever DID arrive stays fully usable (see coach_draft_stream's own
+    docstring on this graceful-degradation philosophy)."""
+    history_rows = session.scalars(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == req.session_id)
+        .order_by(ChatMessage.id.desc())
+        .limit(_COACH_HISTORY_TURNS)
+    ).all()
+    history = [(row.role, row.text) for row in reversed(history_rows)]
+
+    def events():
+        try:
+            for item in iter_with_keepalive(
+                llm_translate.coach_draft_stream(req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+            ):
+                if item is None:
+                    yield KEEPALIVE_LINE
+                    continue
+                kind, *rest = item
+                if kind == "verdict":
+                    yield _sse("verdict", CoachVerdictEvent(verdict=rest[0]).model_dump_json())
+                elif kind == "meaning_chunk":
+                    yield _sse("meaning_chunk", CoachMeaningChunkEvent(delta=rest[0]).model_dump_json())
+                elif kind == "meaning_complete":
+                    yield _sse("meaning_complete", CoachMeaningCompleteEvent(meaning=rest[0]).model_dump_json())
+                elif kind == "suggestion_chunk":
+                    yield _sse("suggestion_chunk", CoachSuggestionChunkEvent(delta=rest[0]).model_dump_json())
+                elif kind == "suggestion_complete":
+                    yield _sse(
+                        "suggestion_complete", CoachSuggestionCompleteEvent(suggestion=rest[0]).model_dump_json()
+                    )
+                elif kind == "option_spanish_chunk":
+                    yield _sse(
+                        "option_chunk", CoachOptionChunkEvent(index=rest[0], field="spanish", delta=rest[1]).model_dump_json()
+                    )
+                elif kind == "option_spanish_complete":
+                    yield _sse(
+                        "option_complete",
+                        CoachOptionCompleteEvent(index=rest[0], field="spanish", text=rest[1]).model_dump_json(),
+                    )
+                elif kind == "option_english_chunk":
+                    yield _sse(
+                        "option_chunk", CoachOptionChunkEvent(index=rest[0], field="english", delta=rest[1]).model_dump_json()
+                    )
+                elif kind == "option_english_complete":
+                    yield _sse(
+                        "option_complete",
+                        CoachOptionCompleteEvent(index=rest[0], field="english", text=rest[1]).model_dump_json(),
+                    )
+        except llm_translate.TranslationUnavailableError as exc:
+            yield _sse("error", CoachErrorEvent(message=str(exc)).model_dump_json())
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/tag-input", response_model=TagInputResponse)

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { BrainstormLogTurn, DraftSpan, TokenAnnotation } from "../api/client";
+import type { DraftSpan, TokenAnnotation } from "../api/client";
 import { joinTokens } from "../lib/spacing";
 import { diffRawWords, pickDiffReference, tokenizeSegments } from "../lib/wordDiff";
 import { DockedPopover } from "./DockedPopover";
@@ -9,7 +9,6 @@ import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
-import { MessageNotes } from "./MessageNotes";
 import "./ChatMessage.css";
 
 const TRANSLATION_FAILED = "(translation failed)";
@@ -53,12 +52,6 @@ export interface DisplayMessage {
   // or whose original /translate/interpret call failed.
   native?: string;
   target?: string;
-  // Folded brainstorm notes for this bubble (see MessageNotes) and - user
-  // messages only - the raw brainstorm log that led up to it. notesPending
-  // while POST /brainstorm/fold is still turning that log into notes.
-  notes?: string[];
-  brainstorm?: BrainstormLogTurn[];
-  notesPending?: boolean;
 }
 
 // How long an agent word can go un-hovered before we count that as passive
@@ -458,7 +451,6 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
             )}
           </div>
         )}
-        <MessageNotes notes={message.notes ?? []} brainstorm={message.brainstorm ?? []} pending={!!message.notesPending} />
       </div>
     </div>
   );

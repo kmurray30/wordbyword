@@ -36,9 +36,73 @@ type SaveUserInterpretationRequest =
 type SaveUserInterpretationResponse =
   paths["/chat/message/interpretation"]["post"]["responses"][200]["content"]["application/json"];
 
+type CoachDraftRequest =
+  paths["/translate/coach"]["post"]["requestBody"]["content"]["application/json"];
+
+// /translate/coach streams Server-Sent Events rather than a single JSON
+// response (see app/routes/translate.py's coach_draft), so there's no
+// OpenAPI-generated response type for it - these mirror app/schemas.py's
+// Coach*Event classes by hand instead. See app/translate/llm_translate.py's
+// coach_draft_stream docstring for the full field-by-field sequence these
+// correspond to: a "verdict" event first (usable instantly, before
+// anything else has streamed - see ChatInput.tsx's coachReady), then the
+// "you mean"/"did you mean" restatement streaming live, then - depending
+// on the verdict - either nothing further ("clean"), one single streamed
+// suggestion ("minor"), or three formality-ranked options streamed
+// interleaved, each one's own English translation arriving right after
+// its own Spanish text ("fix"). A picked option's word-by-word gloss
+// breakdown is NOT part of this stream at all - see
+// ChatInput.tsx's handleSelectCoachOption, which fetches it lazily via the
+// existing /translate/gloss-spans instead.
+export interface CoachVerdictEvent {
+  verdict: "clean" | "minor" | "fix";
+}
+
+export interface CoachMeaningChunkEvent {
+  delta: string;
+}
+
+export interface CoachMeaningCompleteEvent {
+  meaning: string;
+}
+
+export interface CoachSuggestionChunkEvent {
+  delta: string;
+}
+
+export interface CoachSuggestionCompleteEvent {
+  suggestion: string;
+}
+
+export interface CoachOptionChunkEvent {
+  index: number;
+  field: "spanish" | "english";
+  delta: string;
+}
+
+export interface CoachOptionCompleteEvent {
+  index: number;
+  field: "spanish" | "english";
+  text: string;
+}
+
+export interface CoachErrorEvent {
+  message: string;
+}
+
+export type CoachStreamEvent =
+  | { type: "verdict"; data: CoachVerdictEvent }
+  | { type: "meaning_chunk"; data: CoachMeaningChunkEvent }
+  | { type: "meaning_complete"; data: CoachMeaningCompleteEvent }
+  | { type: "suggestion_chunk"; data: CoachSuggestionChunkEvent }
+  | { type: "suggestion_complete"; data: CoachSuggestionCompleteEvent }
+  | { type: "option_chunk"; data: CoachOptionChunkEvent }
+  | { type: "option_complete"; data: CoachOptionCompleteEvent }
+  | { type: "error"; data: CoachErrorEvent };
+
 // Reads any `event: <name>\ndata: <json>\n\n`-framed SSE response body
 // incrementally, yielding each raw (name, data-string) pair as soon as its
-// block completes - shared by every streaming endpoint below (brainstormStream,
+// block completes - shared by every streaming endpoint below (coachDraftStream,
 // chatTurnStream) so the \n\n-delimited buffering/decoding logic exists in
 // exactly one place. Each caller parses `data` into its own event union and
 // filters `event` to the names it knows about.
@@ -66,10 +130,43 @@ async function* readServerSentEvents(response: Response): AsyncGenerator<{ event
   }
 }
 
+// Reads the coaching response's SSE stream incrementally, yielding each
+// event as it completes - see CoachStreamEvent's own comment for the full
+// field-by-field sequence. `signal` lets the caller abort mid-stream (e.g.
+// the draft changed before coaching finished).
+const COACH_EVENT_NAMES = new Set([
+  "verdict",
+  "meaning_chunk",
+  "meaning_complete",
+  "suggestion_chunk",
+  "suggestion_complete",
+  "option_chunk",
+  "option_complete",
+  "error",
+]);
+
+async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal): AsyncGenerator<CoachStreamEvent> {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/translate/coach`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    const detail = response.body ? await response.text() : "";
+    throw new Error(`/translate/coach failed (${response.status}): ${detail}`);
+  }
+  for await (const { event, data } of readServerSentEvents(response)) {
+    if (COACH_EVENT_NAMES.has(event)) {
+      yield { type: event, data: JSON.parse(data) } as CoachStreamEvent;
+    }
+  }
+}
+
 // /chat/turn/stream streams Server-Sent Events rather than a single JSON
 // response (see app/routes/chat.py's take_turn_stream) - these mirror app/
 // schemas.py's ChatTurnChunkEvent/ChatTurnErrorEvent by hand, same as the
-// brainstorm types below; the "done" event reuses ChatTurnResponse unchanged,
+// coach types above; the "done" event reuses ChatTurnResponse unchanged,
 // since its shape is already exactly what /chat/turn itself returns.
 export interface ChatTurnChunkEvent {
   delta: string;
@@ -99,32 +196,23 @@ export function voiceListenUrl(): string {
   return `${BASE_URL.replace(/^http/, "ws")}/voice/listen`;
 }
 
-// POST /brainstorm/turn - one typed or spoken line in the Brainstorm field
-// and the coach's streamed answer (see app/routes/brainstorm.py and
-// app.translate.llm_translate.brainstorm_stream). SSE, so the event shapes
-// are hand-written like the others here.
-export type BrainstormTurnRequest =
-  paths["/brainstorm/turn"]["post"]["requestBody"]["content"]["application/json"];
-export type BrainstormLogTurn = components["schemas"]["BrainstormLogTurn"];
-type BrainstormOpenResponse =
-  paths["/brainstorm/open"]["get"]["responses"][200]["content"]["application/json"];
-type FoldBrainstormRequest =
-  paths["/brainstorm/fold"]["post"]["requestBody"]["content"]["application/json"];
-export type FoldBrainstormResponse =
-  paths["/brainstorm/fold"]["post"]["responses"][200]["content"]["application/json"];
-export type BrainstormStreamEvent =
+// POST /voice/coach - the spoken coach's turn (see app/routes/voice.py and
+// app.translate.llm_translate.voice_coach_stream).
+export type VoiceCoachRequest =
+  paths["/voice/coach"]["post"]["requestBody"]["content"]["application/json"];
+export type VoiceDialogTurn = VoiceCoachRequest["coach_dialog"][number];
+export type VoiceCoachStreamEvent =
   | { type: "intent"; data: { intent: string } }
   | { type: "verdict"; data: { verdict: string } }
   | { type: "draft"; data: { draft: string } }
   | { type: "say_chunk"; data: { delta: string } }
   | { type: "say_complete"; data: { say: string } }
-  | { type: "saved"; data: { learner_turn_id: number; coach_turn_id: number } }
   | { type: "error"; data: { message: string } };
 
-const BRAINSTORM_EVENT_NAMES = new Set(["intent", "verdict", "draft", "say_chunk", "say_complete", "saved", "error"]);
+const VOICE_COACH_EVENT_NAMES = new Set(["intent", "verdict", "draft", "say_chunk", "say_complete", "error"]);
 
-async function* brainstormStream(body: BrainstormTurnRequest, signal?: AbortSignal): AsyncGenerator<BrainstormStreamEvent> {
-  const response = await fetchWithColdStartRetry(`${BASE_URL}/brainstorm/turn`, {
+async function* voiceCoachStream(body: VoiceCoachRequest, signal?: AbortSignal): AsyncGenerator<VoiceCoachStreamEvent> {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/voice/coach`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -132,21 +220,13 @@ async function* brainstormStream(body: BrainstormTurnRequest, signal?: AbortSign
   });
   if (!response.ok || !response.body) {
     const detail = response.body ? await response.text() : "";
-    throw new Error(`/brainstorm/turn failed (${response.status}): ${detail}`);
+    throw new Error(`/voice/coach failed (${response.status}): ${detail}`);
   }
   for await (const { event, data } of readServerSentEvents(response)) {
-    if (BRAINSTORM_EVENT_NAMES.has(event)) {
-      yield { type: event, data: JSON.parse(data) } as BrainstormStreamEvent;
+    if (VOICE_COACH_EVENT_NAMES.has(event)) {
+      yield { type: event, data: JSON.parse(data) } as VoiceCoachStreamEvent;
     }
   }
-}
-
-async function brainstormOpen(sessionId: string): Promise<BrainstormOpenResponse> {
-  const response = await fetchWithColdStartRetry(
-    `${BASE_URL}/brainstorm/open?session_id=${encodeURIComponent(sessionId)}`,
-  );
-  if (!response.ok) throw new Error(`/brainstorm/open failed (${response.status})`);
-  return response.json() as Promise<BrainstormOpenResponse>;
 }
 
 export type ChatTurnStreamEvent =
@@ -312,10 +392,8 @@ export const api = {
     post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", body),
   saveUserInterpretation: (body: SaveUserInterpretationRequest) =>
     post<SaveUserInterpretationRequest, SaveUserInterpretationResponse>("/chat/message/interpretation", body),
-  brainstormStream,
-  brainstormOpen,
-  foldBrainstorm: (body: FoldBrainstormRequest) =>
-    post<FoldBrainstormRequest, FoldBrainstormResponse>("/brainstorm/fold", body),
+  coachDraftStream,
+  voiceCoachStream,
   chatTurnStream,
   rewardEvent: (body: RewardEventRequest) =>
     post<RewardEventRequest, RewardEventResponse>("/events/reward", body),

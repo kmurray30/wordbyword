@@ -47,10 +47,6 @@ class ChatTurnResponse(BaseModel):
     # serial LLM call to every turn's latency for no benefit, since the
     # frontend already has its own copy on the way.
     user_message_id: int = 0
-    # Whether sending this turn closed out an open brainstorm log (now
-    # attached to user_message_id) - the frontend then asks
-    # POST /brainstorm/fold to turn it into notes.
-    has_brainstorm: bool = False
 
 
 class SaveUserInterpretationRequest(BaseModel):
@@ -78,13 +74,6 @@ class ChatTurnErrorEvent(BaseModel):
     message: str
 
 
-class BrainstormLogTurn(BaseModel):
-    id: int
-    role: str  # "learner" | "coach"
-    text: str
-    draft: str = ""
-
-
 class ChatHistoryMessage(BaseModel):
     id: int
     role: str
@@ -98,12 +87,6 @@ class ChatHistoryMessage(BaseModel):
     # or if the interpret call failed when this message was first sent.
     native: str = ""
     target: str = ""
-    # Folded study notes shown in this bubble's Notes dropdown (either role).
-    notes: list[str] = []
-    # role == "user" only: the raw brainstorm log that led up to this
-    # message, and whether it still needs folding into notes.
-    brainstorm: list[BrainstormLogTurn] = []
-    notes_pending: bool = False
 
 
 class ChatHistoryResponse(BaseModel):
@@ -204,76 +187,113 @@ class GlossSpansResponse(BaseModel):
     spans: list[DraftSpan]
 
 
-# The Brainstorm field's coach (POST /brainstorm/turn, streamed as SSE - see
-# app/routes/brainstorm.py and app.translate.llm_translate.brainstorm_stream).
+class CoachDraftRequest(BaseModel):
+    text: str
+    session_id: str
+
+
+# The streamed /translate/coach endpoint sends these as SSE events
+# (`data: <json>\n\n`, with `event:` set to the matching name below) rather
+# than a single JSON response - see app.translate.llm_translate.
+# coach_draft_stream's own docstring for the full field-by-field sequence
+# each of these corresponds to. Notably: a picked option's word-by-word
+# gloss breakdown is NOT part of this event set at all (unlike the earlier
+# version of this protocol) - it's fetched lazily via the existing
+# /translate/gloss-spans (GlossSpansRequest/Response above) only once an
+# option is actually picked, same as any hand-typed draft text.
+class CoachVerdictEvent(BaseModel):
+    verdict: str  # "clean" | "minor" | "fix"
+
+
+class CoachMeaningChunkEvent(BaseModel):
+    # One newly-arrived piece of the streaming "you mean"/"did you mean"
+    # restatement - the same "zipper" delta-at-a-time feel
+    # /chat/turn/stream's own ChatTurnChunkEvent already has.
+    delta: str
+
+
+class CoachMeaningCompleteEvent(BaseModel):
+    meaning: str
+
+
+class CoachSuggestionChunkEvent(BaseModel):
+    # Only sent for a "minor" verdict - one newly-arrived piece of the
+    # single lightweight corrected-text suggestion.
+    delta: str
+
+
+class CoachSuggestionCompleteEvent(BaseModel):
+    suggestion: str
+
+
+class CoachOptionChunkEvent(BaseModel):
+    # Only sent for a "fix" verdict. `index` is 0/1/2 (neutral/casual/
+    # formal, a fixed positional mapping - see app.translate.llm_translate.
+    # _COACH_FORMALITIES, never parsed from the model). `field` is
+    # "spanish" or "english" - that option's own suggested text, or its
+    # own whole-sentence back-translation, which streams in right after
+    # its Spanish text (not batched with the other options' translations
+    # at the end, unlike the earlier version of this protocol).
+    index: int
+    field: str
+    delta: str
+
+
+class CoachOptionCompleteEvent(BaseModel):
+    index: int
+    field: str
+    text: str
+
+
+class CoachErrorEvent(BaseModel):
+    message: str
+
+
+# Voice mode's spoken coach (POST /voice/coach, streamed as SSE - see
+# app/routes/voice.py and app.translate.llm_translate.voice_coach_stream).
 class VoiceWord(BaseModel):
     word: str
     confidence: float
 
 
-class BrainstormTurnRequest(BaseModel):
-    session_id: str
-    # What the learner just typed or said into the Brainstorm field (may be
-    # mixed Spanish/English; if spoken, may contain mis-heard words).
+class VoiceDialogTurn(BaseModel):
+    role: str  # "learner" | "coach"
     text: str
-    # Per-word recognizer confidence for spoken input, so the coach can
-    # call out likely mis-hearings. Empty for typed input.
+
+
+class VoiceCoachRequest(BaseModel):
+    # What the learner just said, as transcribed (may be mixed Spanish/
+    # English, may contain mis-heard words - see `words`).
+    transcript: str
+    # Per-word recognizer confidence for `transcript`, so the coach can
+    # call out likely mis-hearings ("it sounded like X - did you mean Y?").
     words: list[VoiceWord] = []
-    # What's in the Reply box right now, so "is this right?" can be about it.
-    reply_draft: str = ""
-    source: str = "text"  # "text" | "voice"
+    # The back-and-forth with the coach about the CURRENT attempt so far
+    # (client-held, reset once something is sent).
+    coach_dialog: list[VoiceDialogTurn] = []
+    session_id: str
 
 
-class BrainstormIntentEvent(BaseModel):
+class VoiceCoachIntentEvent(BaseModel):
     # attempt | question | clarify | confirm | pick | cancel | translate_last
     intent: str
 
 
-class BrainstormVerdictEvent(BaseModel):
+class VoiceCoachVerdictEvent(BaseModel):
     verdict: str  # "ready" | "revise" | "none"
 
 
-class BrainstormDraftEvent(BaseModel):
-    # The single best Spanish sentence for the Reply box ("" if none).
+class VoiceCoachDraftEvent(BaseModel):
+    # The single best Spanish sentence to send right now ("" if none).
     draft: str
 
 
-class BrainstormSayChunkEvent(BaseModel):
+class VoiceCoachSayChunkEvent(BaseModel):
     delta: str
 
 
-class BrainstormSayCompleteEvent(BaseModel):
+class VoiceCoachSayCompleteEvent(BaseModel):
     say: str
-
-
-class BrainstormSavedEvent(BaseModel):
-    learner_turn_id: int
-    coach_turn_id: int
-
-
-class BrainstormErrorEvent(BaseModel):
-    message: str
-
-
-class BrainstormOpenResponse(BaseModel):
-    turns: list[BrainstormLogTurn]
-
-
-class FoldBrainstormRequest(BaseModel):
-    session_id: str
-    user_message_id: int
-
-
-class MessageNotesOut(BaseModel):
-    message_id: int
-    notes: list[str]
-
-
-class FoldBrainstormResponse(BaseModel):
-    # One entry per bubble that has notes from this fold (the learner's
-    # reply, and/or the partner message before it). Empty if there was
-    # nothing worth noting.
-    messages: list[MessageNotesOut]
 
 
 class RewardEventRequest(BaseModel):

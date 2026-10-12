@@ -48,7 +48,7 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPENAI_API_KEY` | *(none)* | API key for the chat backend; chat/translation calls return 503 if unset |
-| `OPENAI_CHAT_MODEL` | `gpt-6-luna` | model id sent to the API for chat replies - change this if that id isn't valid for your account |
+| `OPENAI_CHAT_MODEL` | `gpt-6-luna` | model id sent to the API for chat replies (and coaching) - change this if that id isn't valid for your account |
 | `OPENAI_TRANSLATE_MODEL` | same as `OPENAI_CHAT_MODEL` | model id used for the pure translation/glossing calls (whole-message translation, per-word hover glosses, the learner-input interpreter) - override with a smaller/faster model if translation latency matters more than matching the chat model's quality for these short, simple tasks |
 | `MAX_REPLY_TOKENS` | `300` | hard cap on tokens per generation (chat + translation calls alike) |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
@@ -60,7 +60,7 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key for voice mode's coach voice (`/tts/speak` with `role: "coach"`); the coach falls silent (text still shown) if unset |
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | ElevenLabs model - must be multilingual (the coach mixes English and Spanish in one sentence); `eleven_flash_v2_5` is the faster/cheaper option |
 | `ELEVENLABS_COACH_VOICE_ID` | *(none - auto-picked)* | which ElevenLabs voice the coach speaks with; unset, the server picks one of the account's own premade (English) voices at first use - the free plan rejects "library" voice ids via the API, so a well-known id like Rachel's does NOT work there |
-| `OPENAI_VOICE_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the Brainstorm coach (`POST /brainstorm/turn`), typed or spoken - latency-critical, so it defaults to the lighter translate model |
+| `OPENAI_VOICE_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the spoken coach (`POST /voice/coach`) - latency matters more here than for text coaching |
 | `CONTEXTUAL_VOCAB_ENABLED` | `false` | turn on contextual vocabulary suggestions (see "Contextual vocabulary suggestions" below); needs `DEEPINFRA_API_TOKEN` for the relevance half |
 | `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-4B` | DeepInfra embedding model for contextual vocab; changing it re-embeds the word bank in the background |
 | `EMBEDDING_DIMENSIONS` | `1024` | vectors are truncated to this many dimensions (Matryoshka) |
@@ -237,42 +237,14 @@ never any of Kokoro's other languages' voices. `POST /tts/speak` takes an
 optional `voice` field and rejects one that isn't valid for the given
 `language` with a 400.
 
-## Brainstorm and Reply
-
-The composer has two fields:
-
-- **Brainstorm** (top) - a side chat with a coach, kept separate from the
-  conversation with the partner. Think out loud, ask "what did they mean?",
-  "how do I say...", grammar questions - English, Spanish or a mix. Voice
-  mode's speech goes here too. "Check my reply" asks about what's in the
-  Reply box.
-- **Reply** (bottom) - only the message that actually gets sent. When the
-  coach proposes a sentence it lands here, ready to edit; older proposals
-  in the log can be tapped to put them back. Send lights up green when the
-  Reply still matches a sentence the coach judged ready.
-
-`POST /brainstorm/turn` (`app/routes/brainstorm.py`,
-`app.translate.llm_translate.brainstorm_stream`) classifies each line (an
-attempt, a question, "no I meant…", "send it", a pick, cancel, "what did
-they say?"), answers it, and maybe proposes a Reply. Both sides are saved as
-the session's open log (`brainstorm_turn`), so it survives a reload; the
-partner model never sees any of it.
-
-Sending a reply closes the open log: the server attaches it to that reply,
-then `POST /brainstorm/fold` summarizes it into short notes **split by
-topic** - what was worked out about the partner's message goes in a
-"Notes" dropdown on the partner's bubble, composition notes (corrections,
-grammar, alternatives) on the learner's own bubble, which also keeps the
-raw brainstorm log one click deeper. Lines typed while the partner's answer
-is still streaming stay open for the next reply.
-
 ## Voice mode
 
-The 🎤 button in the Brainstorm field turns brainstorming into a spoken
-conversation: what you say appears in the Brainstorm field, the coach
-answers out loud (and in the log), its proposed sentence fills the Reply
-field, and the sent message and the partner's reply are ordinary chat
-bubbles. The microphone streams to `WS /voice/listen`
+The 🎤 button next to Send turns the chat into a spoken conversation - in
+place, not on a separate screen: what you say appears in the draft box
+(with the same hoverable word glosses), the coach's spoken reply appears in
+the same docked popover the text "Check" uses, a ready verdict lights the
+Send button green, and the sent message and the partner's reply are
+ordinary chat bubbles. The microphone streams to `WS /voice/listen`
 (`app/routes/voice.py`), which proxies it to Deepgram's live transcription
 (`app/stt/deepgram_client.py`) using Nova-3's code-switching mode
 (`language=multi`) - the learner's speech is genuinely mixed Spanish and
@@ -282,18 +254,20 @@ endpointing, so there's no "stop" button to tap. The learner's own recent
 word-bank lemmas are passed as `keyterm` hints so the words they're
 studying are the ones the recognizer is biased toward.
 
-When the learner stops talking, the utterance becomes a brainstorm turn
-(`POST /brainstorm/turn` with `source: "voice"`), and the coach's answer is
-streamed back out loud - written to work as audio alone: options are read aloud
+When the learner stops talking, `POST /voice/coach`
+(`app.translate.llm_translate.voice_coach_stream`) classifies what they
+said (an attempt, a question, "no I meant…", "yes send it", a pick among
+options, cancel, "what did they say?"), decides whether there's now a
+correct Spanish sentence worth sending, and streams what the coach says
+back out loud - written to work as audio alone: options are read aloud
 with spoken labels, a word the recognizer wasn't sure about gets an "it
 sounded like X - did you mean Y?", and the key fix is explained in one
 short sentence. The coach speaks through ElevenLabs' multilingual model
 (`app/tts/elevenlabs_client.py`, `role: "coach"` on `/tts/speak`) because
 its speech is English with Spanish phrases inside it; the partner's reply
 keeps the Kokoro Spanish voice. Once a sentence is good (or the learner
-says so), whatever is in the Reply box - the coach's sentence plus any
-edits made meanwhile - goes through the normal send path and the partner's
-reply is spoken. The mic is muted while either voice is playing.
+says so), it goes through the normal send path and the partner's reply is
+spoken. The mic is muted while either voice is playing.
 
 **Screen off.** iOS treats the two ways of opening the app differently:
 a page in a plain Safari tab keeps its microphone across lock as long as
@@ -302,7 +276,7 @@ Session metadata so the lock screen shows it and its pause button ends the
 chat), while a home-screen ("Add to Home Screen") app loses the mic the
 moment the screen locks - no web page can change that. In that case voice
 mode falls back to keeping the screen on with the Screen Wake Lock API -
-the chat stays visible as usual; the Brainstorm panel suggests turning the
+the chat stays visible as usual; the coach popover suggests turning the
 brightness down. `public/voice-spike.html`
 is the standalone page used to verify this on a real phone: open it, tap
 Start, lock the phone for a minute, and its summary says whether the mic,
