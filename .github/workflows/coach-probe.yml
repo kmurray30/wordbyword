@@ -16,6 +16,7 @@ jobs:
     timeout-minutes: 5
     env:
       BACKEND_URL: https://server-production-f688.up.railway.app
+      PROBE_SESSION: da41ac62-3e60-4f0e-a8f4-396bd37e32d4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
