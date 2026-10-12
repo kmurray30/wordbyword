@@ -135,3 +135,44 @@ def test_synthesize_raises_with_detail_after_exhausting_retries():
                 asyncio.run(synthesize("hola"))
 
     assert client.post.call_count == 3
+
+
+def _status_error(code: int, text: str) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://api.deepinfra.com/v1/audio/speech")
+    return httpx.HTTPStatusError("err", request=request, response=httpx.Response(code, text=text, request=request))
+
+
+def test_synthesize_retries_a_model_busy_429_then_succeeds():
+    # Seen live: {"detail":"Model busy, retry later"} with a 429.
+    busy = Mock()
+    busy.raise_for_status = Mock(side_effect=_status_error(429, '{"detail":"Model busy, retry later"}'))
+    ok = Mock(content=b"mp3")
+    ok.raise_for_status = Mock()
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=[busy, ok])
+    context_manager = MagicMock()
+    context_manager.__aenter__ = AsyncMock(return_value=client)
+    context_manager.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.tts.deepinfra_client.DEEPINFRA_API_TOKEN", "fake-token"):
+        with patch("httpx.AsyncClient", return_value=context_manager):
+            with patch("app.tts.deepinfra_client._RETRY_AFTER_429_S", 0):
+                assert asyncio.run(synthesize("hola")) == b"mp3"
+    assert client.post.call_count == 2
+
+
+def test_synthesize_gives_up_after_three_busy_429s():
+    busy = Mock()
+    busy.raise_for_status = Mock(side_effect=_status_error(429, "Model busy"))
+    client = MagicMock()
+    client.post = AsyncMock(return_value=busy)
+    context_manager = MagicMock()
+    context_manager.__aenter__ = AsyncMock(return_value=client)
+    context_manager.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.tts.deepinfra_client.DEEPINFRA_API_TOKEN", "fake-token"):
+        with patch("httpx.AsyncClient", return_value=context_manager):
+            with patch("app.tts.deepinfra_client._RETRY_AFTER_429_S", 0):
+                with pytest.raises(TTSUnavailableError, match="429"):
+                    asyncio.run(synthesize("hola"))
+    assert client.post.call_count == 3

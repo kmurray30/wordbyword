@@ -5,6 +5,7 @@ OpenAI's API instead): DeepInfra is a hosted API, keyed by its own bearer
 token, so it gets its own client and its own failure mode.
 """
 
+import asyncio
 import logging
 
 import httpx
@@ -19,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 class TTSUnavailableError(RuntimeError):
     pass
+
+
+# Pause before retrying a 429 "Model busy" (doubled on the second retry).
+_RETRY_AFTER_429_S = 1.0
 
 
 async def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | None = None) -> bytes:
@@ -44,9 +49,11 @@ async def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | No
     # retry on a fresh connection, since a transport-level stall often
     # clears on a new attempt. 3 attempts, not 2 - a single retry wasn't
     # enough to reliably ride out DeepInfra's rougher patches in practice
-    # ("doesn't always get generated"). Not retried on HTTPStatusError,
-    # which means DeepInfra actually answered (auth/quota/bad request) - a
-    # repeat attempt wouldn't change that.
+    # ("doesn't always get generated"). Not retried on other HTTP status
+    # errors, which mean DeepInfra actually answered (auth/quota/bad
+    # request) - a repeat attempt wouldn't change that. The exception is a
+    # 429 "Model busy, retry later" (seen live): it says to retry, so it's
+    # retried after a short, growing pause.
     last_error: httpx.HTTPError | None = None
     for attempt in range(3):
         try:
@@ -55,6 +62,11 @@ async def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | No
             response.raise_for_status()
             return response.content
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and attempt < 2:
+                logger.warning("TTS attempt %d/3: DeepInfra busy (429), retrying", attempt + 1)
+                last_error = exc
+                await asyncio.sleep(_RETRY_AFTER_429_S * (attempt + 1))
+                continue
             raise TTSUnavailableError(
                 f"DeepInfra TTS request failed ({exc.response.status_code}): {exc.response.text}"
             ) from exc
