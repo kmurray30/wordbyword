@@ -823,3 +823,27 @@ def test_tutor_answer_stream_raises_on_empty_or_unreachable_model():
     with patch("app.translate.llm_translate.model_chat_stream", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError):
             list(tutor_answer_stream("q", _TUTOR_MESSAGES, 2, [], "en", "es"))
+
+
+def test_coach_draft_stream_drops_i_want_to_say_framing_from_the_meaning():
+    # Seen live: 'Did you mean "I want to say I like swimming too"?' - the
+    # restatement should be the message itself.
+    with patch(
+        "app.translate.llm_translate.model_chat_stream",
+        return_value=iter(["FIX<<<VERDICT>>>", "I want to say that I like swimming too<<<MEANING>>>"]),
+    ):
+        events = list(coach_draft_stream("I want to say I like swimming too", [], "en", "es"))
+    assert ("meaning_complete", "I like swimming too") in events
+
+
+@pytest.mark.parametrize(
+    "meaning",
+    ["I want to go to the beach", "Hi, do you like running?", "I said hello", "How are you?"],
+)
+def test_meanings_without_say_framing_are_untouched(meaning):
+    with patch(
+        "app.translate.llm_translate.model_chat_stream",
+        return_value=iter(["CLEAN<<<VERDICT>>>", f"{meaning}<<<MEANING>>>"]),
+    ):
+        events = list(coach_draft_stream("x", [], "en", "es"))
+    assert ("meaning_complete", meaning) in events

@@ -624,6 +624,31 @@ _COACH_OPT_MARKERS = (
 )
 
 
+# "I want to say X" / "How do I tell him X" -> X. The prompt asks for the
+# message itself, but the model keeps echoing the framing (seen live), and
+# the restatement is what the learner reads and hears ("Did you mean ...?").
+_SAY_FRAMING_RE = re.compile(
+    r"^\s*(?:i(?:\s+(?:want|wanna|would\s+like|need|am\s+trying)|'d\s+like|'m\s+trying)\s+to\s+"
+    r"|how\s+(?:do|can|would|should)\s+i\s+)"
+    r"(?:say|tell\s+(?:him|her|them|you|my\s+partner))\b\s*(?:that\b)?\s*[:,]?\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_say_framing(meaning: str) -> str:
+    text = meaning.strip()
+    match = _SAY_FRAMING_RE.match(text)
+    if not match:
+        return text
+    rest = text[match.end() :].strip().strip("\"'“”‘’").strip()
+    if text.lower().startswith("how"):
+        # "How do I tell him I'm tired?" - the "?" belonged to the framing.
+        rest = rest.rstrip("?").rstrip()
+    if not rest:
+        return text
+    return rest[0].upper() + rest[1:]
+
+
 def _run_sequential_fields(chunks, fields, initial_buffer: str = ""):
     """Drives sequential_stream.stream_sequential_fields and exposes its
     leftover-buffer return value to a plain caller - a generator's own
@@ -880,7 +905,7 @@ def coach_draft_stream(
             if kind == "meaning_chunk":
                 yield ("meaning_chunk", rest[0])
             elif kind == "meaning_complete":
-                yield ("meaning_complete", rest[0].strip())
+                yield ("meaning_complete", _strip_say_framing(rest[0]))
             elif kind == "suggestion_chunk":
                 yield ("suggestion_chunk", rest[0])
             elif kind == "suggestion_complete":
