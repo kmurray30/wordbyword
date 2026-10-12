@@ -18,15 +18,54 @@ from app.config import ELEVENLABS_API_KEY, ELEVENLABS_COACH_VOICE_ID, ELEVENLABS
 from app.tts.deepinfra_client import TTSUnavailableError
 
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+ELEVENLABS_VOICES_URL = "https://api.elevenlabs.io/v1/voices"
 
 logger = logging.getLogger(__name__)
+
+# The voice picked by _resolve_voice_id when no id is configured - resolved
+# once per process, not per request.
+_discovered_voice_id: str | None = None
+
+
+def pick_voice(voices: list[dict]) -> str | None:
+    """From GET /v1/voices' list, the id to use when none is configured:
+    the account's own premade voices are the ones the API allows on every
+    plan (observed live: a library voice id is a 402 on the free plan), so
+    prefer those, and among them an English one, since the coach speaks
+    mostly English. Pure, so it's testable without the API."""
+    if not voices:
+        return None
+
+    def rank(v: dict) -> tuple[int, int]:
+        labels = v.get("labels") or {}
+        premade = 0 if v.get("category") == "premade" else 1
+        english = 0 if str(labels.get("language", "")).lower().startswith("en") else 1
+        return (premade, english)
+
+    best = min(voices, key=rank)
+    return best.get("voice_id") or None
+
+
+async def _resolve_voice_id(client: httpx.AsyncClient, headers: dict[str, str]) -> str:
+    global _discovered_voice_id
+    if ELEVENLABS_COACH_VOICE_ID:
+        return ELEVENLABS_COACH_VOICE_ID
+    if _discovered_voice_id:
+        return _discovered_voice_id
+    response = await client.get(ELEVENLABS_VOICES_URL, headers=headers)
+    response.raise_for_status()
+    voice_id = pick_voice((response.json() or {}).get("voices") or [])
+    if not voice_id:
+        raise TTSUnavailableError("ElevenLabs account has no voices to use for the coach - set ELEVENLABS_COACH_VOICE_ID")
+    logger.info("Coach TTS: using ElevenLabs voice %s (auto-picked from the account's voices)", voice_id)
+    _discovered_voice_id = voice_id
+    return voice_id
 
 
 async def synthesize(text: str, voice_id: str | None = None, model_id: str | None = None) -> bytes:
     if not ELEVENLABS_API_KEY:
         raise TTSUnavailableError("ELEVENLABS_API_KEY is not configured on the server")
 
-    url = ELEVENLABS_TTS_URL.format(voice_id=voice_id or ELEVENLABS_COACH_VOICE_ID)
     payload = {
         "text": text,
         "model_id": model_id or ELEVENLABS_TTS_MODEL,
@@ -42,7 +81,10 @@ async def synthesize(text: str, voice_id: str | None = None, model_id: str | Non
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
-                response = await client.post(url, json=payload, headers=headers, params=params)
+                resolved = voice_id or await _resolve_voice_id(client, headers)
+                response = await client.post(
+                    ELEVENLABS_TTS_URL.format(voice_id=resolved), json=payload, headers=headers, params=params
+                )
             response.raise_for_status()
             return response.content
         except httpx.HTTPStatusError as exc:

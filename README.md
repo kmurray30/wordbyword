@@ -59,7 +59,7 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `DEEPGRAM_STT_MODEL` | `nova-3` | Deepgram model for transcription - must support `language=multi` (Spanish/English code-switching) |
 | `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key for voice mode's coach voice (`/tts/speak` with `role: "coach"`); the coach falls silent (text still shown) if unset |
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | ElevenLabs model - must be multilingual (the coach mixes English and Spanish in one sentence); `eleven_flash_v2_5` is the faster/cheaper option |
-| `ELEVENLABS_COACH_VOICE_ID` | `21m00Tcm4TlvDq8ikWAM` (Rachel) | which ElevenLabs voice the coach speaks with |
+| `ELEVENLABS_COACH_VOICE_ID` | *(none - auto-picked)* | which ElevenLabs voice the coach speaks with; unset, the server picks one of the account's own premade (English) voices at first use - the free plan rejects "library" voice ids via the API, so a well-known id like Rachel's does NOT work there |
 | `OPENAI_VOICE_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the spoken coach (`POST /voice/coach`) - latency matters more here than for text coaching |
 
 ### Frontend

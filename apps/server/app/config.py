@@ -79,9 +79,12 @@ DEEPGRAM_STT_MODEL = os.environ.get("DEEPGRAM_STT_MODEL", "nova-3")
 # eleven_flash_v2_5 is the lower-latency/cheaper multilingual alternative.
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2")
-# A premade ElevenLabs voice id ("Rachel") - override with any voice from
-# the account's library.
-ELEVENLABS_COACH_VOICE_ID = os.environ.get("ELEVENLABS_COACH_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+# Which ElevenLabs voice the coach speaks with. Empty (the default) means
+# "pick one of the account's own premade voices at first use" - observed
+# live: a hard-coded well-known voice id ("Rachel") is rejected on the free
+# plan as a *library* voice ("Free users cannot use library voices via the
+# API"), while the voices GET /v1/voices lists for the account itself work.
+ELEVENLABS_COACH_VOICE_ID = os.environ.get("ELEVENLABS_COACH_VOICE_ID", "")
 
 # Model for the spoken-conversation coach (llm_translate.voice_coach_stream).
 # Latency-critical - it sits between the learner finishing a sentence and
