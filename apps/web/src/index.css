@@ -14,6 +14,15 @@ body {
   height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
+  /* No double-tap zoom (pinch is blocked in main.tsx). */
+  touch-action: manipulation;
+}
+
+/* iOS zooms into any text field under 16px when it's focused. */
+input,
+textarea,
+select {
+  font-size: max(16px, 1em);
 }
 
 body {

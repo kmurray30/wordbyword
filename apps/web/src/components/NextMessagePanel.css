@@ -93,7 +93,8 @@
   background: #1c2620;
   color: #f2f2f2;
   font: inherit;
-  font-size: 0.9rem;
+  /* 16px or more: iOS zooms the page into any smaller text field. */
+  font-size: 1rem;
   line-height: 1.4;
 }
 
