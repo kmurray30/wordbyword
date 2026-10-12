@@ -486,7 +486,12 @@ export function ChatMessage({
           </div>
         )}
         {threadOpen && (threadCount > 0 || liveTutor) && (
-          <MessageThread entries={message.thread ?? []} live={liveTutor} onSayInstead={(q) => onSayInstead?.(q)} />
+          <MessageThread
+            entries={message.thread ?? []}
+            live={liveTutor}
+            title={message.role === "assistant" ? "About their message" : "How you worked this out"}
+            onSayInstead={message.role === "assistant" ? onSayInstead : undefined}
+          />
         )}
       </div>
     </div>

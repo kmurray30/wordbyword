@@ -129,36 +129,10 @@
   background: #39c468;
 }
 
-/* Dictation. The mic button sits between the editor and Send; it inherits
-   ".chat-input > button"'s shape above but is deliberately neutral so the
-   (blue/green) Send button stays the one that reads as "primary". */
-.chat-input > button.chat-input__mic {
+/* The coach check button - quiet, so Send stays the primary action. */
+.chat-input > button.chat-input__check {
   background: #2a2f3b;
   padding: 10px 12px;
-  font-size: 1rem;
-  line-height: 1;
-}
-
-/* Dictating: the mic button becomes the Done button (the Send button is
-   hidden meanwhile - Done is what submits). Pulses while listening. */
-.chat-input > button.chat-input__mic--done {
-  background: #2fae5a;
-  padding: 10px 16px;
-  font-size: 0.95rem;
-}
-
-.chat-input > button.chat-input__mic--listening {
-  animation: chat-input-mic-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes chat-input-mic-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(47, 174, 90, 0.55);
-  }
-  50% {
-    box-shadow: 0 0 0 7px rgba(47, 174, 90, 0);
-  }
 }
 
 /* A dictation problem (mic blocked, voice server unreachable), shown over
@@ -184,42 +158,4 @@
 .chat-input__mic-pill--error {
   color: #ff8a8a;
   font-style: normal;
-}
-
-/* The press-and-hold bubble for choosing the Send button's mode. */
-.send-mode-picker {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  background: #1f2430;
-  color: #f2f2f2;
-  border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  padding: 10px 36px 10px 12px;
-  font-size: 0.85rem;
-}
-
-.send-mode-picker__label {
-  font-weight: 700;
-  opacity: 0.6;
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-}
-
-.send-mode-picker__close {
-  all: unset;
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  cursor: pointer;
-  opacity: 0.6;
-  font-size: 0.8rem;
-  padding: 4px;
-}
-
-.send-mode-picker__close:hover {
-  opacity: 1;
 }

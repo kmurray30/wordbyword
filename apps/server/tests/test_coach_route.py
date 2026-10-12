@@ -220,11 +220,10 @@ def test_open_thread_is_passed_to_the_coach_and_follow_ups_continue_it():
         session,
         CoachDraftRequest(text="llamas?", session_id="s1", thread_message_id=partner_row.id),
         [("verdict", "ask")],
-        [("about", None), ("answer_complete", "Yes, llamas.")],
+        [("about", 2), ("answer_complete", "Yes, llamas.")],
     )
     assert coach.call_args.kwargs["open_thread"] == ("¿Cómo te llamas?", [("learner", "q1"), ("tutor", "a1")])
     assert tutor.call_args.args[3] == [("learner", "q1"), ("tutor", "a1")]
-    # about=None falls back to the open thread's message.
     assert parsed[1][1]["message_id"] == partner_row.id
     positions = [e.position for e in session.get(ChatMessage, partner_row.id).thread]
     assert positions == [0, 1, 2, 3]
@@ -279,3 +278,24 @@ def test_tutor_failure_is_an_error_event_and_nothing_is_persisted():
         raw = "".join(asyncio.run(_collect(response.body_iterator)))
     assert "event: error" in raw
     assert session.get(ChatMessage, partner_row.id).thread == []
+
+
+
+def test_a_question_about_the_next_message_is_not_stored_on_any_message():
+    session = _shared_session()
+    _, partner_row, _ = _seed(session)
+    parsed, coach, tutor = _run_request(
+        session,
+        CoachDraftRequest(
+            text="how do I say I'm sleepy?",
+            session_id="s1",
+            draft_thread=[{"role": "learner", "text": "I want to say I'm tired"}],
+        ),
+        [("verdict", "ask")],
+        [("about", None), ("answer_complete", "Say tengo sueño.")],
+    )
+    assert parsed[1][1]["message_id"] is None
+    assert parsed[-1][1]["entries"] == []
+    assert session.get(ChatMessage, partner_row.id).thread == []
+    assert coach.call_args.kwargs["draft_turns"] == [("learner", "I want to say I'm tired")]
+    assert tutor.call_args.kwargs["draft_turns"] == [("learner", "I want to say I'm tired")]

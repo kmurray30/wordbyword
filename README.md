@@ -199,37 +199,46 @@ never any of Kokoro's other languages' voices. `POST /tts/speak` takes an
 optional `voice` field and rejects one that isn't valid for the given
 `language` with a 400.
 
-## Voice, read-aloud, and the tutor
+## Two inputs, two kinds of log, voice, and the tutor
 
-**Voice input is dictation.** Tap 🎤 and your words stream into the chat
-box as you speak (`WS /voice/listen` in `app/routes/voice.py`, proxying
-Deepgram's live transcription in `app/stt/deepgram_client.py` with Nova-3's
-code-switching mode, `language=multi`, so mixed Spanish/English in one
-breath comes through; your recent word-bank lemmas are passed as `keyterm`
-hints). A pause does nothing. The mic button becomes **✓ Done**; tapping it
-waits for the last words and then submits the text exactly as if you had
-typed it - same check, same coach popover, same Send.
+**The message box** (bottom) holds only what you'll actually send. Send
+sends it as is. 💡 asks the coach to check it.
 
-**One submit path.** Whatever you submit goes to `POST /translate/coach`
-(`app.translate.llm_translate.coach_draft_stream`). Its first token decides
-what the text is: `CLEAN` / `MINOR` / `FIX` for something you want to say
-to your partner (the usual check), or `ASK` for a question for the tutor
-("what does llamas mean?", "break that down", "I didn't understand").
-`ASK` stops the coach right there and hands the text to
-`tutor_answer_stream`, which answers in the thread of the message it's
-about. If the routing guesses wrong, the popover has "that was a question"
-and the tutor's answer has "I meant to say that to my partner".
+**Your next message** (the green panel above it) is where you work out
+what to say. It has its own box: type or talk in any mix of English and
+Spanish ("I want to say I like swimming", "more casual", "how do I say
+tired?"). The coach answers there with **one** suggestion and its English
+meaning. **Use this** puts it in the message box and turns Send green.
+The tutor's answers about your reply appear there too. When you send, that
+whole log becomes the thread under the message you sent ("How you worked
+this out").
 
-**Threads.** The main chat shows only the phrases actually exchanged.
-Everything said *about* a message lives in a collapsible thread under it
-(💬, stored as `thread_entry` rows and returned by `/chat/history`): the
-coach checks you ran before sending a message, and your questions about a
-message with the tutor's answers. While a thread is open, a bare
-follow-up ("llamas?") continues it.
+**Their messages** each have their own thread ("About their message", 💬
+under the bubble). A question about their message, asked in the panel, is
+answered there, and the panel notes where it went. While one of those
+threads is open, follow-ups like "llamas?" continue it.
+
+Under the hood both boxes go to `POST /translate/coach`
+(`app.translate.llm_translate.coach_draft_stream`), whose first token
+routes. `CLEAN` / `MINOR` / `FIX` is something you want to say. `ASK` is a
+question, handed to `tutor_answer_stream`, which picks the message it's
+about, or "your next message". The panel's discussion so far is sent as
+context (`draft_thread`), so "more casual" adjusts the last suggestion.
+Escape hatches go both ways: "That was a question" in the panel, and "That
+was about my reply" under their message.
+
+**Voice input is dictation.** Tap 🎤 in either box and your words stream
+into that box as you speak (`WS /voice/listen` in `app/routes/voice.py`,
+proxying Deepgram's live transcription in `app/stt/deepgram_client.py` with
+Nova-3's code-switching mode, `language=multi`; your recent word-bank
+lemmas are passed as `keyterm` hints). While you talk, the button becomes
+a speech bubble with moving dots. A pause does nothing; tapping the bubble
+finishes. In the panel's box that asks the coach. In the message box the
+text stays (it's your message) and gets checked.
 
 **Read aloud** (☰ menu, on by default, per device) speaks the coach's
-result as it streams ("Did you mean …? If so, try «…», which means «…».
-Or, more casually: …"), the tutor's answers sentence by sentence, and the
+result as it streams ("Did you mean …? If so, try «…», which means
+«…»."), the tutor's answers sentence by sentence, and the
 partner's replies. The coach and tutor use ElevenLabs' multilingual model
 (`app/tts/elevenlabs_client.py`, `role: "coach"` on `/tts/speak`), because
 their speech is English with Spanish inside it; the partner keeps the
@@ -237,7 +246,7 @@ Kokoro Spanish voice. All of it goes through one queue
 (`src/voice/speech.ts`), so voices never overlap, and starting to dictate
 stops whatever is playing.
 
-Hands-free use with the screen off is not a goal of this design: Done and
+Hands-free use with the screen off is not a goal of this design: finishing and
 Send are taps. `public/voice-spike.html` remains as a standalone diagnostic
 for microphone/audio behaviour on a phone.
 

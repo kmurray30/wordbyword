@@ -18,12 +18,12 @@
 //  4. The real thing: the partner clip from stage 1 (Kokoro saying
 //     "Hola, ¿cómo estás? ¿Te gusta correr?") is decoded to a WAV and fed
 //     to Chromium as its fake microphone against the deployed frontend.
-//     Voice input is dictation: tap the mic, the words stream into the
-//     chat box (a pause submits nothing), tap Done -> the same check as
-//     typed text, read aloud by the coach (ElevenLabs) -> Send -> the
-//     partner's reply (read aloud, Kokoro). Then a typed question goes to
-//     the tutor and its answer appears (and is read aloud) in the thread
-//     under the partner's message. Screenshots at each step.
+//     Dictate into the message box (words stream in, a pause submits
+//     nothing), finish -> the coach checks it in "Your next message" and
+//     reads its one suggestion aloud (ElevenLabs) -> Use it / Send -> the
+//     partner's reply (read aloud, Kokoro). Then, in "Your next message",
+//     a question about their message is answered under it, and working
+//     out the next reply stays in the panel. Screenshots at each step.
 import { chromium } from "playwright";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -320,18 +320,22 @@ async function checkVoiceConversation(wavPath) {
   try {
     await page.goto(FRONTEND_URL);
     await page.waitForSelector(".llm-gate", { state: "hidden", timeout: 60_000 }).catch(() => {});
-    const MIC = ".chat-input__mic";
+    // Two inputs: the message box (what you'll send) and "Your next
+    // message" (where you work it out with the coach/tutor).
+    const TALK = ".chat-input .talk-button";
     const DRAFT = ".chat-input__textarea";
     const SEND = ".chat-input__send";
+    const BRAIN = ".next-message__textarea";
     const draftValue = () => page.inputValue(DRAFT).catch(() => "");
 
-    // 1. Dictation: the words stream into the box; nothing is submitted
-    //    until Done.
-    await page.waitForSelector(MIC, { timeout: 30_000 });
-    await page.click(MIC);
-    await page.waitForSelector(`${MIC}.chat-input__mic--done`, { timeout: 20_000 });
+    // 1. Dictate the message: the words stream into the message box; a
+    //    pause submits nothing; tapping the talking bubble finishes and
+    //    asks the coach to check it (the check lands in the panel).
+    await page.waitForSelector(TALK, { timeout: 30_000 });
+    await page.click(TALK);
+    await page.waitForSelector(".chat-input .talk-button--talking", { timeout: 20_000 });
     await page.screenshot({ path: "voice-e2e-1-listening.png" });
-    console.log("dictation started (mic became Done)");
+    console.log("dictation started (talking bubble shown)");
     let streamed = "";
     const heardBy = Date.now() + 60_000;
     while (Date.now() < heardBy) {
@@ -345,55 +349,61 @@ async function checkVoiceConversation(wavPath) {
       console.log(`nothing streamed into the box within 60s. fakeMic=${JSON.stringify(mic)}`);
       console.log(`audio sent: ${wsStats.frames} frames / ${wsStats.bytes} bytes, ${wsStats.loudFrames} with speech-level peaks; deepgram events: ${JSON.stringify(wsStats.events.slice(0, 10))}`);
       console.log(`console/page errors: ${JSON.stringify(errors)}`);
-      fail("dictation never reached the chat box");
+      fail("dictation never reached the message box");
     }
     console.log(`streamed into the box: ${JSON.stringify(streamed)} (${wsStats.frames} frames sent, ${wsStats.loudFrames} speech-level)`);
-    // The clip is over and Deepgram has seen the pause - still nothing may
-    // be submitted.
     await page.waitForTimeout(3000);
-    if (coachCalls.length) fail("a pause in speech submitted the text - only Done should");
+    if (coachCalls.length) fail("a pause in speech submitted the text - only finishing should");
     await page.screenshot({ path: "voice-e2e-2-dictated.png" });
 
-    // 2. Done -> the same check typed text gets, read aloud.
-    await page.click(MIC);
-    await page.waitForSelector(`${MIC}.chat-input__mic--done`, { state: "detached", timeout: 10_000 });
+    await page.click(TALK);
+    await page.waitForSelector(".chat-input .talk-button--talking", { state: "detached", timeout: 10_000 });
     const submitted = (await draftValue()).trim();
-    console.log(`Done -> box: ${JSON.stringify(submitted)}`);
+    console.log(`finished -> message box keeps: ${JSON.stringify(submitted)}`);
     if (!/gusta|correr|hola|cómo|como/i.test(submitted)) fail(`final text doesn't look like the spoken sentence: ${submitted}`);
-    await page.waitForSelector(".coach-popover .coach-popover__row", { timeout: 120_000 });
-    await page.waitForFunction(() => !document.querySelector(".chat-input__send")?.textContent.includes("Checking"), null, { timeout: 120_000 });
-    const coachText = (await page.textContent(".coach-popover")).trim();
-    console.log(`coach: ${JSON.stringify(coachText.slice(0, 300))}`);
+    await page.waitForFunction(
+      () => {
+        const card = [...document.querySelectorAll(".next-message__check")].at(-1);
+        return !!card && !!card.querySelector(".next-message__actions, .next-message__error");
+      },
+      null,
+      { timeout: 120_000 },
+    );
+    const card = (await page.locator(".next-message__check").last().textContent()).trim();
+    console.log(`coach (in Your next message): ${JSON.stringify(card.slice(0, 300))}`);
+    if (await page.locator(".next-message__check .next-message__error").count()) fail("coach check failed");
+    if ((await page.locator(".next-message__suggestion").count()) > 1) fail("the coach should give at most one suggestion");
     await page.screenshot({ path: "voice-e2e-3-checked.png" });
     await page.waitForTimeout(1500);
     const coachClips = tts.filter((t) => t.role === "coach");
     if (!coachClips.some((t) => t.status === 200)) fail("the coach's result was not read aloud");
     if (coachClips.some((t) => t.status !== 200)) fail(`coach TTS failures: ${JSON.stringify(coachClips.filter((t) => t.status !== 200))}`);
 
-    // 3. Send (picking the natural option first if the coach wants a fix).
-    if (!(await page.locator(".chat-input__send--ready").count())) {
-      await page.click(".coach-popover__option-main >> nth=0");
-      await page.waitForSelector(".chat-input__send--ready", { timeout: 10_000 });
+    // 2. Send (taking the suggestion first if the coach made one).
+    if (await page.locator(".next-message__check").last().locator(".next-message__use:not([disabled])").count()) {
+      await page.locator(".next-message__check").last().locator(".next-message__use").click();
     }
+    await page.waitForSelector(".chat-input__send--ready", { timeout: 10_000 });
     const bubblesBefore = await page.locator(".chat-message__bubble").count();
     await page.click(SEND);
     // Wait for the partner's reply to be a real, saved message (it has an
-    // actions row; the bubble shown while it streams doesn't) - a question
-    // asked before that has no message to be about yet.
+    // actions row; the bubble shown while it streams doesn't).
     await page.waitForFunction((n) => document.querySelectorAll(".chat-message--assistant .chat-message__actions").length >= 1 && document.querySelectorAll(".chat-message__bubble").length >= n + 2, bubblesBefore, { timeout: 120_000 });
     const bubbles = await page.$$eval(".chat-message__bubble", (els) => els.map((e) => e.textContent.trim()).slice(-2));
     console.log(`chat: ${JSON.stringify(bubbles)}`);
+    if (await page.locator(".next-message__log").count()) fail("Your next message should be empty after sending");
+    if (!(await page.locator(".chat-message--user .chat-message__thread-toggle").count())) fail("the sent message has no thread with its check");
     await page.waitForTimeout(2000);
     if (!tts.some((t) => t.role === "partner" && t.status === 200)) {
       if (deferredFailures.length) console.log("partner reply not read aloud - expected while the partner voice is down");
       else fail("the partner's reply was not read aloud");
     }
-    if (!(await page.locator(".chat-message--user .chat-message__thread-toggle").count())) fail("the sent message has no thread with its check");
 
-    // 4. A question goes to the tutor, answered under the partner's message.
+    // 3. A question about THEIR message, asked in Your next message, is
+    //    answered under their message (with a note in the panel).
     const coachClipsBefore = tts.filter((t) => t.role === "coach").length;
-    await page.fill(DRAFT, "what does 'correr' mean?");
-    await page.press(DRAFT, "Enter");
+    await page.fill(BRAIN, "what does 'correr' mean?");
+    await page.press(BRAIN, "Enter");
     await page.waitForSelector(".chat-message--assistant .message-thread", { timeout: 120_000 });
     await page.waitForFunction(
       () => {
@@ -406,11 +416,22 @@ async function checkVoiceConversation(wavPath) {
     );
     await page.waitForTimeout(2500);
     const thread = (await page.textContent(".chat-message--assistant .message-thread")).trim();
-    console.log(`tutor thread: ${JSON.stringify(thread.slice(0, 400))}`);
+    console.log(`their-message thread: ${JSON.stringify(thread.slice(0, 400))}`);
+    console.log(`panel note: ${JSON.stringify(await page.textContent(".next-message__note").catch(() => null))}`);
     await page.screenshot({ path: "voice-e2e-4-tutor.png" });
     if (await page.locator(".message-thread__error").count()) fail("tutor answer failed");
     if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("the question was sent to the partner instead of the tutor");
+    if (await page.inputValue(BRAIN)) fail("the talk-it-through box should clear after asking");
     if (tts.filter((t) => t.role === "coach").length <= coachClipsBefore) fail("the tutor's answer was not read aloud");
+
+    // 4. Working out the NEXT reply stays in the panel.
+    await page.locator(".chat-message--assistant .chat-message__thread-toggle").last().click();
+    await page.fill(BRAIN, "I want to say I like swimming too");
+    await page.press(BRAIN, "Enter");
+    await page.waitForFunction(() => !!document.querySelector(".next-message__check .next-message__actions, .next-message__line .next-message__error") || [...document.querySelectorAll(".next-message__line")].some((l) => /tutor/i.test(l.textContent) && l.textContent.length > 12), null, { timeout: 120_000 });
+    const panel = (await page.textContent(".next-message__log")).trim();
+    console.log(`Your next message: ${JSON.stringify(panel.slice(0, 300))}`);
+    if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("working out a reply sent something to the partner");
     console.log(`TTS: ${tts.filter((t) => t.role === "coach").length} coach/tutor clips, ${tts.filter((t) => t.role === "partner").length} partner clips, statuses ${[...new Set(tts.map((t) => t.status))].join(",")}`);
 
     // While the partner voice is down its failed /tts/speak calls show up as

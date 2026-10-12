@@ -204,6 +204,11 @@ class GlossSpansResponse(BaseModel):
     spans: list[DraftSpan]
 
 
+class DraftTurn(BaseModel):
+    role: str
+    text: str
+
+
 class CoachDraftRequest(BaseModel):
     text: str
     session_id: str
@@ -211,6 +216,10 @@ class CoachDraftRequest(BaseModel):
     # a bare follow-up ("llamas?") be read as another question about it
     # rather than a new attempt, and anchors the tutor's answer there.
     thread_message_id: int | None = None
+    # The learner's discussion about the message they're about to send (the
+    # "next message" log, not yet saved anywhere), as (role, text) turns:
+    # role "learner" | "coach". Context for both the coach and the tutor.
+    draft_thread: list[DraftTurn] = []
     # The learner's escape hatch when the automatic routing guessed wrong:
     # "attempt" = check this as something to say to the partner, "ask" =
     # this is a question for the tutor. None = let the model decide.

@@ -187,13 +187,20 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     number_to_row = {i + 1: row for i, row in enumerate(history_rows)}
     default_number = next((n for n, row in number_to_row.items() if anchor is not None and row.id == anchor.id), None)
     default_turns = thread_turns(anchor)
+    draft_turns = [(t.role, t.text) for t in req.draft_thread if t.text.strip()]
 
     def tutor_events():
         about_row = anchor
         answer = ""
         for item in iter_with_keepalive(
             llm_translate.tutor_answer_stream(
-                req.text, numbered, default_number, default_turns, NATIVE_LANGUAGE, TARGET_LANGUAGE
+                req.text,
+                numbered,
+                default_number,
+                default_turns,
+                NATIVE_LANGUAGE,
+                TARGET_LANGUAGE,
+                draft_turns=draft_turns,
             )
         ):
             if item is None:
@@ -201,7 +208,10 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
                 continue
             kind, *rest = item
             if kind == "about":
-                about_row = number_to_row.get(rest[0], anchor) if rest[0] is not None else anchor
+                # None = about the learner's NEXT message (or nothing in
+                # particular): answered in the next-message log on the
+                # client, which saves it with that message once it's sent.
+                about_row = number_to_row.get(rest[0], anchor) if rest[0] is not None else None
                 yield _sse(
                     "thread_anchor",
                     CoachThreadAnchorEvent(
@@ -243,6 +253,7 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
                     TARGET_LANGUAGE,
                     open_thread=open_thread,
                     allow_ask=req.force != "attempt",
+                    draft_turns=draft_turns,
                 )
             ):
                 if item is None:

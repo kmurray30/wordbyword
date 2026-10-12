@@ -474,45 +474,45 @@ def test_coach_draft_stream_minor_verdict_streams_a_single_suggestion():
     assert events[-1] == ("suggestion_complete", "Hola, ¿cómo estás?")
 
 
-def test_coach_draft_stream_fix_verdict_streams_three_interleaved_options():
+def test_coach_draft_stream_fix_verdict_streams_one_suggestion_then_its_translation():
     chunks = [
         "FIX<<<VERDICT>>>",
         "I want to go to the beach<<<MEANING>>>",
         "Quiero ir a la playa.<<<OPT1_ES>>>",
         "I want to go to the beach.<<<OPT1_EN>>>",
-        "Quiero ir a la playa, ¿va?<<<OPT2_ES>>>",
-        "I want to go to the beach, right?<<<OPT2_EN>>>",
-        "Desearía ir a la playa.<<<OPT3_ES>>>",
-        "I would like to go to the beach.<<<OPT3_EN>>>",
+        "Quiero ir a la playa, ¿va?<<<OPT2_ES>>>",  # ignored: one suggestion only
     ]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)) as mock_stream:
         events = list(coach_draft_stream("i want go beach", [], "en", "es"))
 
     complete_events = [e for e in events if e[0].endswith("_complete")]
-    # Interleaved per-option order: each option's own Spanish completes
-    # immediately before ITS OWN English - not all three Spanish texts
-    # followed by all three English translations batched at the end.
-    assert [e[0] for e in complete_events] == [
-        "meaning_complete",
-        "option_spanish_complete",
-        "option_english_complete",
-        "option_spanish_complete",
-        "option_english_complete",
-        "option_spanish_complete",
-        "option_english_complete",
+    assert complete_events == [
+        ("meaning_complete", "I want to go to the beach"),
+        ("option_spanish_complete", 0, "Quiero ir a la playa."),
+        ("option_english_complete", 0, "I want to go to the beach."),
     ]
-    spanish_by_index = {e[1]: e[2] for e in complete_events if e[0] == "option_spanish_complete"}
-    english_by_index = {e[1]: e[2] for e in complete_events if e[0] == "option_english_complete"}
-    assert spanish_by_index == {
-        0: "Quiero ir a la playa.",
-        1: "Quiero ir a la playa, ¿va?",
-        2: "Desearía ir a la playa.",
-    }
-    assert english_by_index == {
-        0: "I want to go to the beach.",
-        1: "I want to go to the beach, right?",
-        2: "I would like to go to the beach.",
-    }
+    system = mock_stream.call_args.args[0][0]["content"]
+    assert "ONE suggested way" in system
+    assert "<<<OPT2_ES>>>" not in system
+
+
+def test_coach_draft_stream_puts_the_next_message_discussion_in_the_prompt():
+    with patch(
+        "app.translate.llm_translate.model_chat_stream",
+        return_value=iter(["FIX<<<VERDICT>>>"]),
+    ) as mock_stream:
+        list(
+            coach_draft_stream(
+                "more casual",
+                [],
+                "en",
+                "es",
+                draft_turns=[("learner", "I want to say I like running"), ("coach", "Suggested: Me gusta correr.")],
+            )
+        )
+    system = mock_stream.call_args.args[0][0]["content"]
+    assert "Coach: Suggested: Me gusta correr." in system
+    assert "adjust an earlier suggestion" in system
 
 
 def test_coach_draft_stream_fix_option_swaps_mislabeled_spanish_and_english():
@@ -672,31 +672,23 @@ def test_coach_draft_stream_defaults_unrecognized_verdict_token_to_fix():
     assert events[0] == ("verdict", "fix")
 
 
-def test_coach_draft_stream_degrades_gracefully_when_a_later_option_never_arrives():
+def test_coach_draft_stream_degrades_gracefully_when_the_translation_never_arrives():
     # Token budget pressure (or the model just not getting that far) can
-    # leave the LAST option(s) unwritten - the earlier ones should still
-    # be fully usable rather than the whole thing failing.
+    # leave the back-translation unwritten - the suggestion itself should
+    # still be usable rather than the whole thing failing.
     chunks = [
         "FIX<<<VERDICT>>>",
         "meaning<<<MEANING>>>",
         "Quiero ir a la playa.<<<OPT1_ES>>>",
-        "I want to go to the beach.<<<OPT1_EN>>>",
-        "opt2 spanish, no marker yet",
-        # opt2's own marker never arrives, nor does its english, nor opt3 -
-        # the model just stopped generating.
+        "I want to go",
     ]
     with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
         events = list(coach_draft_stream("algo", [], "en", "es"))
 
     complete_kinds = [e[0] for e in events if e[0].endswith("_complete")]
-    assert complete_kinds == ["meaning_complete", "option_spanish_complete", "option_english_complete"]
-    # Option 1 (index 0) is fully usable; option 2 (index 1) never
-    # completed - only whatever safely streamed of its Spanish text before
-    # the model stopped, never an "_complete" for it.
-    assert not any(e[0] == "option_spanish_complete" and e[1] == 1 for e in events)
-    trailing_chunks = [e for e in events if e[0] == "option_spanish_chunk" and e[1] == 1]
-    assert trailing_chunks
-    assert "opt2 spanish, no marker yet".startswith("".join(e[2] for e in trailing_chunks))
+    assert complete_kinds == ["meaning_complete", "option_spanish_complete"]
+    trailing = [e for e in events if e[0] == "option_english_chunk"]
+    assert "I want to go".startswith("".join(e[2] for e in trailing))
 
 
 def test_coach_draft_stream_includes_recent_history_in_prompt():
@@ -767,6 +759,21 @@ _TUTOR_MESSAGES = [
     {"number": 1, "role": "user", "text": "Hola"},
     {"number": 2, "role": "assistant", "text": "¿Cómo te llamas?", "glosses": "llamas = you call yourself"},
 ]
+
+
+def test_tutor_answer_stream_gets_the_next_message_discussion():
+    with patch(
+        "app.translate.llm_translate.model_chat_stream", return_value=iter(["0<<<ABOUT>>>Use \"tengo sueño\"."])
+    ) as mock_stream:
+        events = list(
+            tutor_answer_stream(
+                "how do I say I'm sleepy?", _TUTOR_MESSAGES, 2, [], "en", "es", draft_turns=[("learner", "I want to say I'm tired")]
+            )
+        )
+    assert events[0] == ("about", None)
+    system = mock_stream.call_args.args[0][0]["content"]
+    assert "Learner: I want to say I'm tired" in system
+    assert "0 if it is about what the learner wants to say" in system
 
 
 def test_tutor_answer_stream_yields_about_then_streamed_answer():

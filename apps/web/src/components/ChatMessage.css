@@ -102,3 +102,13 @@
 .chat-message__thread-toggle--active {
   opacity: 1;
 }
+
+/* Threads under your own messages carry the green of "Your next message"
+   (that's where they came from); threads under theirs stay blue. */
+.chat-message--user .message-thread {
+  border-left-color: rgba(47, 174, 90, 0.6);
+}
+
+.chat-message--user .message-thread__title {
+  color: #7fd39b;
+}

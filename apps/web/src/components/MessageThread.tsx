@@ -32,7 +32,8 @@ function parseCheck(data: string): CheckData {
 
 function CheckEntry({ entry }: { entry: ThreadEntry }) {
   const check = parseCheck(entry.data);
-  const meaning = check.meaning?.trim();
+  const meaning = check.meaning?.trim().replace(/[.?!]+$/, "");
+  const options = check.options ?? [];
   return (
     <div className="message-thread__check">
       <div className="message-thread__line message-thread__line--learner">
@@ -49,11 +50,11 @@ function CheckEntry({ entry }: { entry: ThreadEntry }) {
         <div className="message-thread__option message-thread__option--picked">{check.suggestion}</div>
       )}
       {check.verdict === "fix" &&
-        (check.options ?? []).map((opt, i) => (
+        options.map((opt, i) => (
           <div key={i} className={`message-thread__option${check.picked === i ? " message-thread__option--picked" : ""}`}>
             <span className="message-thread__option-label">
-              {FORMALITY_LABEL[opt.formality ?? ""] ?? ""}
-              {check.picked === i ? " ✓" : ""}
+              {options.length > 1 ? (FORMALITY_LABEL[opt.formality ?? ""] ?? "") : ""}
+              {check.picked === i ? (options.length > 1 ? " ✓" : "✓ Used") : ""}
             </span>
             <span>{opt.spanish}</span>
             {opt.english && <span className="message-thread__option-english">{opt.english}</span>}
@@ -66,17 +67,23 @@ function CheckEntry({ entry }: { entry: ThreadEntry }) {
 export function MessageThread({
   entries,
   live,
+  title,
   onSayInstead,
 }: {
   entries: ThreadEntry[];
   live: LiveTutorAnswer | null;
-  // Re-routes a question the tutor answered back to the partner as an
-  // attempt (the automatic routing guessed wrong).
-  onSayInstead: (question: string) => void;
+  // What this thread is: talk about their message, or how you worked out
+  // the message you sent.
+  title: string;
+  // Re-routes a question answered here to "Your next message" (it was
+  // about the learner's own reply, not this message). Absent on threads
+  // that are already about the learner's own message.
+  onSayInstead?: (question: string) => void;
 }) {
   const lastQuestion = live ? live.question : [...entries].reverse().find((e) => e.kind === "question")?.text;
   return (
     <div className="message-thread">
+      <div className="message-thread__title">{title}</div>
       {entries.map((entry) =>
         entry.kind === "check" ? (
           <CheckEntry key={entry.id} entry={entry} />
@@ -102,9 +109,9 @@ export function MessageThread({
           </div>
         </>
       )}
-      {lastQuestion && (
+      {lastQuestion && onSayInstead && (
         <button type="button" className="message-thread__say-instead" onClick={() => onSayInstead(lastQuestion)}>
-          I meant to say that to my partner
+          That was about my reply
         </button>
       )}
     </div>

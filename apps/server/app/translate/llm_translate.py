@@ -598,6 +598,9 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
 _COACH_STREAM_MAX_TOKENS = 2400
 _COACH_HISTORY_TURNS = 8
 _COACH_FORMALITIES = ("neutral", "casual", "formal")  # fixed, positional - never parsed from the model
+# How many suggestions a FIX verdict gives. One (Kyle: "just give one
+# suggestion"); the protocol still numbers it as option 0.
+_COACH_SUGGESTIONS = 1
 _COACH_VERDICTS = {"clean", "minor", "fix"}
 
 # Written literally into the prompt and watched for verbatim in the
@@ -651,6 +654,7 @@ def coach_draft_stream(
     target_lang: str,
     open_thread: tuple[str, list[tuple[str, str]]] | None = None,
     allow_ask: bool = True,
+    draft_turns: list[tuple[str, str]] | None = None,
 ):
     """For a message the learner is still drafting (not yet sent): decides
     whether it's already good to go, restates what it thinks they meant,
@@ -748,6 +752,18 @@ def coach_draft_stream(
         if allow_ask
         else ""
     )
+    if draft_turns:
+        draft_lines = "\n".join(
+            f"{'Learner' if role == 'learner' else 'Coach'}: {text}" for role, text in draft_turns[-8:]
+        )
+        context_block += (
+            f"The learner is working out what to say NEXT, together with you; the "
+            f"discussion so far:\n{draft_lines}\n"
+            f"If their text asks to adjust an earlier suggestion (\"more casual\", "
+            f"\"shorter\", \"use querer instead\", \"and add that I'm tired\"), "
+            f"treat it as an attempt: the draft to judge is the sentence they now "
+            f"want, so give FIX with the adjusted suggestion.\n\n"
+        )
     verdict_words = "CLEAN, MINOR, FIX, or ASK" if allow_ask else "CLEAN, MINOR, or FIX"
 
     messages = [
@@ -795,33 +811,15 @@ def coach_draft_stream(
                 f"draft, fixing ONLY that small issue - plain {target_name} text, "
                 f"no quotes, no labels - then immediately write this marker: "
                 f"{_COACH_SUGGESTION_MARKER}\n\n"
-                f"IF YOU CHOSE FIX: write THREE suggested rephrasings in "
-                f"{target_name}, each one natural sentence ready to send as-is, "
-                f"each immediately followed by its OWN whole-sentence "
-                f"{native_name} back-translation (so the learner can double "
-                f"check it) - in this exact order, each piece followed "
-                f"immediately by its own marker. Each marker's name tells you "
-                f"which language that piece MUST be written in - never put "
-                f"{target_name} text after an _EN marker's content, and never "
-                f"put {native_name} text after an _ES marker's content:\n"
-                f"1. A natural/neutral way to say it, in {target_name}, then "
-                f"{_COACH_OPT_MARKERS[0]}\n"
-                f"2. That SAME suggestion's back-translation, in {native_name}, "
-                f"then {_COACH_OPT_MARKERS[1]}\n"
-                f"3. A more casual/informal way to say it, in {target_name}, "
-                f"then {_COACH_OPT_MARKERS[2]}\n"
-                f"4. That suggestion's back-translation, in {native_name}, then "
-                f"{_COACH_OPT_MARKERS[3]}\n"
-                f"5. A more formal/polite way to say it, in {target_name}, then "
-                f"{_COACH_OPT_MARKERS[4]}\n"
-                f"6. That suggestion's back-translation, in {native_name}, then "
-                f"{_COACH_OPT_MARKERS[5]}\n"
-                f"Keep each {target_name} suggestion to one natural sentence or "
-                f"short exchange - not a lecture, and don't repeat the same "
-                f"phrasing across formality levels if you can genuinely vary it. "
-                f"If a formality distinction doesn't make sense for this "
-                f"particular message, it's fine for two to be similar, but still "
-                f"write all three suggestions and all three back-translations.\n\n"
+                f"IF YOU CHOSE FIX: write ONE suggested way to say it - the most "
+                f"natural {target_name} a friendly native speaker would use here, one "
+                f"sentence or short exchange ready to send as-is - then immediately "
+                f"this marker: {_COACH_OPT_MARKERS[0]}\n"
+                f"Then that suggestion's whole-sentence {native_name} back-translation "
+                f"(so the learner can double check it), then immediately this marker: "
+                f"{_COACH_OPT_MARKERS[1]}\n"
+                f"The _ES piece MUST be {target_name} and the _EN piece MUST be "
+                f"{native_name}.\n\n"
                 f"No markdown fences, no explanation, no extra text anywhere "
                 f"beyond exactly what's specified above."
             ),
@@ -864,7 +862,7 @@ def coach_draft_stream(
         if verdict == "minor":
             fields.append(Field("suggestion", _COACH_SUGGESTION_MARKER))
         elif verdict == "fix":
-            for i in range(3):
+            for i in range(_COACH_SUGGESTIONS):
                 fields.append(Field("option_spanish", _COACH_OPT_MARKERS[2 * i], extra=(i,)))
                 fields.append(Field("option_english", _COACH_OPT_MARKERS[2 * i + 1], extra=(i,)))
 
@@ -938,6 +936,7 @@ def tutor_answer_stream(
     thread_turns: list[tuple[str, str]],
     native_lang: str,
     target_lang: str,
+    draft_turns: list[tuple[str, str]] | None = None,
 ):
     """Streams the tutor's answer to `question`.
 
@@ -967,6 +966,9 @@ def tutor_answer_stream(
     )
     thread_lines = "\n".join(
         f"{'Learner' if role == 'learner' else 'Tutor'}: {text}" for role, text in thread_turns[-10:]
+    )
+    draft_lines = "\n".join(
+        f"{'Learner' if role == 'learner' else 'Coach'}: {text}" for role, text in (draft_turns or [])[-8:]
     )
     default_hint = (
         f"If the question doesn't clearly point elsewhere, it's about message [{default_number}]."
@@ -998,9 +1000,15 @@ def tutor_answer_stream(
                 f"- Never write a field name like ABOUT or ANSWER in the answer.\n\n"
                 f"The conversation, numbered:\n{listing or '(no messages yet)'}\n\n"
                 + (f"Your side conversation about it so far:\n{thread_lines}\n\n" if thread_lines else "")
+                + (
+                    f"They are also working out what to say next; that discussion so far:\n{draft_lines}\n\n"
+                    if draft_lines
+                    else ""
+                )
                 + f"FIRST write only the number of the message the question is about "
-                f"(digits only, or 0 if it isn't about any particular message), then "
-                f"immediately this marker: {_TUTOR_ABOUT_MARKER}\n"
+                f"(digits only), or 0 if it is about what the learner wants to say "
+                f"NEXT or about nothing in particular, then immediately this marker: "
+                f"{_TUTOR_ABOUT_MARKER}\n"
                 f"{default_hint}\n"
                 f"THEN write your answer as plain text, and nothing after it."
             ),

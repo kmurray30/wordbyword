@@ -422,6 +422,11 @@ export interface components {
             session_id: string;
             /** Thread Message Id */
             thread_message_id?: number | null;
+            /**
+             * Draft Thread
+             * @default []
+             */
+            draft_thread: components["schemas"]["DraftTurn"][];
             /** Force */
             force?: string | null;
         };
@@ -460,6 +465,13 @@ export interface components {
             start: number;
             /** End */
             end: number;
+        };
+        /** DraftTurn */
+        DraftTurn: {
+            /** Role */
+            role: string;
+            /** Text */
+            text: string;
         };
         /** GlossSpansRequest */
         GlossSpansRequest: {
