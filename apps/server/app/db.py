@@ -61,6 +61,13 @@ def add_missing_columns(target_engine) -> None:
             if "literal" not in existing_token_columns:
                 conn.exec_driver_sql("ALTER TABLE message_token ADD COLUMN literal VARCHAR(512) DEFAULT ''")
 
+        if table_exists("word_bank"):
+            existing_word_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(word_bank)")}
+            if "suggest_alpha" not in existing_word_columns:
+                conn.exec_driver_sql("ALTER TABLE word_bank ADD COLUMN suggest_alpha FLOAT DEFAULT 1.0")
+            if "suggest_beta" not in existing_word_columns:
+                conn.exec_driver_sql("ALTER TABLE word_bank ADD COLUMN suggest_beta FLOAT DEFAULT 1.0")
+
 
 def get_session() -> Session:
     session = SessionLocal()

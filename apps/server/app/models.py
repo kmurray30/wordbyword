@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.config import DEFAULT_REVIEW_INTERVAL_DAYS
@@ -32,6 +32,12 @@ class WordBankEntry(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_reviewed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     review_interval_days: Mapped[float] = mapped_column(Float, default=DEFAULT_REVIEW_INTERVAL_DAYS)
+
+    # Contextual-vocab bandit (app/vocab/bandit.py): a Beta(alpha, beta)
+    # estimate of how likely this word is to actually get worked into a
+    # reply when the prompt offers it. Starts at the uniform prior.
+    suggest_alpha: Mapped[float] = mapped_column(Float, default=1.0)
+    suggest_beta: Mapped[float] = mapped_column(Float, default=1.0)
 
 
 class ChatMessage(Base):
@@ -85,3 +91,48 @@ class MessageToken(Base):
     literal: Mapped[str] = mapped_column(String(512), default="")
 
     message: Mapped[ChatMessage] = relationship(back_populates="tokens")
+
+
+class WordEmbedding(Base):
+    """Cached embedding of one word-bank lemma (app/vocab/embeddings.py).
+    Keyed by model too, so switching EMBEDDING_MODEL just re-embeds rather
+    than comparing vectors from two different spaces."""
+
+    __tablename__ = "word_embedding"
+
+    lemma: Mapped[str] = mapped_column(String(128), primary_key=True)
+    model: Mapped[str] = mapped_column(String(128), primary_key=True)
+    vector: Mapped[bytes] = mapped_column(LargeBinary)  # float32, L2-normalized
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ConversationSummary(Base):
+    """A short running summary of one session's conversation, refreshed in
+    the background after every turn (app/vocab/summary.py) so the next
+    turn's relevance query gets the conversation's gist without waiting on
+    an extra LLM call."""
+
+    __tablename__ = "conversation_summary"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VocabSuggestion(Base):
+    """One word the prompt offered on one turn, and whether the reply ended
+    up using it - the bandit's reward log, and the cooldown's memory of
+    what was offered recently."""
+
+    __tablename__ = "vocab_suggestion"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    assistant_message_id: Mapped[int] = mapped_column(Integer, index=True)
+    lemma: Mapped[str] = mapped_column(String(128), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # "relevant" | "wildcard"
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The learner later typed this word themselves (a userTypedSpanishWord
+    # reward event) - the strongest signal the suggestion paid off.
+    picked_up: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)

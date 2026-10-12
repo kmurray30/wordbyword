@@ -21,9 +21,34 @@ switch to English.
 """
 
 
-def build_messages(history: list[tuple[str, str]], user_message: str) -> list[dict[str, str]]:
+VOCAB_BLOCK_HEADER = """
+Optional vocabulary: the learner is working on the words below. Use one only if it fits \
+naturally into what you would say anyway. Never steer the conversation, change the topic, \
+or bend a sentence just to fit a word in - using none of them is completely fine, and often \
+the right call."""
+
+
+def _word_list(words: list[tuple[str, str]]) -> str:
+    return ", ".join(f"{lemma} ({translation})" if translation else lemma for lemma, translation in words)
+
+
+def build_vocab_block(relevant: list[tuple[str, str]], wildcard: list[tuple[str, str]]) -> str:
+    """The optional-vocabulary section appended to the system prompt.
+    `relevant`/`wildcard` are (lemma, english translation) pairs; empty
+    string when there's nothing to offer."""
+    if not relevant and not wildcard:
+        return ""
+    lines = [VOCAB_BLOCK_HEADER]
+    if relevant:
+        lines.append(f"- Related to the current conversation: {_word_list(relevant)}")
+    if wildcard:
+        lines.append(f"- Low priority, ignore unless it is truly effortless: {_word_list(wildcard)}")
+    return "\n".join(lines) + "\n"
+
+
+def build_messages(history: list[tuple[str, str]], user_message: str, vocab_block: str = "") -> list[dict[str, str]]:
     """`history` is a list of (role, text) pairs, oldest first."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT + vocab_block}]
     for role, text in history:
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": user_message})

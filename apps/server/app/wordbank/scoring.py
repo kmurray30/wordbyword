@@ -97,3 +97,19 @@ def apply_active_recall(word: WordState, now: datetime) -> WordState:
     )
 
 
+
+
+def review_urgency(word: WordState, now: datetime) -> float:
+    """How much reinforcing this word right now would be worth, in [0, 1].
+
+    Two things make a word worth reviewing: it's *due* (time since the last
+    review, measured in review intervals, mapped onto the same half-life
+    curve effective_familiarity uses - 0 right after a review, 0.5 one
+    interval later, approaching 1) and it's *not yet known* (1 - decayed
+    familiarity). A brand-new word (familiarity 0) is purely a function of
+    how long since it was last seen; a well-known word stays low even when
+    it's overdue."""
+    days_since = _days_between(now, word.last_reviewed_at)
+    half_life = max(word.review_interval_days, MIN_REVIEW_INTERVAL_DAYS)
+    due = 1.0 - 0.5 ** (days_since / half_life)
+    return due * (1.0 - effective_familiarity(word, now))

@@ -61,6 +61,12 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | ElevenLabs model - must be multilingual (the coach mixes English and Spanish in one sentence); `eleven_flash_v2_5` is the faster/cheaper option |
 | `ELEVENLABS_COACH_VOICE_ID` | *(none - auto-picked)* | which ElevenLabs voice the coach speaks with; unset, the server picks one of the account's own premade (English) voices at first use - the free plan rejects "library" voice ids via the API, so a well-known id like Rachel's does NOT work there |
 | `OPENAI_VOICE_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the spoken coach (`POST /voice/coach`) - latency matters more here than for text coaching |
+| `CONTEXTUAL_VOCAB_ENABLED` | `false` | turn on contextual vocabulary suggestions (see "Contextual vocabulary suggestions" below); needs `DEEPINFRA_API_TOKEN` for the relevance half |
+| `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-4B` | DeepInfra embedding model for contextual vocab; changing it re-embeds the word bank in the background |
+| `EMBEDDING_DIMENSIONS` | `1024` | vectors are truncated to this many dimensions (Matryoshka) |
+| `RELEVANT_WORDS_PER_TURN` / `WILDCARD_WORDS_PER_TURN` | `3` / `1` | max words offered per turn in each tier |
+| `RELEVANCE_MIN_Z` | `1.5` | how far above the bank's average similarity a word must be to count as relevant |
+| `SUGGEST_COOLDOWN_TURNS` | `4` | a word used or offered in this many recent turns isn't offered again yet |
 
 ### Frontend
 
@@ -119,6 +125,38 @@ See `app/wordbank/scoring.py` for the decay/boost math and
 typing) get applied. This is pure tracking, not generation steering - the
 chat model isn't nudged toward specific words; everything it says just gets
 lemmatized and recorded so familiarity stays up to date.
+
+## Contextual vocabulary suggestions
+
+Off by default (`CONTEXTUAL_VOCAB_ENABLED=true` to enable). Rather than
+nudging every token toward target words, each turn offers the model a few
+word-bank words that actually fit where the conversation is, as a strictly
+optional suggestion in the system prompt - "using none is fine" is part of
+the instruction. Code in `apps/server/app/vocab/`.
+
+- **Relevant words** - the word bank (nouns/verbs/adjectives/adverbs) is
+  embedded once per word (`lemma: translation`, cached in `word_embedding`)
+  and ranked by cosine similarity against a query built from the running
+  conversation summary plus the latest few messages. No vector DB: the bank
+  is a few thousand rows at most, so this is one numpy matrix-vector product.
+  Only words that stand out from the rest of the bank count (z-score cutoff),
+  weighted toward words due for review, with a little jitter.
+- **Wildcards** - one low-pressure word, labeled "low priority" in the prompt,
+  picked by Thompson sampling: SRS review urgency (overdue and not yet known)
+  times a per-word Beta(alpha, beta) estimate of how likely the word is to
+  actually get used when offered. Every offered word's counts update from
+  whether the reply used it; the learner later typing an offered word is a
+  bonus reward. Counts decay so old misses fade.
+- **Cooldown** - words the assistant used or was offered in the last few
+  turns are skipped, so nothing gets hammered.
+- **Running summary** - after every turn, a background thread asks the
+  translate model for an updated 1-3 sentence summary of the conversation
+  (`conversation_summary`) and embeds any new words. The next turn reads it,
+  so neither call adds latency in front of the reply. The only call on the
+  request path is embedding the query (~$0.02 per 1M tokens on DeepInfra).
+
+Everything here degrades to "no suggestions" on any failure; it never fails
+a turn. `vocab_suggestion` logs every offered word and whether it was used.
 
 ## Whole-message translation
 

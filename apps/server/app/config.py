@@ -102,3 +102,35 @@ ACTIVE_RECALL_BOOST = 0.15
 HOVER_PENALTY = 0.30
 INTERVAL_GROWTH_ON_SUCCESS = 1.6
 INTERVAL_SHRINK_ON_FAILURE = 0.5
+
+# Contextual vocabulary suggestions (app/vocab/). Each turn, the word bank
+# is ranked against where the conversation currently is (embedding
+# similarity), a bandit picks a couple of low-pressure "wildcard" review
+# words, and the system prompt offers both as strictly optional. Off by
+# default - set CONTEXTUAL_VOCAB_ENABLED=true to turn it on.
+CONTEXTUAL_VOCAB_ENABLED = os.environ.get("CONTEXTUAL_VOCAB_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+# Embeddings come from DeepInfra (same token as TTS above), via its
+# OpenAI-compatible endpoint. Qwen3-Embedding is strongly multilingual,
+# which matters here: Spanish lemmas get matched against mixed
+# Spanish/English conversation. Vectors are truncated to EMBEDDING_DIMENSIONS
+# client-side (the model is Matryoshka-trained, so a prefix is itself a
+# valid embedding). Stored vectors are keyed by model name, so changing
+# either setting just re-embeds the bank in the background.
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-4B")
+EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "1024"))
+
+# How many words the prompt offers per turn, and how picky the relevance
+# side is: a word only counts as relevant if its similarity is at least
+# RELEVANCE_MIN_Z standard deviations above the mean over the whole bank
+# (relative, so it doesn't depend on any one embedding model's raw scale).
+RELEVANT_WORDS_PER_TURN = int(os.environ.get("RELEVANT_WORDS_PER_TURN", "3"))
+WILDCARD_WORDS_PER_TURN = int(os.environ.get("WILDCARD_WORDS_PER_TURN", "1"))
+RELEVANCE_MIN_Z = float(os.environ.get("RELEVANCE_MIN_Z", "1.5"))
+# A word used by the assistant in its last N replies, or suggested in the
+# last N turns, isn't suggested again yet.
+SUGGEST_COOLDOWN_TURNS = int(os.environ.get("SUGGEST_COOLDOWN_TURNS", "4"))
+# The bandit's per-word Beta(alpha, beta) counts are multiplied by this
+# before each update, so old evidence fades and a word that didn't fit last
+# week gets another chance.
+SUGGEST_BANDIT_DECAY = 0.95

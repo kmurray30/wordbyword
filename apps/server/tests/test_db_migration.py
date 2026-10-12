@@ -117,3 +117,20 @@ def test_legacy_message_token_rows_get_empty_string_note_and_literal_not_null(tm
     assert row.note == ""
     assert row.literal == ""
     assert row.surface == "hola"
+
+
+def test_adds_bandit_columns_to_pre_existing_word_bank_table(tmp_path):
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE word_bank (id INTEGER PRIMARY KEY, lemma VARCHAR(128))")
+    conn.execute("INSERT INTO word_bank (lemma) VALUES ('casa')")
+    conn.commit()
+    conn.close()
+    engine = create_engine(f"sqlite:///{db_path}")
+
+    add_missing_columns(engine)
+    add_missing_columns(engine)  # idempotent
+
+    with engine.connect() as c:
+        row = c.execute(text("SELECT suggest_alpha, suggest_beta FROM word_bank")).first()
+    assert (row.suggest_alpha, row.suggest_beta) == (1.0, 1.0)

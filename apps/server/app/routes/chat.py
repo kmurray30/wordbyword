@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
-from app.chat.prompt_builder import build_messages
-from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
+from app.chat.prompt_builder import build_messages, build_vocab_block
+from app.config import CONTEXTUAL_VOCAB_ENABLED, NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
 from app.models import ChatMessage, MessageToken
 from app.schemas import (
@@ -24,6 +24,8 @@ from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
 from app.translate.lemmatizer import Token, analyze
 from app.translate.span_matching import MatchedSpan, match_spans
+from app.vocab import suggest as vocab_suggest
+from app.vocab.summary import clear_summary
 from app.wordbank import store
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -79,6 +81,23 @@ def _recent_history(session: Session, session_id: str) -> list[tuple[str, str]]:
     ).all()
     rows = list(reversed(rows))
     return [(row.role, row.text) for row in rows]
+
+
+def _prepare_turn(
+    session: Session, req: ChatTurnRequest
+) -> tuple[list[dict[str, str]], "vocab_suggest.TurnSuggestions | None"]:
+    """The model's input messages for this turn, plus - when contextual
+    vocab is on - the words its system prompt offered (None when off, which
+    also tells _gloss_and_persist_reply to skip the vocab bookkeeping)."""
+    history = _recent_history(session, req.session_id)
+    if not CONTEXTUAL_VOCAB_ENABLED:
+        return build_messages(history, req.message), None
+    suggestions = vocab_suggest.suggest_for_turn(session, req.session_id, history, req.message)
+    vocab_block = build_vocab_block(
+        [(w.lemma, w.translation) for w in suggestions.relevant],
+        [(w.lemma, w.translation) for w in suggestions.wildcard],
+    )
+    return build_messages(history, req.message, vocab_block), suggestions
 
 
 @router.get("/history", response_model=ChatHistoryResponse)
@@ -138,11 +157,18 @@ def clear_history(session_id: str, session: Session = Depends(get_session)) -> C
     rows = session.scalars(select(ChatMessage).where(ChatMessage.session_id == session_id)).all()
     for row in rows:
         session.delete(row)
+    clear_summary(session, session_id)
     session.commit()
     return ClearHistoryResponse(cleared=len(rows))
 
 
-def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str, user_message: ChatMessage) -> ChatTurnResponse:
+def _gloss_and_persist_reply(
+    session: Session,
+    session_id: str,
+    reply_text: str,
+    user_message: ChatMessage,
+    suggestions: "vocab_suggest.TurnSuggestions | None" = None,
+) -> ChatTurnResponse:
     """Shared by both /chat/turn and /chat/turn/stream - everything that
     happens once the model's full reply text is known: one LLM call glosses
     every word/group in the reply using its meaning IN CONTEXT, and returns
@@ -161,7 +187,12 @@ def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str,
     the reward events the frontend fires at the moment of sending, in
     particular - timed out with "database is locked" (seen live). Now the
     lock is held only for the few milliseconds between this flush and the
-    commit at the end."""
+    commit at the end.
+
+    `suggestions` (contextual vocab on) are rewarded against the reply's
+    lemmas in that same transaction, and the slower follow-up work
+    (running summary, embedding new words) is handed to a background
+    thread once it commits."""
     try:
         translation, raw_spans = llm_translate.gloss_reply(reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE)
     except llm_translate.TranslationUnavailableError:
@@ -227,8 +258,18 @@ def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str,
 
     assistant_message = ChatMessage(session_id=session_id, role="assistant", text=reply_text, tokens=token_rows)
     session.add(assistant_message)
+    if suggestions is not None:
+        session.flush()  # assigns assistant_message.id for the suggestion log
+        vocab_suggest.record_outcome(
+            session, session_id, assistant_message.id, suggestions, {tok.lemma for tok in tokens}
+        )
     session.commit()
     session.refresh(assistant_message)
+
+    if suggestions is not None:
+        vocab_suggest.schedule_post_turn(
+            sessionmaker(bind=session.get_bind()), session_id, user_message.text, reply_text
+        )
 
     return ChatTurnResponse(
         message_id=assistant_message.id,
@@ -241,8 +282,7 @@ def _gloss_and_persist_reply(session: Session, session_id: str, reply_text: str,
 
 @router.post("/turn", response_model=ChatTurnResponse)
 def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
-    history = _recent_history(session, req.session_id)
-    messages = build_messages(history, req.message)
+    messages, suggestions = _prepare_turn(session, req)
 
     try:
         reply_text = model_chat(messages)
@@ -261,7 +301,7 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
         raise HTTPException(status_code=502, detail="Model returned an empty reply")
 
     user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
-    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message)
+    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, suggestions)
 
 
 @router.post("/turn/stream")
@@ -274,8 +314,7 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
     sent as one final "done" event carrying the exact same ChatTurnResponse
     shape /chat/turn returns - so the frontend ends up with one consistent
     payload either way, just delivered progressively here."""
-    history = _recent_history(session, req.session_id)
-    messages = build_messages(history, req.message)
+    messages, suggestions = _prepare_turn(session, req)
     # Not added to the session until the reply is in (see
     # _gloss_and_persist_reply) - no DB write, and so no SQLite write lock,
     # is held while the model streams.
@@ -317,7 +356,7 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
             # history either.
             yield _sse("error", ChatTurnErrorEvent(message="Model returned an empty reply").model_dump_json())
             return
-        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message)
+        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, suggestions)
         yield _sse("done", result.model_dump_json())
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
