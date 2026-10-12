@@ -1,0 +1,25 @@
+name: Coach probe (deployed Railway app)
+
+# Prints the raw /translate/coach event stream for a few typical inputs.
+# Manual diagnostic; push-triggered for the same reason as chat-sample.yml.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/language-learning-chat-app-krn12w"]
+    paths:
+      - ".github/workflows/coach-probe.yml"
+      - ".github/scripts/coach-probe.mjs"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BACKEND_URL: https://server-production-f688.up.railway.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Probe the coach
+        run: node .github/scripts/coach-probe.mjs
