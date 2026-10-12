@@ -393,7 +393,9 @@ async function checkVoiceConversation(wavPath) {
     console.log(`chat: ${JSON.stringify(bubbles)}`);
     if (await page.locator(".next-message__log").count()) fail("Your next message should be empty after sending");
     if (!(await page.locator(".chat-message--user .chat-message__thread-toggle").count())) fail("the sent message has no thread with its check");
-    await page.waitForTimeout(2000);
+    // The partner voice (DeepInfra) can take ~10s per clip - wait for it.
+    const partnerBy = Date.now() + 90_000;
+    while (Date.now() < partnerBy && !tts.some((t) => t.role === "partner")) await page.waitForTimeout(500);
     if (!tts.some((t) => t.role === "partner" && t.status === 200)) {
       if (deferredFailures.length) console.log("partner reply not read aloud - expected while the partner voice is down");
       else fail("the partner's reply was not read aloud");
