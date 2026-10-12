@@ -700,12 +700,12 @@ export function ChatInput({
       >
         Send
       </button>
-      {/* Docked flush under the message box (see DockedPopover) rather
+      {/* Right under the message box (see DockedPopover's "inline") rather
           than floating next to whatever word triggered it - one
           predictable spot, out of the way of the text being edited. */}
       {popoverState !== "none" && (
         <DockedPopover
-          position="below"
+          position="inline"
           onMouseEnter={cancelHoverClose}
           onMouseLeave={scheduleHoverClose}
           onDismiss={() => {
@@ -737,7 +737,7 @@ export function ChatInput({
         </DockedPopover>
       )}
       {phraseSelection && (
-        <DockedPopover position="below" onDismiss={() => setPhraseSelection(null)} keepOpenFor={inEditor}>
+        <DockedPopover position="inline" onDismiss={() => setPhraseSelection(null)} keepOpenFor={inEditor}>
           <WordCandidatesPopover
             candidates={[
               phraseState === "loading"

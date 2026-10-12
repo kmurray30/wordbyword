@@ -7,6 +7,15 @@
   box-sizing: border-box;
 }
 
+/* The page itself never scrolls - only the chat inside .app does (see
+   App.css), so the header and the input bars stay on screen. */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   background: #14171f;

@@ -20,7 +20,10 @@ interface DockedPopoverProps {
   // the mirror of "right" - for a user bubble's own per-word gloss, since
   // those bubbles sit flush against the right edge of the viewport;
   // docking "right" there would run off-screen.
-  position?: "above" | "below" | "right" | "left";
+  // "inline" sits in normal flow instead of floating - for the message
+  // box, which is pinned to the bottom of the screen with no room below
+  // it: the popup opens right under the box and pushes the bars up.
+  position?: "above" | "below" | "right" | "left" | "inline";
   // For a hover-triggered popover (the word-tap one, which still opens on
   // desktop hover): docking it away from the hovered word/bubble means the
   // mouse now has to travel there, almost always leaving the original

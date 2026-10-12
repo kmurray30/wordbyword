@@ -62,7 +62,9 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 40vh;
+  /* A share of the VISIBLE screen, so with the keyboard up the chat above
+     still gets room. */
+  max-height: calc(var(--vv-height, 100dvh) * 0.3);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 8px 10px;
