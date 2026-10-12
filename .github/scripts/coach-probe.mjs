@@ -15,6 +15,9 @@ page.on("response", (r) => {
   if (/translate\/coach|tts\/speak/.test(r.url())) console.log(`response ${r.status()} ${r.url()}`);
 });
 
+const versionRes = await fetch(`${FRONTEND}/version.json`);
+console.log(`version.json: HTTP ${versionRes.status}, cache-control "${versionRes.headers.get("cache-control")}", ${await versionRes.text()}`);
+
 await page.goto(FRONTEND);
 await page.waitForSelector(".next-message__textarea", { timeout: 60000 });
 await page.waitForSelector(".llm-gate", { state: "hidden", timeout: 60000 }).catch(() => {});
