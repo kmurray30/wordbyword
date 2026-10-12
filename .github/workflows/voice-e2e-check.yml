@@ -1,0 +1,55 @@
+name: Voice E2E check (deployed Railway app)
+
+# Same reasoning as e2e-check.yml: the dev sandbox can't reach
+# *.up.railway.app at all, so a GitHub runner is the only place that can
+# exercise voice mode against the REAL providers (Deepgram, ElevenLabs,
+# OpenAI) through the deployed backend. The push trigger (scoped to this
+# workflow's own files) is how runs get kicked off until the workflow has
+# landed on the default branch and workflow_dispatch becomes available.
+on:
+  workflow_dispatch:
+    inputs:
+      backend_url:
+        description: "Backend base URL"
+        default: "https://server-production-f688.up.railway.app"
+      frontend_url:
+        description: "Frontend base URL"
+        default: "https://web-production-63d72.up.railway.app"
+  push:
+    branches: ["claude/language-learning-chat-app-krn12w"]
+    paths:
+      - ".github/workflows/voice-e2e-check.yml"
+      - ".github/scripts/voice-e2e-check.mjs"
+
+jobs:
+  voice-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BACKEND_URL: ${{ github.event.inputs.backend_url || 'https://server-production-f688.up.railway.app' }}
+      FRONTEND_URL: ${{ github.event.inputs.frontend_url || 'https://web-production-63d72.up.railway.app' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright
+        run: |
+          npm install playwright@1.48
+          npx playwright install --with-deps chromium
+
+      - name: Run voice end-to-end check
+        run: node .github/scripts/voice-e2e-check.mjs
+
+      - name: Upload screenshots and audio
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-e2e-artifacts
+          path: |
+            voice-e2e-*.png
+            voice-*.mp3
+            voice-*.wav
+          if-no-files-found: ignore
