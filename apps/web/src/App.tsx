@@ -10,6 +10,7 @@ import type { CoachEvent, NextMessageControl } from "./components/NextMessagePan
 import type { LiveCoachReply } from "./components/MessageThread";
 import { SegmentedControl } from "./components/SegmentedControl";
 import { getSessionId } from "./lib/session";
+import { useAppUpdate } from "./lib/useAppUpdate";
 import { isReadAloudOn, setReadAloud, speakPartner, subscribeReadAloud } from "./voice/speech";
 import "./App.css";
 
@@ -68,6 +69,15 @@ function App() {
   // suggestion only while the box still holds it).
   const [messageText, setMessageText] = useState("");
   const threadAnchorRef = useRef<HTMLDivElement | null>(null);
+  // A newer build is deployed: update straight away unless that would lose
+  // something typed or still arriving.
+  const { updateReady, reload } = useAppUpdate(
+    () =>
+      !messageText.trim() &&
+      streamingText === null &&
+      liveCoach === null &&
+      !(nextMessageRef.current?.busy() ?? false),
+  );
   const [voice, setVoice] = useState<string | null>(() => {
     try {
       return localStorage.getItem(VOICE_STORAGE_KEY);
@@ -295,6 +305,11 @@ function App() {
         </div>
       </header>
 
+      {updateReady && (
+        <button type="button" className="app__update" onClick={reload}>
+          A new version of the app is ready - tap to update
+        </button>
+      )}
       <main className="app__chat">
         {!historyLoaded && <p className="app__empty">Loading…</p>}
         {historyLoaded && messages.length === 0 && (

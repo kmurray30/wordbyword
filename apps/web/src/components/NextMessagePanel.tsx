@@ -35,13 +35,63 @@ export interface NextMessageControl {
   // On send: this conversation, as the sent message's thread; cleared.
   takeThread: () => ThreadEntryIn[];
   clear: () => void;
+  // Something typed in the panel's own box, or a reply still coming in -
+  // i.e. reloading the app right now would lose something.
+  busy: () => boolean;
 }
 
 let nextId = 1;
 const storageKey = (sessionId: string) => `wordbyword.nextMessage.v2.${sessionId}`;
 
+// The earlier version of this panel kept its log under another key, as
+// checks (meaning + one suggestion) and questions/answers. Carry it over
+// once, as plain turns, so updating the app doesn't lose the conversation.
+type OldEntry =
+  | { kind: "check"; text: string; meaning?: string; suggestion?: string; english?: string; verdict?: string | null; status?: string }
+  | { kind: "question"; text: string }
+  | { kind: "answer"; text: string; status?: string }
+  | { kind: "note"; text: string };
+
+function migrateOldLog(sessionId: string): DraftTurn[] | null {
+  const oldKey = `wordbyword.nextMessage.${sessionId}`;
+  const raw = localStorage.getItem(oldKey);
+  if (raw === null) return null;
+  localStorage.removeItem(oldKey);
+  const parsed = JSON.parse(raw) as OldEntry[];
+  if (!Array.isArray(parsed)) return null;
+  const turns: DraftTurn[] = [];
+  let id = 1;
+  for (const e of parsed) {
+    if (!e?.text?.trim()) continue;
+    if (e.kind === "check") {
+      turns.push({ id: id++, role: "you", text: e.text, source: "panel" });
+      if (e.status !== "done") continue;
+      const parts = [
+        e.meaning?.trim() ? `You mean: ${e.meaning.trim()}` : "",
+        e.suggestion?.trim()
+          ? `[[${e.suggestion.trim()} | ${e.english?.trim() ?? ""}]]`
+          : e.verdict === "clean"
+            ? "That works as it is."
+            : "",
+      ].filter(Boolean);
+      if (parts.length) turns.push({ id: id++, role: "coach", text: parts.join(" "), status: "done" });
+    } else if (e.kind === "question") {
+      turns.push({ id: id++, role: "you", text: e.text, source: "panel" });
+    } else if (e.kind === "answer" && e.status === "done") {
+      turns.push({ id: id++, role: "coach", text: e.text, status: "done" });
+    }
+  }
+  return turns;
+}
+
 function loadTurns(sessionId: string): DraftTurn[] {
   try {
+    if (localStorage.getItem(storageKey(sessionId)) === null) {
+      const migrated = migrateOldLog(sessionId);
+      if (migrated) {
+        localStorage.setItem(storageKey(sessionId), JSON.stringify(migrated));
+      }
+    }
     const raw = localStorage.getItem(storageKey(sessionId));
     const parsed = raw ? (JSON.parse(raw) as DraftTurn[]) : [];
     const turns = Array.isArray(parsed) ? parsed.filter((t) => t.role === "you" || t.status === "done") : [];
@@ -233,6 +283,8 @@ export function NextMessagePanel({
         abortRef.current?.abort();
         update(() => []);
       },
+      busy: () =>
+        value.trim() !== "" || dictation.active || turnsRef.current.some((t) => t.role === "coach" && t.status === "streaming"),
     };
   });
 
