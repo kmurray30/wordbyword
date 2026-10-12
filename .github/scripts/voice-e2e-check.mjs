@@ -22,7 +22,7 @@
 //     sent and the partner replies (Kokoro audio). Transcript, coach text
 //     and every TTS request/response are printed; screenshots at each step.
 import { chromium } from "playwright";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const BACKEND_URL = process.env.BACKEND_URL;
@@ -210,20 +210,75 @@ async function decodeToWav(browser, mp3) {
   return path;
 }
 
+function wavStats(path) {
+  const buf = readFileSync(path);
+  const rate = buf.readUInt32LE(24);
+  const n = (buf.length - 44) / 2;
+  let sum = 0, peak = 0;
+  for (let i = 0; i < n; i++) {
+    const s = buf.readInt16LE(44 + i * 2) / 32768;
+    sum += s * s;
+    if (Math.abs(s) > peak) peak = Math.abs(s);
+  }
+  return { seconds: (n / rate).toFixed(2), rms: Math.sqrt(sum / n).toFixed(4), peak: peak.toFixed(3) };
+}
+
 async function checkVoiceConversation(wavPath) {
-  console.log("\n=== Stage 4: full voice conversation on the deployed site (fake mic = Kokoro clip) ===");
-  const browser = await chromium.launch({
-    args: [
-      "--use-fake-ui-for-media-stream",
-      "--use-fake-device-for-media-stream",
-      `--use-file-for-fake-audio-capture=${wavPath}%noloop`,
-      "--autoplay-policy=no-user-gesture-required",
-    ],
-  });
+  console.log("\n=== Stage 4: full voice conversation on the deployed site (mic = Kokoro clip) ===");
+  console.log(`mic clip: ${JSON.stringify(wavStats(wavPath))}`);
+  const browser = await chromium.launch({ args: ["--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required"] });
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const errors = [];
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
   page.on("pageerror", (e) => errors.push(String(e)));
+
+  // The "microphone" is generated in-page: getUserMedia is replaced with a
+  // MediaStream from a MediaStreamAudioDestinationNode playing the decoded
+  // clip. Deterministic and independent of Chromium's fake-capture-file
+  // flag, whose format requirements are strict and undocumented (a first
+  // attempt with it produced silence at Deepgram).
+  await page.addInitScript(({ wavBase64 }) => {
+    const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      if (!constraints || !constraints.audio) return original(constraints);
+      const ctx = new AudioContext({ sampleRate: 48000 });
+      await ctx.resume();
+      const bytes = Uint8Array.from(atob(wavBase64), (c) => c.charCodeAt(0));
+      const buffer = await ctx.decodeAudioData(bytes.buffer);
+      const dest = ctx.createMediaStreamDestination();
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(dest);
+      src.start(ctx.currentTime + 0.5);
+      window.__fakeMic = { duration: buffer.duration, ctx };
+      return dest.stream;
+    };
+  }, { wavBase64: readFileSync(wavPath).toString("base64") });
+
+  // Observe (not mock) the /voice/listen socket: how much audio the page
+  // actually sends, how loud it is, and every event Deepgram sends back.
+  const wsStats = { frames: 0, bytes: 0, loudFrames: 0, events: [] };
+  await page.routeWebSocket("**/voice/listen", (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((message) => {
+      if (typeof message !== "string") {
+        wsStats.frames += 1;
+        wsStats.bytes += message.length;
+        const view = new Int16Array(message.buffer, message.byteOffset, Math.floor(message.length / 2));
+        let peak = 0;
+        for (let i = 0; i < view.length; i += 8) peak = Math.max(peak, Math.abs(view[i]));
+        if (peak > 500) wsStats.loudFrames += 1;
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      if (typeof message === "string") {
+        wsStats.events.push(message.slice(0, 160));
+        if (!message.includes('"interim"')) console.log(`  deepgram -> ${message.slice(0, 200)}`);
+      }
+      ws.send(message);
+    });
+  });
   const tts = [];
   page.on("response", async (res) => {
     const url = res.url();
@@ -245,7 +300,20 @@ async function checkVoiceConversation(wavPath) {
     await page.screenshot({ path: "voice-e2e-1-listening.png" });
     console.log("voice chat started: listening");
 
-    await page.waitForSelector(".voice-panel__turn--learner", { timeout: 60_000 });
+    try {
+      await page.waitForSelector(".voice-panel__turn--learner", { timeout: 60_000 });
+    } catch (err) {
+      await page.screenshot({ path: "voice-e2e-timeout.png" });
+      const state = await page.locator(".voice-panel__state").textContent().catch(() => null);
+      const interim = await page.locator(".voice-panel__interim").textContent().catch(() => null);
+      const panelErr = await page.locator(".voice-panel__error").textContent().catch(() => null);
+      const mic = await page.evaluate(() => window.__fakeMic ? { duration: window.__fakeMic.duration, ctxState: window.__fakeMic.ctx.state } : null);
+      console.log(`no transcript within 60s. state=${state} interim=${JSON.stringify(interim)} error=${JSON.stringify(panelErr)} fakeMic=${JSON.stringify(mic)}`);
+      console.log(`audio sent: ${wsStats.frames} frames / ${wsStats.bytes} bytes, ${wsStats.loudFrames} with speech-level peaks; deepgram events: ${JSON.stringify(wsStats.events.slice(0, 10))}`);
+      console.log(`console/page errors: ${JSON.stringify(errors)}`);
+      throw err;
+    }
+    console.log(`audio sent so far: ${wsStats.frames} frames (${wsStats.loudFrames} speech-level)`);
     const transcript = (await page.textContent(".voice-panel__turn--learner")).replace(/^You/, "").trim();
     console.log(`Deepgram heard: ${JSON.stringify(transcript)}`);
     await page.screenshot({ path: "voice-e2e-2-heard.png" });
