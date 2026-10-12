@@ -95,12 +95,9 @@ class ChatHistoryMessage(BaseModel):
     role: str
     text: str
     tokens: list[TokenAnnotation] = []
-    # Only meaningful for role == "user" (see ChatMessage.native_text/
-    # target_text) - persisted so the frontend can hydrate its two
-    # translation rows straight from history instead of re-fetching
-    # /translate/interpret (and showing "Translating…" indefinitely while
-    # that fetch is stuck/slow) on every reload. Empty for an assistant row,
-    # or if the interpret call failed when this message was first sent.
+    # The saved translation (see ChatMessage.native_text/target_text): for a
+    # user row its native/target interpretation, for an assistant row
+    # `native` is the reply's translation. Empty if not known yet.
     native: str = ""
     target: str = ""
     thread: list[ThreadEntryOut] = []

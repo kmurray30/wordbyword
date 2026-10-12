@@ -47,13 +47,13 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    # Only populated for role == "user": the same corrected-native-text/
-    # target-translation pair /translate/interpret computes live, persisted
-    # here too so a history-hydrated message doesn't need to re-fetch it
-    # (and show "Translating…" indefinitely if that fetch is ever slow/
-    # stuck) on every page reload. Empty string if the LLM call failed when
-    # this message was first sent - same "no fallback" convention as the
-    # assistant side's note/literal columns below.
+    # The message's translation, saved so a reload doesn't have to fetch it
+    # again (and show "Translating…" meanwhile). role == "user": the
+    # corrected-native-text/target-translation pair /translate/interpret
+    # computes. role == "assistant": native_text is the reply's translation
+    # from the same gloss pass as its word glosses; target_text unused.
+    # Empty if the LLM call failed - filled in later by the frontend via
+    # POST /chat/message/interpretation.
     native_text: Mapped[str] = mapped_column(String(1024), default="")
     target_text: Mapped[str] = mapped_column(String(1024), default="")
 

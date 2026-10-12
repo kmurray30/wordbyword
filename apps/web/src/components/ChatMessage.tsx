@@ -178,26 +178,35 @@ export function ChatMessage({
     api.rewardEvent({ event_type: "wordHovered", lemma }).catch(() => {});
   };
 
+  // Set once a translation had to be fetched here (rather than arriving
+  // saved with the message) - it then gets saved back (see below).
+  const fetchedTranslationRef = useRef(false);
+
+  // At most one translation request per message, however often it's asked.
+  const translationRequestedRef = useRef(false);
+
   const fetchAssistantTranslation = () => {
-    if (assistantTranslation !== null || assistantTranslating) return;
-    if (message.translation) {
-      setAssistantTranslation(message.translation);
-      return;
-    }
+    if (assistantTranslation !== null || translationRequestedRef.current) return;
+    translationRequestedRef.current = true;
     setAssistantTranslating(true);
     api
       .translateText({ text: message.text, source_lang: "es", target_lang: "en" })
-      .then((res) => setAssistantTranslation(res.translation))
+      .then((res) => {
+        fetchedTranslationRef.current = true;
+        setAssistantTranslation(res.translation);
+      })
       .catch(() => setAssistantTranslation("(translation failed)"))
       .finally(() => setAssistantTranslating(false));
   };
 
   const fetchUserInterpretation = () => {
-    if (userNative !== null || userInterpreting) return;
+    if (userNative !== null || translationRequestedRef.current) return;
+    translationRequestedRef.current = true;
     setUserInterpreting(true);
     api
       .interpretInput({ text: message.text })
       .then((res) => {
+        fetchedTranslationRef.current = true;
         setUserNative(res.native);
         setUserTarget(res.target);
       })
@@ -208,54 +217,38 @@ export function ChatMessage({
       .finally(() => setUserInterpreting(false));
   };
 
-  // A history-hydrated user message already carries its interpretation
-  // from GET /chat/history (see DisplayMessage.native/target) - show it
-  // immediately instead of leaving userNative/userTarget null, which would
-  // otherwise only resolve once the learner actually hovers/pins the
-  // translation (fetchUserInterpretation is on-demand, not eager, for a
-  // history row - see the effect below). Absent/empty just means this row
-  // predates the persistence feature or its original call failed; the
-  // on-demand fetch still covers that case.
+  // The translation is saved with the message (see DisplayMessage.native/
+  // target/translation), so 🌐 normally opens instantly. A message without
+  // one (sent before translations were saved, or its translation call
+  // failed) fetches it now, in the background, and saves it back - once.
   useEffect(() => {
-    if (!message.fromHistory || message.role !== "user") return;
-    if (message.native && message.target) {
+    if (message.role === "assistant") {
+      const saved = message.translation || message.native;
+      if (saved) setAssistantTranslation(saved);
+      else fetchAssistantTranslation();
+    } else if (message.native && message.target) {
       setUserNative(message.native);
       setUserTarget(message.target);
+    } else {
+      fetchUserInterpretation();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message.id]);
 
-  // Persists a freshly-sent user message's live-fetched interpretation back
-  // to the server, once BOTH pieces are known: the backend's real id for
-  // this message (message.serverId, patched in by App.tsx once the turn's
-  // "done" event arrives) and the interpretation itself (userNative/
-  // userTarget, from fetchUserInterpretation above) - whichever resolves
-  // last triggers this. Guarded by a ref (not just userNative !== null,
-  // which fetchUserInterpretation's own guard already covers) so a
-  // mid-flight state change can't fire this twice. Skipped entirely for a
-  // history row (already persisted, nothing new to save) or a failed
-  // translation (nothing worth persisting).
-  const persistedInterpretationRef = useRef(false);
+  // Saves a translation fetched above, once both it and the message's
+  // backend id are known (a just-sent user message only learns its id when
+  // the turn finishes - see App.tsx's handleSend).
+  const serverId = message.serverId ?? (message.id > 0 ? message.id : undefined);
+  const savedTranslationRef = useRef(false);
   useEffect(() => {
-    if (persistedInterpretationRef.current) return;
-    if (message.role !== "user" || message.fromHistory) return;
-    if (message.serverId === undefined) return;
-    if (userNative === null || userTarget === null) return;
-    if (userNative === TRANSLATION_FAILED || userTarget === TRANSLATION_FAILED) return;
-    persistedInterpretationRef.current = true;
-    api.saveUserInterpretation({ message_id: message.serverId, native: userNative, target: userTarget }).catch(() => {});
-  }, [message.role, message.fromHistory, message.serverId, userNative, userTarget]);
-
-  // Kick the translation off in the background as soon as the message is
-  // shown, rather than waiting for the toggle - the LLM-backed translation
-  // is slow enough that pre-fetching means it's usually ready by the time
-  // anyone actually opens it.
-  useEffect(() => {
-    if (message.fromHistory) return;
-    if (message.role === "assistant") fetchAssistantTranslation();
-    else fetchUserInterpretation();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [message.id]);
+    if (savedTranslationRef.current || !fetchedTranslationRef.current || serverId === undefined) return;
+    const native = message.role === "assistant" ? assistantTranslation : userNative;
+    const target = message.role === "assistant" ? "" : userTarget;
+    if (!native || native === TRANSLATION_FAILED || target === null || target === TRANSLATION_FAILED) return;
+    if (message.role === "user" && !target) return;
+    savedTranslationRef.current = true;
+    api.saveUserInterpretation({ message_id: serverId, native, target }).catch(() => {});
+  }, [message.role, serverId, assistantTranslation, userNative, userTarget]);
 
   const closePopups = () => {
     cancelHoverClose();
@@ -440,6 +433,7 @@ export function ChatMessage({
           )}
           {openWordIndex !== null && message.tokens?.[openWordIndex] && (
             <DockedPopover
+              key={openWordIndex}
               position="right"
               onMouseEnter={cancelHoverClose}
               onMouseLeave={scheduleHoverClose}
@@ -466,7 +460,7 @@ export function ChatMessage({
             // "left" rather than "right" since a user bubble sits flush
             // against the right edge of the viewport - "right" would run
             // off-screen there.
-            <DockedPopover position="left" onDismiss={closePopups} keepOpenFor={keepOpenFor}>
+            <DockedPopover key={openUserOffset} position="left" onDismiss={closePopups} keepOpenFor={keepOpenFor}>
               <WordCandidatesPopover
                 candidates={openUserSpan?.candidates ?? []}
                 clickable={false}

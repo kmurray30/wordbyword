@@ -197,7 +197,7 @@ def test_save_user_interpretation_persists_and_survives_a_history_reload():
     assert user_message.target == "Hola, amigo."
 
 
-def test_save_user_interpretation_404s_for_an_assistant_message():
+def test_save_interpretation_backfills_an_assistant_replys_translation():
     session = _session()
     with (
         patch("app.routes.chat.model_chat", return_value="Hola"),
@@ -205,12 +205,37 @@ def test_save_user_interpretation_404s_for_an_assistant_message():
     ):
         result = take_turn(ChatTurnRequest(session_id="t10", message="hola"), session=session)
 
+    save_user_interpretation(
+        SaveUserInterpretationRequest(message_id=result.message_id, native="Hello", target="ignored"),
+        session=session,
+    )
+    history = get_history(session_id="t10", session=session)
+    reply = next(m for m in history.messages if m.role == "assistant")
+    assert reply.native == "Hello"
+    assert reply.target == ""
+
+
+def test_save_interpretation_404s_for_an_unknown_message():
     with pytest.raises(HTTPException) as exc_info:
         save_user_interpretation(
-            SaveUserInterpretationRequest(message_id=result.message_id, native="x", target="y"),
-            session=session,
+            SaveUserInterpretationRequest(message_id=9999, native="x", target="y"),
+            session=_session(),
         )
     assert exc_info.value.status_code == 404
+
+
+def test_assistant_reply_translation_is_saved_with_it():
+    gloss_json = '{"translation": "The cat is big.", "spans": [{"surface": "grande", "gloss": "big", "note": ""}]}'
+    session = _session()
+    with (
+        patch("app.routes.chat.model_chat", return_value="El gato es grande."),
+        patch("app.translate.llm_translate.model_chat", return_value=gloss_json),
+    ):
+        take_turn(ChatTurnRequest(session_id="t11", message="hola"), session=session)
+
+    history = get_history(session_id="t11", session=session)
+    reply = next(m for m in history.messages if m.role == "assistant")
+    assert reply.native == "The cat is big."
 
 
 def test_multi_word_group_shares_one_gloss_across_both_tokens():

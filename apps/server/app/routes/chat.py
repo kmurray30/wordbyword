@@ -126,12 +126,14 @@ def save_user_interpretation(
     persists that already-fetched result against the message it belongs to,
     so GET /chat/history can hydrate it directly on a later reload instead
     of leaving the learner looking at "Translating…" forever for an old
-    message if that on-demand fetch is ever slow or fails."""
+    message if that on-demand fetch is ever slow or fails. Also used for an
+    assistant reply whose translation wasn't saved with it (`native` only)."""
     message = session.get(ChatMessage, req.message_id)
-    if message is None or message.role != "user":
-        raise HTTPException(status_code=404, detail="user message not found")
+    if message is None:
+        raise HTTPException(status_code=404, detail="message not found")
     message.native_text = req.native
-    message.target_text = req.target
+    # An assistant reply only has a translation (native); keep target empty.
+    message.target_text = req.target if message.role == "user" else ""
     session.commit()
     return SaveUserInterpretationResponse(ok=True)
 
@@ -237,7 +239,9 @@ def _gloss_and_persist_reply(
             )
         )
 
-    assistant_message = ChatMessage(session_id=session_id, role="assistant", text=reply_text, tokens=token_rows)
+    assistant_message = ChatMessage(
+        session_id=session_id, role="assistant", text=reply_text, tokens=token_rows, native_text=translation
+    )
     session.add(assistant_message)
     session.commit()
     session.refresh(assistant_message)

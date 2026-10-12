@@ -54,6 +54,29 @@
   padding-right: 8px;
 }
 
+/* Too wide to fit beside the bubble: just under it instead, flush and as
+   wide as the bubble (never narrower than a side popup), growing past a
+   short bubble away from the screen edge it sits against. */
+.docked-popover-wrap--right.docked-popover-wrap--dropped,
+.docked-popover-wrap--left.docked-popover-wrap--dropped {
+  top: 100%;
+  left: 0;
+  right: 0;
+  display: flex;
+  padding: 4px 0 0;
+}
+
+.docked-popover-wrap--left.docked-popover-wrap--dropped {
+  justify-content: flex-end;
+}
+
+.docked-popover-wrap.docked-popover-wrap--dropped .docked-popover {
+  flex: none;
+  width: 100%;
+  min-width: min(240px, 60vw);
+  max-width: none;
+}
+
 .docked-popover {
   pointer-events: auto;
 }
