@@ -199,6 +199,52 @@ never any of Kokoro's other languages' voices. `POST /tts/speak` takes an
 optional `voice` field and rejects one that isn't valid for the given
 `language` with a 400.
 
+## Voice mode
+
+"Start voice chat" (above the input) turns the whole loop into a spoken
+conversation; the 🎤 button next to Send is plain dictation into the text
+draft. Both stream the microphone to `WS /voice/listen`
+(`app/routes/voice.py`), which proxies it to Deepgram's live transcription
+(`app/stt/deepgram_client.py`) using Nova-3's code-switching mode
+(`language=multi`) - the learner's speech is genuinely mixed Spanish and
+English in one breath, and a single-language model would mangle whichever
+half it wasn't told about. Turn-taking comes from Deepgram's server-side
+endpointing, so there's no "stop" button to tap. The learner's own recent
+word-bank lemmas are passed as `keyterm` hints so the words they're
+studying are the ones the recognizer is biased toward.
+
+When the learner stops talking, `POST /voice/coach`
+(`app.translate.llm_translate.voice_coach_stream`) classifies what they
+said (an attempt, a question, "no I meant…", "yes send it", a pick among
+options, cancel, "what did they say?"), decides whether there's now a
+correct Spanish sentence worth sending, and streams what the coach says
+back out loud - written to work as audio alone: options are read aloud
+with spoken labels, a word the recognizer wasn't sure about gets an "it
+sounded like X - did you mean Y?", and the key fix is explained in one
+short sentence. The coach speaks through ElevenLabs' multilingual model
+(`app/tts/elevenlabs_client.py`, `role: "coach"` on `/tts/speak`) because
+its speech is English with Spanish phrases inside it; the partner's reply
+keeps the Kokoro Spanish voice. Once a sentence is good (or the learner
+says so), it goes through the normal send path and the partner's reply is
+spoken. The mic is muted while either voice is playing.
+
+**Screen off.** iOS treats the two ways of opening the app differently:
+a page in a plain Safari tab keeps its microphone across lock as long as
+audio is playing (voice mode keeps a near-silent loop going, with Media
+Session metadata so the lock screen shows it and its pause button ends the
+chat), while a home-screen ("Add to Home Screen") app loses the mic the
+moment the screen locks - no web page can change that. In that case voice
+mode falls back to keeping the screen on with the Screen Wake Lock API
+behind a black overlay (turn the brightness down). `public/voice-spike.html`
+is the standalone page used to verify this on a real phone: open it, tap
+Start, lock the phone for a minute, and its summary says whether the mic,
+timers and socket kept flowing.
+
+Rough cost at personal-use volumes: Deepgram streaming ≈ $0.0077/min of
+listening, ElevenLabs multilingual ≈ $0.12/min of coach speech
+(`eleven_flash_v2_5` is about half that), Kokoro and the coach LLM calls are
+negligible by comparison.
+
 ## Deployed on Railway
 
 Two services in one Railway project:

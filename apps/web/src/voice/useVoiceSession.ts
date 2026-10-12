@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { VoiceDialogTurn, VoiceTranscriptEvent, VoiceTranscriptWord } from "../api/client";
 import { AudioQueue } from "./audioQueue";
+import { playEarcon } from "./earcons";
 import { takeCompleteSentences } from "./sentences";
+import { useKeepAwake } from "./useKeepAwake";
 import { useMicStream } from "./useMicStream";
 
 export type VoiceState =
@@ -72,6 +74,8 @@ export function useVoiceSession({ sessionId, onSend, partnerVoice }: UseVoiceSes
   const mic = useMicStream({ sessionId, onEvent: micEvent });
   const micRef = useRef(mic);
   micRef.current = mic;
+  const stopRef = useRef<() => void>(() => {});
+  const keepAwake = useKeepAwake({ onPauseRequested: () => stopRef.current() });
 
   const setDialogBoth = (next: VoiceDialogTurn[]) => {
     dialogRef.current = next;
@@ -84,6 +88,7 @@ export function useVoiceSession({ sessionId, onSend, partnerVoice }: UseVoiceSes
     const live = () => run === runRef.current;
     busyRef.current = true;
     micRef.current.setMuted(true);
+    playEarcon(micRef.current.audioContext(), "heard");
     setState("thinking");
     setError(null);
     setCoachSay("");
@@ -144,6 +149,7 @@ export function useVoiceSession({ sessionId, onSend, partnerVoice }: UseVoiceSes
         setDraft("");
       } else if (shouldSend) {
         setState("sending");
+        playEarcon(micRef.current.audioContext(), "sent");
         const reply = await optionsRef.current.onSend(nextDraft);
         if (!live()) return;
         setDialogBoth([]);
@@ -157,35 +163,49 @@ export function useVoiceSession({ sessionId, onSend, partnerVoice }: UseVoiceSes
         }
       }
     } catch (err) {
-      if (live()) setError(err instanceof Error ? err.message : String(err));
+      if (live()) {
+        setError(err instanceof Error ? err.message : String(err));
+        playEarcon(micRef.current.audioContext(), "error");
+      }
     } finally {
       if (live()) {
         busyRef.current = false;
         micRef.current.setMuted(false);
-        setState(micRef.current.state === "listening" ? "listening" : "error");
+        const listening = micRef.current.state === "listening";
+        if (listening) playEarcon(micRef.current.audioContext(), "listening");
+        setState(listening ? "listening" : "error");
       }
     }
   }
 
   const start = useCallback(async () => {
+    // Both of these must happen inside the tap itself (before any await):
+    // the playback element and the keep-alive loop can only start from a
+    // user gesture on iOS.
     queueRef.current!.unlock();
+    keepAwake.start();
     setError(null);
     setDialogBoth([]);
     setCoachSay("");
     setDraft("");
     await micRef.current.start();
+    playEarcon(micRef.current.audioContext(), "listening");
     setState("listening");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const stop = useCallback(() => {
     runRef.current += 1;
     busyRef.current = false;
     queueRef.current!.stop();
+    keepAwake.stop();
     micRef.current.stop();
     finalsRef.current = [];
     wordsRef.current = [];
     setState("idle");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  stopRef.current = stop;
 
   // The mic hook reporting an error (e.g. the track ending) while we're
   // listening is a session-level error too.
@@ -196,5 +216,5 @@ export function useVoiceSession({ sessionId, onSend, partnerVoice }: UseVoiceSes
     }
   }, [mic.state, mic.error, state]);
 
-  return { state, error, dialog, coachSay, draft, interim: mic.interim, start, stop };
+  return { state, error, dialog, coachSay, draft, interim: mic.interim, keepAwakeMode: keepAwake.mode, start, stop };
 }

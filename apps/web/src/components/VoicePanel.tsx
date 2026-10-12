@@ -18,13 +18,10 @@ const STATE_LABEL: Record<VoiceState, string> = {
   error: "Problem",
 };
 
-// iOS home-screen web apps lose the microphone when the screen locks; a
-// plain Safari tab keeps it. Only worth saying when it applies.
-const standalone = typeof navigator !== "undefined" && (navigator as { standalone?: boolean }).standalone === true;
-
 export function VoicePanel({ sessionId, onSend, partnerVoice }: VoicePanelProps) {
   const voice = useVoiceSession({ sessionId, onSend, partnerVoice });
   const active = voice.state !== "idle";
+  const dim = active && voice.keepAwakeMode === "dim";
 
   return (
     <div className={`voice-panel${active ? " voice-panel--active" : ""}`}>
@@ -62,9 +59,21 @@ export function VoicePanel({ sessionId, onSend, partnerVoice }: VoicePanelProps)
               {voice.draft}
             </div>
           )}
-          {standalone && (
-            <div className="voice-panel__hint">For screen-off use, open this page in Safari rather than from the home-screen icon.</div>
-          )}
+          <div className="voice-panel__hint">
+            {voice.keepAwakeMode === "dim"
+              ? "Opened from the home screen, so the screen has to stay on to keep listening - turn the brightness down. For true screen-off, open this page in Safari instead."
+              : "Keeps listening with the screen off. Lock the phone whenever you like; the lock screen's pause button ends the chat."}
+          </div>
+        </div>
+      )}
+      {dim && (
+        <div className="voice-dim" role="status">
+          <div className="voice-dim__state">{STATE_LABEL[voice.state]}</div>
+          {voice.interim && <div className="voice-dim__text">{voice.interim}</div>}
+          {!voice.interim && voice.coachSay && <div className="voice-dim__text">{voice.coachSay}</div>}
+          <button type="button" className="voice-dim__end" onClick={() => voice.stop()}>
+            End voice chat
+          </button>
         </div>
       )}
     </div>

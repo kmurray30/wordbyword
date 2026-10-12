@@ -10,11 +10,12 @@
 // still playing, so the gap between sentences is just the fetch that was
 // already running, not a fresh round trip.
 
-// 1 frame of near-silence as a WAV data URI - the "something to play inside
-// the gesture" that unlocks the element.
-function silentWav(): string {
+// Near-silence as a WAV data URI (not pure zeros - iOS can treat a fully
+// silent track as "nothing playing"). 50ms is the "something to play inside
+// the gesture" that unlocks an element; useKeepAwake loops a 1s one.
+export function silentWav(seconds = 0.05): string {
   const rate = 8000;
-  const n = 400;
+  const n = Math.max(1, Math.round(rate * seconds));
   const buf = new ArrayBuffer(44 + n * 2);
   const v = new DataView(buf);
   const w = (o: number, s: string) => {
@@ -33,6 +34,8 @@ function silentWav(): string {
   v.setUint16(34, 16, true);
   w(36, "data");
   v.setUint32(40, n * 2, true);
+  // One LSB tick every 50 samples: inaudible, but not a flat line.
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, i % 50 === 0 ? 1 : 0, true);
   let s = "";
   const bytes = new Uint8Array(buf);
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
@@ -58,9 +61,6 @@ export class AudioQueue {
       // If even this fails we'll find out on the first real clip.
     });
     this.el = el;
-    if ("mediaSession" in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({ title: "wordbyword", artist: "voice conversation" });
-    }
   }
 
   // Resolves once this clip has finished playing (or been skipped by stop()).
