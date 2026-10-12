@@ -1,3 +1,4 @@
+@import "./TalkLines.css";
 /* "Your next message" - the side conversation about the message you're
    about to send. Green accent (yours), where the threads under their
    messages are blue, so it's always clear which log something went to. */
@@ -9,138 +10,67 @@
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+/* Expand/collapse row: reads as a button (chevron, count, Show/Hide). */
 .next-message__header {
   all: unset;
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(47, 174, 90, 0.1);
+  border: 1px solid rgba(47, 174, 90, 0.3);
   cursor: pointer;
-  font-size: 0.7rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: #7fd39b;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #b9e6c6;
 }
 
-.next-message__meta {
-  opacity: 0.7;
+.next-message__header:hover {
+  background: rgba(47, 174, 90, 0.18);
+}
+
+.next-message__chevron {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.next-message__header--collapsed .next-message__chevron {
+  transform: rotate(-90deg);
+}
+
+.next-message__title {
+  flex: 1;
+}
+
+.next-message__count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(47, 174, 90, 0.35);
+  color: white;
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.next-message__toggle-label {
+  font-size: 0.72rem;
+  opacity: 0.75;
 }
 
 .next-message__log {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 34vh;
+  max-height: 40vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px 10px;
   border-left: 2px solid rgba(47, 174, 90, 0.6);
   border-radius: 0 8px 8px 0;
   background: rgba(47, 174, 90, 0.06);
   font-size: 0.85rem;
   line-height: 1.4;
-  color: #d9dde6;
-}
-
-.next-message__line {
-  overflow-wrap: anywhere;
-}
-
-.next-message__line--learner {
-  color: #b9e6c6;
-}
-
-.next-message__who {
-  font-weight: 700;
-  font-size: 0.66rem;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  opacity: 0.6;
-  margin-right: 6px;
-}
-
-.next-message__check {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.next-message__suggestion {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin-left: 10px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.next-message__suggestion--used {
-  background: rgba(47, 174, 90, 0.16);
-  outline: 1px solid rgba(47, 174, 90, 0.45);
-}
-
-.next-message__suggestion-es {
-  font-size: 0.95rem;
-  color: #f2f2f2;
-}
-
-.next-message__suggestion-en {
-  font-size: 0.78rem;
-  opacity: 0.7;
-}
-
-.next-message__actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-left: 10px;
-}
-
-.next-message__use {
-  border: none;
-  border-radius: 8px;
-  padding: 5px 12px;
-  background: #2fae5a;
-  color: white;
-  font-weight: 600;
-  font-size: 0.8rem;
-  cursor: pointer;
-}
-
-.next-message__use:disabled {
-  background: transparent;
-  color: #7fd39b;
-  padding-left: 0;
-  cursor: default;
-}
-
-.next-message__ready {
-  color: #7fd39b;
-  font-weight: 600;
-  font-size: 0.8rem;
-}
-
-.next-message__link {
-  all: unset;
-  cursor: pointer;
-  font-size: 0.72rem;
-  opacity: 0.55;
-  text-decoration: underline;
-}
-
-.next-message__link:hover {
-  opacity: 1;
-}
-
-.next-message__note {
-  font-size: 0.75rem;
-  font-style: italic;
-  color: #9fb8ff;
-}
-
-.next-message__error {
-  color: #ff8a8a;
-  font-size: 0.8rem;
 }
 
 .next-message__input {

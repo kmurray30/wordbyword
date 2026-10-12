@@ -10,18 +10,12 @@ from app.db import get_session
 from app.chat.threads import append_entries, entry_out
 from app.models import ChatMessage
 from app.schemas import (
-    CoachAnswerChunkEvent,
-    CoachAnswerCompleteEvent,
+    CoachAboutEvent,
     CoachDraftRequest,
     CoachErrorEvent,
-    CoachMeaningChunkEvent,
-    CoachMeaningCompleteEvent,
-    CoachOptionChunkEvent,
-    CoachOptionCompleteEvent,
-    CoachSuggestionChunkEvent,
-    CoachSuggestionCompleteEvent,
-    CoachThreadAnchorEvent,
-    CoachVerdictEvent,
+    CoachReadyEvent,
+    CoachReplyChunkEvent,
+    CoachReplyCompleteEvent,
     DraftSpan,
     DraftToken,
     GlossSpansRequest,
@@ -30,10 +24,10 @@ from app.schemas import (
     InterpretInputResponse,
     TagInputRequest,
     TagInputResponse,
+    ThreadEntryIn,
     TranslateCandidate,
     TranslateTextRequest,
     TranslateTextResponse,
-    ThreadEntryIn,
 )
 from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
@@ -112,32 +106,14 @@ def interpret_input(req: InterpretInputRequest) -> InterpretInputResponse:
 
 @router.post("/coach")
 def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session)) -> StreamingResponse:
-    """For a message the learner is still drafting (not yet sent) - unlike
-    /interpret above, which corrects a single message in isolation, this
-    pulls the session's recent conversation for context so the suggested
-    phrasing actually fits the tone of what's been said so far, and returns
-    feedback on the attempt plus phrasing options at a few formality
-    levels rather than a single flat correction.
-
-    Streamed as Server-Sent Events, one event per field of the SAME
-    underlying LLM call (app.translate.llm_translate.coach_draft_stream -
-    see its own docstring for the full field-by-field sequence). First, a
-    "verdict" event ("clean"/"minor"/"fix") - usable INSTANTLY, before
-    anything else has streamed, to decide whether the draft is already
-    good to go (see ChatInput.tsx's coachReady). Then "meaning_chunk"/
-    "meaning_complete" carry the restatement live, delta by delta - the
-    same token-by-token feel /chat/turn/stream's own reply already has.
-    What follows depends on the verdict: nothing further for "clean";
-    "suggestion_chunk"/"suggestion_complete" (one lightweight corrected-
-    text suggestion) for "minor"; or, for "fix", three formality-ranked
-    options streamed via "option_chunk"/"option_complete" events (each
-    carrying `index` 0/1/2 and `field` "spanish"/"english"), each option's
-    own English back-translation streaming in right after its own Spanish
-    text - not batched together at the end. An "error" event means
-    nothing at all was usable (not even the verdict); a stream that ends
-    partway through the "fix" options just means the rest weren't ready -
-    whatever DID arrive stays fully usable (see coach_draft_stream's own
-    docstring on this graceful-degradation philosophy)."""
+    """The coach's reply to whatever the learner wrote in the coach panel
+    (or the message they're about to send, with `check`), streamed as SSE:
+    "about" (the partner message it's about, or null for the learner's
+    next message), "ready" (their own Spanish is fine to send as written),
+    then "reply_chunk"s and "reply_complete". A reply about a partner
+    message is saved in that message's thread; one about the next message
+    lives in the coach panel until it's sent. "error" if nothing came back.
+    See app.translate.llm_translate.coach_reply_stream."""
     history_rows = list(
         reversed(
             session.scalars(
@@ -148,33 +124,17 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
             ).all()
         )
     )
-    history = [(row.role, row.text) for row in history_rows]
 
-    # The message a question would be about by default: the thread open on
-    # screen (if it's really one of this session's messages), else the
-    # partner's latest message.
-    by_id = {row.id: row for row in history_rows}
-    anchor = by_id.get(req.thread_message_id) if req.thread_message_id is not None else None
-    if anchor is None and req.thread_message_id is not None:
+    # The thread open on screen, if it's really one of this session's
+    # messages.
+    anchor = None
+    if req.thread_message_id is not None:
         candidate = session.get(ChatMessage, req.thread_message_id)
         if candidate is not None and candidate.session_id == req.session_id:
             anchor = candidate
-    open_thread_anchor = anchor
-    if anchor is None:
-        anchor = next((row for row in reversed(history_rows) if row.role == "assistant"), None)
+    if anchor is not None and anchor.id not in {row.id for row in history_rows}:
+        history_rows = [anchor, *history_rows]
 
-    def thread_turns(message: ChatMessage | None) -> list[tuple[str, str]]:
-        if message is None:
-            return []
-        return [
-            ("learner" if e.kind == "question" else "tutor", e.text)
-            for e in message.thread
-            if e.kind in ("question", "answer")
-        ]
-
-    open_thread = (
-        (open_thread_anchor.text, thread_turns(open_thread_anchor)) if open_thread_anchor is not None else None
-    )
     numbered = [
         {
             "number": i + 1,
@@ -186,116 +146,69 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     ]
     number_to_row = {i + 1: row for i, row in enumerate(history_rows)}
     default_number = next((n for n, row in number_to_row.items() if anchor is not None and row.id == anchor.id), None)
-    default_turns = thread_turns(anchor)
+    thread_turns = (
+        [
+            ("learner" if e.kind == "question" else "coach", e.text)
+            for e in anchor.thread
+            if e.kind in ("question", "answer")
+        ]
+        if anchor is not None
+        else []
+    )
     draft_turns = [(t.role, t.text) for t in req.draft_thread if t.text.strip()]
 
-    def tutor_events():
-        about_row = anchor
-        answer = ""
-        for item in iter_with_keepalive(
-            llm_translate.tutor_answer_stream(
-                req.text,
-                numbered,
-                default_number,
-                default_turns,
-                NATIVE_LANGUAGE,
-                TARGET_LANGUAGE,
-                draft_turns=draft_turns,
-            )
-        ):
-            if item is None:
-                yield KEEPALIVE_LINE
-                continue
-            kind, *rest = item
-            if kind == "about":
-                # None = about the learner's NEXT message (or nothing in
-                # particular): answered in the next-message log on the
-                # client, which saves it with that message once it's sent.
-                about_row = number_to_row.get(rest[0], anchor) if rest[0] is not None else None
-                yield _sse(
-                    "thread_anchor",
-                    CoachThreadAnchorEvent(
-                        message_id=about_row.id if about_row is not None else None, question=req.text
-                    ).model_dump_json(),
-                )
-            elif kind == "answer_chunk":
-                yield _sse("answer_chunk", CoachAnswerChunkEvent(delta=rest[0]).model_dump_json())
-            elif kind == "answer_complete":
-                answer = rest[0]
-        # Persisted only now, after every model call - a short write, so the
-        # SQLite write lock is never held while the model streams (see
-        # routes/chat.py's _gloss_and_persist_reply).
-        entries = []
-        if about_row is not None and answer:
-            rows = append_entries(
-                session,
-                about_row.id,
-                [
-                    ThreadEntryIn(role="learner", kind="question", text=req.text),
-                    ThreadEntryIn(role="tutor", kind="answer", text=answer),
-                ],
-            )
-            session.commit()
-            entries = [entry_out(r) for r in rows]
-        yield _sse("answer_complete", CoachAnswerCompleteEvent(answer=answer, entries=entries).model_dump_json())
-
     def events():
+        about_row = None
+        reply = ""
         try:
-            if req.force == "ask":
-                yield _sse("verdict", CoachVerdictEvent(verdict="ask").model_dump_json())
-                yield from tutor_events()
-                return
             for item in iter_with_keepalive(
-                llm_translate.coach_draft_stream(
+                llm_translate.coach_reply_stream(
                     req.text,
-                    history,
+                    numbered,
+                    default_number,
+                    thread_turns,
+                    draft_turns,
                     NATIVE_LANGUAGE,
                     TARGET_LANGUAGE,
-                    open_thread=open_thread,
-                    allow_ask=req.force != "attempt",
-                    draft_turns=draft_turns,
+                    check=req.check,
                 )
             ):
                 if item is None:
                     yield KEEPALIVE_LINE
                     continue
                 kind, *rest = item
-                if kind == "verdict" and rest[0] == "ask":
-                    yield _sse("verdict", CoachVerdictEvent(verdict="ask").model_dump_json())
-                    yield from tutor_events()
-                    return
-                if kind == "verdict":
-                    yield _sse("verdict", CoachVerdictEvent(verdict=rest[0]).model_dump_json())
-                elif kind == "meaning_chunk":
-                    yield _sse("meaning_chunk", CoachMeaningChunkEvent(delta=rest[0]).model_dump_json())
-                elif kind == "meaning_complete":
-                    yield _sse("meaning_complete", CoachMeaningCompleteEvent(meaning=rest[0]).model_dump_json())
-                elif kind == "suggestion_chunk":
-                    yield _sse("suggestion_chunk", CoachSuggestionChunkEvent(delta=rest[0]).model_dump_json())
-                elif kind == "suggestion_complete":
+                if kind == "about":
+                    # A check of the message box is always about the
+                    # learner's own next message.
+                    about_row = None if req.check or rest[0] is None else number_to_row.get(rest[0])
                     yield _sse(
-                        "suggestion_complete", CoachSuggestionCompleteEvent(suggestion=rest[0]).model_dump_json()
+                        "about", CoachAboutEvent(message_id=about_row.id if about_row else None).model_dump_json()
                     )
-                elif kind == "option_spanish_chunk":
-                    yield _sse(
-                        "option_chunk", CoachOptionChunkEvent(index=rest[0], field="spanish", delta=rest[1]).model_dump_json()
-                    )
-                elif kind == "option_spanish_complete":
-                    yield _sse(
-                        "option_complete",
-                        CoachOptionCompleteEvent(index=rest[0], field="spanish", text=rest[1]).model_dump_json(),
-                    )
-                elif kind == "option_english_chunk":
-                    yield _sse(
-                        "option_chunk", CoachOptionChunkEvent(index=rest[0], field="english", delta=rest[1]).model_dump_json()
-                    )
-                elif kind == "option_english_complete":
-                    yield _sse(
-                        "option_complete",
-                        CoachOptionCompleteEvent(index=rest[0], field="english", text=rest[1]).model_dump_json(),
-                    )
+                elif kind == "ready":
+                    yield _sse("ready", CoachReadyEvent(ready=rest[0]).model_dump_json())
+                elif kind == "reply_chunk":
+                    yield _sse("reply_chunk", CoachReplyChunkEvent(delta=rest[0]).model_dump_json())
+                elif kind == "reply_complete":
+                    reply = rest[0]
         except llm_translate.TranslationUnavailableError as exc:
             yield _sse("error", CoachErrorEvent(message=str(exc)).model_dump_json())
+            return
+        # Saved only now, after every model call - a short write, so the
+        # SQLite write lock is never held while the model streams (see
+        # routes/chat.py's _gloss_and_persist_reply).
+        entries = []
+        if about_row is not None and reply:
+            rows = append_entries(
+                session,
+                about_row.id,
+                [
+                    ThreadEntryIn(role="learner", kind="question", text=req.text),
+                    ThreadEntryIn(role="coach", kind="answer", text=reply),
+                ],
+            )
+            session.commit()
+            entries = [entry_out(r) for r in rows]
+        yield _sse("reply_complete", CoachReplyCompleteEvent(reply=reply, entries=entries).model_dump_json())
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
 

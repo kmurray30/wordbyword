@@ -39,88 +39,20 @@ type SaveUserInterpretationResponse =
 type CoachDraftRequest =
   paths["/translate/coach"]["post"]["requestBody"]["content"]["application/json"];
 
-// /translate/coach streams Server-Sent Events rather than a single JSON
-// response (see app/routes/translate.py's coach_draft), so there's no
-// OpenAPI-generated response type for it - these mirror app/schemas.py's
-// Coach*Event classes by hand instead. See app/translate/llm_translate.py's
-// coach_draft_stream docstring for the full field-by-field sequence these
-// correspond to: a "verdict" event first (usable instantly, before
-// anything else has streamed - see ChatInput.tsx's coachReady), then the
-// "you mean"/"did you mean" restatement streaming live, then - depending
-// on the verdict - either nothing further ("clean"), one single streamed
-// suggestion ("minor"), or three formality-ranked options streamed
-// interleaved, each one's own English translation arriving right after
-// its own Spanish text ("fix"). A picked option's word-by-word gloss
-// breakdown is NOT part of this stream at all - see
-// ChatInput.tsx's handleSelectCoachOption, which fetches it lazily via the
-// existing /translate/gloss-spans instead.
-export interface CoachVerdictEvent {
-  // "ask": the text was a question for the tutor, not an attempt - the
-  // thread_anchor/answer_* events follow instead of the coach's fields.
-  verdict: "clean" | "minor" | "fix" | "ask";
-}
-
+// /translate/coach streams Server-Sent Events (see app/routes/translate.py's
+// coach_draft and app.translate.llm_translate.coach_reply_stream): which
+// partner message the reply is about (null = the learner's next message),
+// whether the learner's own Spanish is ready to send, then the coach's
+// reply text - suggestions are written inside it as [[Spanish | English]].
 export type ThreadEntry = components["schemas"]["ThreadEntryOut"];
 export type ThreadEntryIn = components["schemas"]["ThreadEntryIn"];
 
-export interface CoachThreadAnchorEvent {
-  message_id: number | null;
-  question: string;
-}
-
-export interface CoachAnswerChunkEvent {
-  delta: string;
-}
-
-export interface CoachAnswerCompleteEvent {
-  answer: string;
-  entries: ThreadEntry[];
-}
-
-export interface CoachMeaningChunkEvent {
-  delta: string;
-}
-
-export interface CoachMeaningCompleteEvent {
-  meaning: string;
-}
-
-export interface CoachSuggestionChunkEvent {
-  delta: string;
-}
-
-export interface CoachSuggestionCompleteEvent {
-  suggestion: string;
-}
-
-export interface CoachOptionChunkEvent {
-  index: number;
-  field: "spanish" | "english";
-  delta: string;
-}
-
-export interface CoachOptionCompleteEvent {
-  index: number;
-  field: "spanish" | "english";
-  text: string;
-}
-
-export interface CoachErrorEvent {
-  message: string;
-}
-
 export type CoachStreamEvent =
-  | { type: "verdict"; data: CoachVerdictEvent }
-  | { type: "meaning_chunk"; data: CoachMeaningChunkEvent }
-  | { type: "meaning_complete"; data: CoachMeaningCompleteEvent }
-  | { type: "suggestion_chunk"; data: CoachSuggestionChunkEvent }
-  | { type: "suggestion_complete"; data: CoachSuggestionCompleteEvent }
-  | { type: "option_chunk"; data: CoachOptionChunkEvent }
-  | { type: "option_complete"; data: CoachOptionCompleteEvent }
-  | { type: "thread_anchor"; data: CoachThreadAnchorEvent }
-  | { type: "answer_chunk"; data: CoachAnswerChunkEvent }
-  | { type: "answer_complete"; data: CoachAnswerCompleteEvent }
-  | { type: "error"; data: CoachErrorEvent };
+  | { type: "about"; data: { message_id: number | null } }
+  | { type: "ready"; data: { ready: boolean } }
+  | { type: "reply_chunk"; data: { delta: string } }
+  | { type: "reply_complete"; data: { reply: string; entries: ThreadEntry[] } }
+  | { type: "error"; data: { message: string } };
 
 // Reads any `event: <name>\ndata: <json>\n\n`-framed SSE response body
 // incrementally, yielding each raw (name, data-string) pair as soon as its
@@ -156,19 +88,7 @@ async function* readServerSentEvents(response: Response): AsyncGenerator<{ event
 // event as it completes - see CoachStreamEvent's own comment for the full
 // field-by-field sequence. `signal` lets the caller abort mid-stream (e.g.
 // the draft changed before coaching finished).
-const COACH_EVENT_NAMES = new Set([
-  "verdict",
-  "meaning_chunk",
-  "meaning_complete",
-  "suggestion_chunk",
-  "suggestion_complete",
-  "option_chunk",
-  "option_complete",
-  "thread_anchor",
-  "answer_chunk",
-  "answer_complete",
-  "error",
-]);
+const COACH_EVENT_NAMES = new Set(["about", "ready", "reply_chunk", "reply_complete", "error"]);
 
 async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal): AsyncGenerator<CoachStreamEvent> {
   const response = await fetchWithColdStartRetry(`${BASE_URL}/translate/coach`, {

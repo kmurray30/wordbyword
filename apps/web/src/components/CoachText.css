@@ -1,0 +1,77 @@
+.coach-text {
+  white-space: pre-wrap;
+}
+
+/* A suggestion the coach made: the Spanish, its meaning underneath, and
+   "Use this" sitting inside the same box on the right. */
+.coach-text__suggestion {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 7px 7px 7px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: normal;
+}
+
+.coach-text__suggestion--streaming {
+  animation: coach-text-pulse 1.3s ease-in-out infinite;
+}
+
+.coach-text__suggestion--used {
+  background: rgba(47, 174, 90, 0.16);
+  border-color: rgba(47, 174, 90, 0.5);
+}
+
+.coach-text__suggestion-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.coach-text__es {
+  font-size: 0.95rem;
+  color: #f2f2f2;
+}
+
+.coach-text__en {
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+
+.coach-text__use {
+  flex-shrink: 0;
+  align-self: stretch;
+  border: none;
+  border-radius: 7px;
+  padding: 0 12px;
+  background: #2fae5a;
+  color: white;
+  font-weight: 600;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.coach-text__use:hover {
+  background: #39c468;
+}
+
+.coach-text__use:disabled {
+  background: transparent;
+  color: #7fd39b;
+  cursor: default;
+}
+
+@keyframes coach-text-pulse {
+  0%,
+  100% {
+    background-color: rgba(255, 255, 255, 0.04);
+  }
+  50% {
+    background-color: rgba(255, 255, 255, 0.11);
+  }
+}

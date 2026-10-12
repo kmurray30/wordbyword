@@ -212,95 +212,43 @@ class DraftTurn(BaseModel):
 class CoachDraftRequest(BaseModel):
     text: str
     session_id: str
-    # The message whose thread is currently open on screen, if any - lets
-    # a bare follow-up ("llamas?") be read as another question about it
-    # rather than a new attempt, and anchors the tutor's answer there.
+    # The partner message whose thread is open on screen, if any - a bare
+    # follow-up ("llamas?") then continues that thread.
     thread_message_id: int | None = None
-    # The learner's discussion about the message they're about to send (the
-    # "next message" log, not yet saved anywhere), as (role, text) turns:
-    # role "learner" | "coach". Context for both the coach and the tutor.
+    # The learner's discussion with the coach about the message they're
+    # about to send (not yet saved anywhere), as (role, text) turns with
+    # role "learner" | "coach".
     draft_thread: list[DraftTurn] = []
-    # The learner's escape hatch when the automatic routing guessed wrong:
-    # "attempt" = check this as something to say to the partner, "ask" =
-    # this is a question for the tutor. None = let the model decide.
-    force: str | None = None
+    # True when `text` is the exact message in the message box (💡 or a
+    # finished dictation there), rather than talk in the coach panel.
+    check: bool = False
 
 
-# The streamed /translate/coach endpoint sends these as SSE events
-# (`data: <json>\n\n`, with `event:` set to the matching name below) rather
-# than a single JSON response - see app.translate.llm_translate.
-# coach_draft_stream's own docstring for the full field-by-field sequence
-# each of these corresponds to. Notably: a picked option's word-by-word
-# gloss breakdown is NOT part of this event set at all (unlike the earlier
-# version of this protocol) - it's fetched lazily via the existing
-# /translate/gloss-spans (GlossSpansRequest/Response above) only once an
-# option is actually picked, same as any hand-typed draft text.
-class CoachVerdictEvent(BaseModel):
-    # "clean" | "minor" | "fix" for an attempt; "ask" when the learner's
-    # text is a question for the tutor instead (see the thread_* events).
-    verdict: str
+# /translate/coach streams these as SSE events (see
+# app.translate.llm_translate.coach_reply_stream): which message the reply
+# is about, whether the learner's own Spanish is ready to send, then the
+# coach's reply text (suggestions inside it as [[Spanish | English]]).
+class CoachAboutEvent(BaseModel):
+    message_id: int | None  # None = the learner's next message
 
 
-class CoachMeaningChunkEvent(BaseModel):
-    # One newly-arrived piece of the streaming "you mean"/"did you mean"
-    # restatement - the same "zipper" delta-at-a-time feel
-    # /chat/turn/stream's own ChatTurnChunkEvent already has.
+class CoachReadyEvent(BaseModel):
+    ready: bool
+
+
+class CoachReplyChunkEvent(BaseModel):
     delta: str
 
 
-class CoachMeaningCompleteEvent(BaseModel):
-    meaning: str
-
-
-class CoachSuggestionChunkEvent(BaseModel):
-    # Only sent for a "minor" verdict - one newly-arrived piece of the
-    # single lightweight corrected-text suggestion.
-    delta: str
-
-
-class CoachSuggestionCompleteEvent(BaseModel):
-    suggestion: str
-
-
-class CoachOptionChunkEvent(BaseModel):
-    # Only sent for a "fix" verdict. `index` is 0/1/2 (neutral/casual/
-    # formal, a fixed positional mapping - see app.translate.llm_translate.
-    # _COACH_FORMALITIES, never parsed from the model). `field` is
-    # "spanish" or "english" - that option's own suggested text, or its
-    # own whole-sentence back-translation, which streams in right after
-    # its Spanish text (not batched with the other options' translations
-    # at the end, unlike the earlier version of this protocol).
-    index: int
-    field: str
-    delta: str
-
-
-class CoachOptionCompleteEvent(BaseModel):
-    index: int
-    field: str
-    text: str
+class CoachReplyCompleteEvent(BaseModel):
+    reply: str
+    # The question/reply entries saved on the message it was about (empty
+    # when it's about the learner's next message).
+    entries: list[ThreadEntryOut] = []
 
 
 class CoachErrorEvent(BaseModel):
     message: str
-
-
-# The "ask" branch of /translate/coach: the learner asked the tutor about
-# a message instead of trying to say something. The answer is anchored to
-# (and stored in the thread of) `message_id`.
-class CoachThreadAnchorEvent(BaseModel):
-    message_id: int | None  # None when there's no message to anchor to yet
-    question: str
-
-
-class CoachAnswerChunkEvent(BaseModel):
-    delta: str
-
-
-class CoachAnswerCompleteEvent(BaseModel):
-    answer: str
-    # The persisted question/answer entries (empty if nothing to anchor to).
-    entries: list[ThreadEntryOut] = []
 
 
 class RewardEventRequest(BaseModel):

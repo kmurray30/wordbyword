@@ -10,7 +10,7 @@ import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
 import { MessageThread } from "./MessageThread";
-import type { LiveTutorAnswer } from "./MessageThread";
+import type { LiveCoachReply } from "./MessageThread";
 import "./ChatMessage.css";
 
 const TRANSLATION_FAILED = "(translation failed)";
@@ -55,7 +55,7 @@ export interface DisplayMessage {
   native?: string;
   target?: string;
   // The side conversation about this message (see MessageThread): coach
-  // checks behind a sent message, questions and the tutor's answers.
+  // checks behind a sent message, questions and the coach's replies.
   thread?: ThreadEntry[];
 }
 
@@ -68,17 +68,15 @@ export function ChatMessage({
   voice,
   threadOpen = false,
   onToggleThread,
-  liveTutor = null,
-  onSayInstead,
+  liveCoach = null,
 }: {
   message: DisplayMessage;
   voice?: string;
   threadOpen?: boolean;
   onToggleThread?: () => void;
-  // The tutor's answer while it's still streaming, when it's about this
+  // The coach's reply while it's still streaming, when it's about this
   // message.
-  liveTutor?: LiveTutorAnswer | null;
-  onSayInstead?: (question: string) => void;
+  liveCoach?: LiveCoachReply | null;
 }) {
   const resolvedLemmas = useRef<Set<string>>(new Set());
   // Checks count once each; a question and its answer count as one.
@@ -364,7 +362,16 @@ export function ChatMessage({
                   }}
                   onClose={scheduleHoverClose}
                   onTogglePin={() => {
-                    setPinnedWordIndex((cur) => (cur === i ? null : i));
+                    // Clicking the word that's open closes it - including
+                    // when it's only open because the pointer is over it
+                    // (or a tap's emulated hover), not just when pinned.
+                    if (openWordIndex === i) {
+                      cancelHoverClose();
+                      setHoveredWordIndex(null);
+                      setPinnedWordIndex(null);
+                      return;
+                    }
+                    setPinnedWordIndex(i);
                     handleHover(tok.lemma);
                   }}
                 />
@@ -442,7 +449,7 @@ export function ChatMessage({
           {message.role === "assistant" && (
             <AudioButton text={message.text} language="es" voice={voice} label="Play pronunciation" />
           )}
-          {(threadCount > 0 || liveTutor) && (
+          {(threadCount > 0 || liveCoach) && (
             <button
               type="button"
               className={`chat-message__thread-toggle${threadOpen ? " chat-message__thread-toggle--active" : ""}`}
@@ -450,7 +457,7 @@ export function ChatMessage({
               aria-expanded={threadOpen}
               title={threadOpen ? "Hide the side conversation" : "Show the side conversation about this message"}
             >
-              💬 {threadCount + (liveTutor ? 1 : 0)}
+              💬 {threadCount + (liveCoach ? 1 : 0)}
             </button>
           )}
         </div>
@@ -485,12 +492,11 @@ export function ChatMessage({
             )}
           </div>
         )}
-        {threadOpen && (threadCount > 0 || liveTutor) && (
+        {threadOpen && (threadCount > 0 || liveCoach) && (
           <MessageThread
             entries={message.thread ?? []}
-            live={liveTutor}
+            live={liveCoach}
             title={message.role === "assistant" ? "About their message" : "How you worked this out"}
-            onSayInstead={message.role === "assistant" ? onSayInstead : undefined}
           />
         )}
       </div>

@@ -6,12 +6,11 @@ from app.chat.openai_client import ModelServerUnavailableError
 from app.config import OPENAI_TRANSLATE_MODEL
 from app.translate.llm_translate import (
     TranslationUnavailableError,
-    coach_draft_stream,
+    coach_reply_stream,
     gloss_reply,
     interpret_user_input,
     tag_draft,
     translate_text,
-    tutor_answer_stream,
 )
 
 
@@ -437,413 +436,97 @@ def test_interpret_user_input_falls_back_to_translate_text_on_garbled_reply():
     assert mock_chat.call_count == 3
 
 
-def test_coach_draft_stream_empty_input_short_circuits():
-    with patch("app.translate.llm_translate.model_chat_stream") as mock_stream:
-        events = list(coach_draft_stream("   ", [], "en", "es"))
-    assert events == []
-    mock_stream.assert_not_called()
+# --- coach_reply_stream ---------------------------------------------------------
 
-
-def test_coach_draft_stream_clean_verdict_yields_verdict_then_meaning_only():
-    chunks = ["CLEAN<<<VERDICT>>>", "Hello there<<<MEANING>>>"]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)) as mock_stream:
-        events = list(coach_draft_stream("hola", [], "en", "es"))
-
-    kinds = [e[0] for e in events]
-    assert kinds[0] == "verdict"
-    assert events[0] == ("verdict", "clean")
-    assert kinds[-1] == "meaning_complete"
-    assert events[-1] == ("meaning_complete", "Hello there")
-    assert "".join(e[1] for e in events if e[0] == "meaning_chunk") == "Hello there"
-    # Nothing else - no suggestion, no options - for a clean verdict.
-    assert all(k in ("verdict", "meaning_chunk", "meaning_complete") for k in kinds)
-
-    (messages,), _ = mock_stream.call_args
-    assert messages[-1] == {"role": "user", "content": "hola"}
-
-
-def test_coach_draft_stream_minor_verdict_streams_a_single_suggestion():
-    chunks = ["MINOR<<<VERDICT>>>", "You mean hello<<<MEANING>>>", "Hola, ¿cómo estás?<<<SUGGESTION>>>"]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
-        events = list(coach_draft_stream("hola como estas", [], "en", "es"))
-
-    assert events[0] == ("verdict", "minor")
-    assert "".join(e[1] for e in events if e[0] == "meaning_chunk") == "You mean hello"
-    assert ("meaning_complete", "You mean hello") in events
-    assert "".join(e[1] for e in events if e[0] == "suggestion_chunk") == "Hola, ¿cómo estás?"
-    assert events[-1] == ("suggestion_complete", "Hola, ¿cómo estás?")
-
-
-def test_coach_draft_stream_fix_verdict_streams_one_suggestion_then_its_translation():
-    chunks = [
-        "FIX<<<VERDICT>>>",
-        "I want to go to the beach<<<MEANING>>>",
-        "Quiero ir a la playa.<<<OPT1_ES>>>",
-        "I want to go to the beach.<<<OPT1_EN>>>",
-        "Quiero ir a la playa, ¿va?<<<OPT2_ES>>>",  # ignored: one suggestion only
-    ]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)) as mock_stream:
-        events = list(coach_draft_stream("i want go beach", [], "en", "es"))
-
-    complete_events = [e for e in events if e[0].endswith("_complete")]
-    assert complete_events == [
-        ("meaning_complete", "I want to go to the beach"),
-        ("option_spanish_complete", 0, "Quiero ir a la playa."),
-        ("option_english_complete", 0, "I want to go to the beach."),
-    ]
-    system = mock_stream.call_args.args[0][0]["content"]
-    assert "ONE suggested way" in system
-    assert "the meaning is X itself" in system
-    assert "<<<OPT2_ES>>>" not in system
-
-
-def test_coach_draft_stream_puts_the_next_message_discussion_in_the_prompt():
-    with patch(
-        "app.translate.llm_translate.model_chat_stream",
-        return_value=iter(["FIX<<<VERDICT>>>"]),
-    ) as mock_stream:
-        list(
-            coach_draft_stream(
-                "more casual",
-                [],
-                "en",
-                "es",
-                draft_turns=[("learner", "I want to say I like running"), ("coach", "Suggested: Me gusta correr.")],
-            )
-        )
-    system = mock_stream.call_args.args[0][0]["content"]
-    assert "Coach: Suggested: Me gusta correr." in system
-    assert "adjust an earlier suggestion" in system
-
-
-def test_coach_draft_stream_fix_option_swaps_mislabeled_spanish_and_english():
-    # Observed live equivalent of interpret_user_input's own swap bug (see
-    # test_interpret_user_input_swaps_mislabeled_content) but for a FIX
-    # verdict's per-option fields - the model put the right content under
-    # the wrong marker.
-    chunks = [
-        "FIX<<<VERDICT>>>",
-        "meaning<<<MEANING>>>",
-        "I want to go to the beach.<<<OPT1_ES>>>",
-        "Quiero ir a la playa.<<<OPT1_EN>>>",
-    ]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    spanish_complete = [e[2] for e in events if e[0] == "option_spanish_complete" and e[1] == 0]
-    english_complete = [e[2] for e in events if e[0] == "option_english_complete" and e[1] == 0]
-    # The original (wrong-language) spanish_complete is yielded immediately
-    # as it arrives, then a corrective SECOND one follows once the matching
-    # english_complete reveals the swap - a repeat "_complete" for the same
-    # index/field is exactly what the frontend reducer already overwrites
-    # on, so the corrected one being last is what the UI ends up showing.
-    assert spanish_complete[-1] == "Quiero ir a la playa."
-    assert english_complete[-1] == "I want to go to the beach."
-
-
-def test_coach_draft_stream_fix_option_forces_translation_when_spanish_field_was_never_translated():
-    # The model left BOTH fields in English - not a swap (Spanish never
-    # appeared at all), so the Spanish field must be force-translated
-    # rather than swapped with the (also-English) "English" field.
-    chunks = [
-        "FIX<<<VERDICT>>>",
-        "meaning<<<MEANING>>>",
-        "I want to go to the beach.<<<OPT1_ES>>>",
-        "I want to go to the beach.<<<OPT1_EN>>>",
-    ]
-    with (
-        patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)),
-        patch("app.translate.llm_translate.model_chat", return_value="Quiero ir a la playa.") as mock_chat,
-    ):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    spanish_complete = [e[2] for e in events if e[0] == "option_spanish_complete" and e[1] == 0]
-    english_complete = [e[2] for e in events if e[0] == "option_english_complete" and e[1] == 0]
-    assert spanish_complete[-1] == "Quiero ir a la playa."
-    assert english_complete[-1] == "I want to go to the beach."
-    mock_chat.assert_called_once()
-
-
-def test_coach_draft_stream_fix_option_forces_translation_when_english_field_was_never_translated():
-    # The mirror case: both fields left in Spanish - the English back-
-    # translation must be force-translated rather than left showing
-    # Spanish text under an "English" label.
-    chunks = [
-        "FIX<<<VERDICT>>>",
-        "meaning<<<MEANING>>>",
-        "Quiero ir a la playa.<<<OPT1_ES>>>",
-        "Quiero ir a la playa.<<<OPT1_EN>>>",
-    ]
-    with (
-        patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)),
-        patch("app.translate.llm_translate.model_chat", return_value="I want to go to the beach.") as mock_chat,
-    ):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    spanish_complete = [e[2] for e in events if e[0] == "option_spanish_complete" and e[1] == 0]
-    english_complete = [e[2] for e in events if e[0] == "option_english_complete" and e[1] == 0]
-    assert spanish_complete[-1] == "Quiero ir a la playa."
-    assert english_complete[-1] == "I want to go to the beach."
-    mock_chat.assert_called_once()
-
-
-def test_coach_draft_stream_fix_option_correction_degrades_gracefully_on_translate_failure():
-    # The correction check's own fallback translate_text call can itself
-    # fail - that must not crash the whole stream, just leave the
-    # (possibly still wrong-language) pair as the model originally wrote
-    # it rather than losing the option entirely.
-    chunks = [
-        "FIX<<<VERDICT>>>",
-        "meaning<<<MEANING>>>",
-        "I want to go to the beach.<<<OPT1_ES>>>",
-        "I want to go to the beach.<<<OPT1_EN>>>",
-    ]
-    with (
-        patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)),
-        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
-    ):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    spanish_complete = [e[2] for e in events if e[0] == "option_spanish_complete" and e[1] == 0]
-    english_complete = [e[2] for e in events if e[0] == "option_english_complete" and e[1] == 0]
-    assert spanish_complete == ["I want to go to the beach."]
-    assert english_complete == ["I want to go to the beach."]
-
-
-def test_coach_draft_stream_markers_split_across_chunks():
-    # A marker can land anywhere relative to chunk boundaries - the buffer
-    # accumulates across chunks regardless, so this must behave
-    # identically to each marker arriving in one whole chunk.
-    full = (
-        "MINOR<<<VERDICT>>>"
-        "meaning text<<<MEANING>>>"
-        "suggestion text<<<SUGGESTION>>>"
-    )
-    chunks = [full[i : i + 5] for i in range(0, len(full), 5)]  # arbitrary small chunks
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    assert events[0] == ("verdict", "minor")
-    assert "".join(e[1] for e in events if e[0] == "meaning_chunk") == "meaning text"
-    assert "".join(e[1] for e in events if e[0] == "suggestion_chunk") == "suggestion text"
-    assert events[-1] == ("suggestion_complete", "suggestion text")
-
-
-def test_coach_draft_stream_raises_when_verdict_marker_never_arrives():
-    # Nothing downstream can be trusted without knowing which fields to
-    # expect next - this is the one case that's a real error, not a
-    # graceful degradation.
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(["just some plain text, no marker"])):
-        with pytest.raises(TranslationUnavailableError):
-            list(coach_draft_stream("algo", [], "en", "es"))
-
-
-def test_coach_draft_stream_never_leaks_a_marker_fragment_into_meaning_chunks():
-    # A chunk boundary landing mid-marker must never leak a piece of the
-    # marker itself into a "meaning_chunk" delta.
-    # Split right after "<<<MEAN", mid-marker - the worst case for a naive
-    # implementation that streams everything not yet proven to be the
-    # marker.
-    chunks = ["CLEAN<<<VERDICT>>>meaning text<<<MEAN", "ING>>>"]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    meaning = "".join(e[1] for e in events if e[0] == "meaning_chunk")
-    assert meaning == "meaning text"
-    assert "<" not in meaning
-
-
-def test_coach_draft_stream_defaults_unrecognized_verdict_token_to_fix():
-    # A malformed/unrecognized verdict must never silently become "clean"
-    # (telling the learner a broken draft is fine to send) - defaulting to
-    # the full correction flow is the safe direction to fail in.
-    chunks = ["MAYBE<<<VERDICT>>>", "x<<<MEANING>>>", "y<<<OPT1_ES>>>", "z<<<OPT1_EN>>>", "a<<<OPT2_ES>>>", "b<<<OPT2_EN>>>", "c<<<OPT3_ES>>>", "d<<<OPT3_EN>>>"]
-    # The single-letter option placeholders above have no real language
-    # content for the Spanish/English correction check to key off (see
-    # _correct_option_languages's own tests below) - model_chat is mocked
-    # here purely so that check's fallback translate_text call, if it
-    # fires, doesn't reach out over the network; this test only cares
-    # about the verdict default.
-    with (
-        patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)),
-        patch("app.translate.llm_translate.model_chat", return_value="n/a"),
-    ):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    assert events[0] == ("verdict", "fix")
-
-
-def test_coach_draft_stream_degrades_gracefully_when_the_translation_never_arrives():
-    # Token budget pressure (or the model just not getting that far) can
-    # leave the back-translation unwritten - the suggestion itself should
-    # still be usable rather than the whole thing failing.
-    chunks = [
-        "FIX<<<VERDICT>>>",
-        "meaning<<<MEANING>>>",
-        "Quiero ir a la playa.<<<OPT1_ES>>>",
-        "I want to go",
-    ]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
-        events = list(coach_draft_stream("algo", [], "en", "es"))
-
-    complete_kinds = [e[0] for e in events if e[0].endswith("_complete")]
-    assert complete_kinds == ["meaning_complete", "option_spanish_complete"]
-    trailing = [e for e in events if e[0] == "option_english_chunk"]
-    assert "I want to go".startswith("".join(e[2] for e in trailing))
-
-
-def test_coach_draft_stream_includes_recent_history_in_prompt():
-    chunks = ["CLEAN<<<VERDICT>>>", "x<<<MEANING>>>"]
-    history = [("assistant", "¿Qué planes tienes para el fin de semana?"), ("user", "quiero ir playa")]
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)) as mock_stream:
-        list(coach_draft_stream("mañana quiero ir", history, "en", "es"))
-
-    (messages,), _ = mock_stream.call_args
-    prompt = messages[0]["content"]
-    assert "¿Qué planes tienes para el fin de semana?" in prompt
-    assert "quiero ir playa" in prompt
-
-
-def test_coach_draft_stream_wraps_model_server_error():
-    with patch("app.translate.llm_translate.model_chat_stream", side_effect=ModelServerUnavailableError("down")):
-        with pytest.raises(TranslationUnavailableError, match="down"):
-            list(coach_draft_stream("hola", [], "en", "es"))
-
-
-# --- coach_draft_stream: routing to the tutor -------------------------------
-
-
-def test_coach_draft_stream_ask_verdict_stops_right_after_the_verdict():
-    chunks = iter(["ASK<<<VERDICT>>>", "should never be read<<<MEANING>>>"])
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=chunks):
-        events = list(coach_draft_stream("what does llamas mean?", [], "en", "es"))
-    assert events == [("verdict", "ask")]
-    # The rest of the model's stream was never consumed.
-    assert next(chunks) == "should never be read<<<MEANING>>>"
-
-
-def test_coach_draft_stream_without_allow_ask_treats_ask_as_fix_and_omits_the_rule():
-    with patch(
-        "app.translate.llm_translate.model_chat_stream",
-        return_value=iter(["ASK<<<VERDICT>>>", "x<<<MEANING>>>"]),
-    ) as mock_stream:
-        events = list(coach_draft_stream("hola", [], "en", "es", allow_ask=False))
-    assert events[0] == ("verdict", "fix")
-    system = mock_stream.call_args.args[0][0]["content"]
-    assert "- ASK:" not in system
-    assert "CLEAN, MINOR, or FIX" in system
-
-
-def test_coach_draft_stream_puts_the_open_thread_in_the_prompt():
-    with patch(
-        "app.translate.llm_translate.model_chat_stream",
-        return_value=iter(["ASK<<<VERDICT>>>"]),
-    ) as mock_stream:
-        list(
-            coach_draft_stream(
-                "llamas?",
-                [],
-                "en",
-                "es",
-                open_thread=("¿Cómo te llamas?", [("learner", "what does that mean?"), ("tutor", "What's your name?")]),
-            )
-        )
-    system = mock_stream.call_args.args[0][0]["content"]
-    assert "¿Cómo te llamas?" in system
-    assert "Tutor: What's your name?" in system
-    assert "- ASK:" in system
-
-
-# --- tutor_answer_stream ------------------------------------------------------
-
-_TUTOR_MESSAGES = [
+_MESSAGES = [
     {"number": 1, "role": "user", "text": "Hola"},
     {"number": 2, "role": "assistant", "text": "¿Cómo te llamas?", "glosses": "llamas = you call yourself"},
 ]
 
 
-def test_tutor_answer_stream_gets_the_next_message_discussion():
-    with patch(
-        "app.translate.llm_translate.model_chat_stream", return_value=iter(["0<<<ABOUT>>>Use \"tengo sueño\"."])
-    ) as mock_stream:
-        events = list(
-            tutor_answer_stream(
-                "how do I say I'm sleepy?", _TUTOR_MESSAGES, 2, [], "en", "es", draft_turns=[("learner", "I want to say I'm tired")]
-            )
-        )
-    assert events[0] == ("about", None)
-    system = mock_stream.call_args.args[0][0]["content"]
-    assert "Learner: I want to say I'm tired" in system
-    assert "0 if it is about what the learner wants to say" in system
-
-
-def test_tutor_answer_stream_yields_about_then_streamed_answer():
-    chunks = ["2<<<AB", "OUT>>>It literally means ", "\"how do you call yourself\"."]
+def _reply(chunks, **kwargs):
+    args = dict(
+        text=kwargs.pop("text", "x"),
+        messages=kwargs.pop("messages", _MESSAGES),
+        default_number=kwargs.pop("default_number", None),
+        thread_turns=kwargs.pop("thread_turns", []),
+        draft_turns=kwargs.pop("draft_turns", []),
+        native_lang="en",
+        target_lang="es",
+        **kwargs,
+    )
     with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)) as mock_stream:
-        events = list(tutor_answer_stream("what does that mean?", _TUTOR_MESSAGES, 2, [], "en", "es"))
-    assert events[0] == ("about", 2)
-    assert "".join(e[1] for e in events if e[0] == "answer_chunk") == 'It literally means "how do you call yourself".'
-    assert events[-1] == ("answer_complete", 'It literally means "how do you call yourself".')
+        events = list(coach_reply_stream(**args))
+    return events, mock_stream
+
+
+def test_coach_reply_stream_empty_input_short_circuits():
+    with patch("app.translate.llm_translate.model_chat_stream") as mock_stream:
+        assert list(coach_reply_stream("  ", _MESSAGES, None, [], [], "en", "es")) == []
+    mock_stream.assert_not_called()
+
+
+def test_coach_reply_stream_yields_about_ready_then_the_streamed_reply():
+    events, mock_stream = _reply(
+        ["0<<<AB", "OUT>>>no<<<READY>>>Nice. Try ", "[[Me gusta nadar. | I like swimming.]]"],
+        text="me gusta swimming",
+    )
+    assert events[0] == ("about", None)
+    assert events[1] == ("ready", False)
+    reply = "".join(e[1] for e in events if e[0] == "reply_chunk")
+    assert reply == "Nice. Try [[Me gusta nadar. | I like swimming.]]"
+    assert events[-1] == ("reply_complete", reply)
     system = mock_stream.call_args.args[0][0]["content"]
     assert "[2] Partner: ¿Cómo te llamas?" in system
     assert "llamas = you call yourself" in system
+    assert "[[Spanish sentence | English meaning]]" in system
     assert mock_stream.call_args.kwargs["model"]
 
 
-def test_tutor_answer_stream_unknown_number_falls_back_to_the_default_and_zero_means_none():
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(["7<<<ABOUT>>>Sure."])):
-        events = list(tutor_answer_stream("q", _TUTOR_MESSAGES, 2, [], "en", "es"))
+def test_coach_reply_stream_ready_yes_and_about_a_message():
+    events, _ = _reply(["2<<<ABOUT>>>Yes.<<<READY>>>That's right!"])
+    assert events[:2] == [("about", 2), ("ready", True)]
+
+
+def test_coach_reply_stream_unknown_number_falls_back_to_the_open_thread():
+    events, _ = _reply(["7<<<ABOUT>>>no<<<READY>>>Sure."], default_number=2)
     assert events[0] == ("about", 2)
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(["0<<<ABOUT>>>Sure."])):
-        events = list(tutor_answer_stream("q", _TUTOR_MESSAGES, 2, [], "en", "es"))
+    events, _ = _reply(["0<<<ABOUT>>>no<<<READY>>>Sure."], default_number=2)
     assert events[0] == ("about", None)
 
 
-def test_tutor_answer_stream_strips_an_echoed_answer_label():
-    with patch(
-        "app.translate.llm_translate.model_chat_stream",
-        return_value=iter(["2<<<ABOUT>>>ANSWER: ", "Yes, \"llamas\" again."]),
-    ):
-        events = list(tutor_answer_stream("llamas?", _TUTOR_MESSAGES, 2, [("learner", "q"), ("tutor", "a")], "en", "es"))
-    assert events[-1] == ("answer_complete", 'Yes, "llamas" again.')
-    assert all(not e[1].startswith("ANSWER") for e in events if e[0] == "answer_chunk")
+def test_coach_reply_stream_strips_echoed_field_labels():
+    events, _ = _reply(["ABOUT: 0<<<ABOUT>>>READY: yes<<<READY>>>REPLY: ", "Perfect, send it."])
+    assert events[1] == ("ready", True)
+    assert events[-1] == ("reply_complete", "Perfect, send it.")
+    assert all(not e[1].startswith("REPLY") for e in events if e[0] == "reply_chunk")
 
 
-def test_tutor_answer_stream_without_a_marker_still_returns_the_answer():
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(["Short."])):
-        events = list(tutor_answer_stream("q", _TUTOR_MESSAGES, 2, [], "en", "es"))
+def test_coach_reply_stream_without_markers_still_returns_the_reply():
+    events, _ = _reply(["Just a plain answer."], default_number=2)
     assert events[0] == ("about", 2)
-    assert events[-1] == ("answer_complete", "Short.")
+    assert events[1] == ("ready", False)
+    assert events[-1] == ("reply_complete", "Just a plain answer.")
 
 
-def test_tutor_answer_stream_raises_on_empty_or_unreachable_model():
-    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(["2<<<ABOUT>>>"])):
-        with pytest.raises(TranslationUnavailableError):
-            list(tutor_answer_stream("q", _TUTOR_MESSAGES, 2, [], "en", "es"))
+def test_coach_reply_stream_context_reaches_the_prompt():
+    _, mock_stream = _reply(
+        ["0<<<ABOUT>>>no<<<READY>>>ok"],
+        default_number=2,
+        thread_turns=[("learner", "what does it mean?"), ("coach", "What's your name?")],
+        draft_turns=[("learner", "I want to say I'm Kyle"), ("coach", "Try [[Me llamo Kyle. | My name is Kyle.]]")],
+        check=True,
+    )
+    system = mock_stream.call_args.args[0][0]["content"]
+    assert "about message [2] so far" in system
+    assert "Coach: What's your name?" in system
+    assert "Learner: I want to say I'm Kyle" in system
+    assert "exact message they're about to send" in system
+
+
+def test_coach_reply_stream_raises_on_empty_or_unreachable_model():
+    with pytest.raises(TranslationUnavailableError):
+        _reply(["0<<<ABOUT>>>no<<<READY>>>"])
     with patch("app.translate.llm_translate.model_chat_stream", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError):
-            list(tutor_answer_stream("q", _TUTOR_MESSAGES, 2, [], "en", "es"))
-
-
-def test_coach_draft_stream_drops_i_want_to_say_framing_from_the_meaning():
-    # Seen live: 'Did you mean "I want to say I like swimming too"?' - the
-    # restatement should be the message itself.
-    with patch(
-        "app.translate.llm_translate.model_chat_stream",
-        return_value=iter(["FIX<<<VERDICT>>>", "I want to say that I like swimming too<<<MEANING>>>"]),
-    ):
-        events = list(coach_draft_stream("I want to say I like swimming too", [], "en", "es"))
-    assert ("meaning_complete", "I like swimming too") in events
-
-
-@pytest.mark.parametrize(
-    "meaning",
-    ["I want to go to the beach", "Hi, do you like running?", "I said hello", "How are you?"],
-)
-def test_meanings_without_say_framing_are_untouched(meaning):
-    with patch(
-        "app.translate.llm_translate.model_chat_stream",
-        return_value=iter(["CLEAN<<<VERDICT>>>", f"{meaning}<<<MEANING>>>"]),
-    ):
-        events = list(coach_draft_stream("x", [], "en", "es"))
-    assert ("meaning_complete", meaning) in events
+            list(coach_reply_stream("q", _MESSAGES, None, [], [], "en", "es"))

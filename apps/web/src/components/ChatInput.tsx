@@ -79,6 +79,7 @@ export function ChatInput({
   onCheck,
   sessionId,
   readyText,
+  onValueChange,
   controlRef,
 }: {
   onSend: (text: string) => void;
@@ -87,6 +88,7 @@ export function ChatInput({
   // Text the coach has approved (or the learner took from a suggestion) -
   // the Send button turns green while the box holds exactly this.
   readyText: string | null;
+  onValueChange?: (text: string) => void;
   controlRef?: RefObject<ChatInputControl | null>;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -94,6 +96,8 @@ export function ChatInput({
   const dragAnchorRef = useRef<number | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const touchMovedRef = useRef(false);
+  // The word whose popover a tap just closed (see handleTextareaTouchStart).
+  const closedOnTouchRef = useRef<{ start: number; end: number } | null>(null);
   const wasFocusedRef = useRef(false);
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Bumped on every /translate/tag-input request fired, and checked again
@@ -297,6 +301,7 @@ export function ChatInput({
   // Shared base for anything that changes the draft text.
   const applyValue = (next: string) => {
     setValue(next);
+    onValueChange?.(next);
     setPhraseSelection(null);
   };
 
@@ -446,6 +451,12 @@ export function ChatInput({
   const handleWordMouseDown = (e: React.MouseEvent<HTMLSpanElement>, seg: Segment) => {
     if ((e.target as HTMLElement).closest(".word-candidates-popover")) return;
     e.preventDefault();
+    // Clicking the word whose popover is open closes it (hover reopens it
+    // only once the pointer leaves and comes back).
+    if (openOffset !== null && openOffset >= seg.start && openOffset < seg.end) {
+      cancelHoverClose();
+      setOpenOffset(null);
+    }
     const textarea = textareaRef.current;
     if (!textarea) return;
     const pos = charOffsetAtPoint(e.clientX, e.clientY) ?? seg.start;
@@ -490,6 +501,9 @@ export function ChatInput({
   // the popover both happen from the same tap, same as clicking a word in
   // a chat bubble already does.
   const handleTextareaTouchStart = (e: React.TouchEvent<HTMLTextAreaElement>) => {
+    // Remember what was open: tapping that same word again just closes it.
+    const open = openOffset !== null ? segments.find((s) => s.hoverable && openOffset >= s.start && openOffset < s.end) : undefined;
+    closedOnTouchRef.current = open ? { start: open.start, end: open.end } : null;
     if (openOffset !== null) setOpenOffset(null);
     const touch = e.touches[0];
     touchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
@@ -518,6 +532,9 @@ export function ChatInput({
     if (offset === null) return;
     const seg = segments.find((s) => s.hoverable && offset >= s.start && offset <= s.end);
     if (!seg) return;
+    const closed = closedOnTouchRef.current;
+    closedOnTouchRef.current = null;
+    if (closed && seg.start < closed.end && seg.end > closed.start) return;
     setOpenOffset(seg.start);
     ensureGlossSpans();
   };

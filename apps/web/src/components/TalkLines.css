@@ -1,0 +1,43 @@
+/* A side conversation with the coach (the "Your next message" panel and the
+   threads under messages). Your lines are right-aligned tinted bubbles;
+   the coach's are plain text on the left, so the two never blur together. */
+.talk-line {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 92%;
+  overflow-wrap: anywhere;
+}
+
+.talk-line--you {
+  align-self: flex-end;
+  align-items: flex-end;
+  padding: 6px 10px;
+  border-radius: 12px 12px 4px 12px;
+  background: rgba(130, 170, 255, 0.18);
+  color: #e3eaff;
+  text-align: right;
+}
+
+.talk-line--coach {
+  align-self: flex-start;
+  color: #e2e5ec;
+}
+
+.talk-line__who {
+  font-weight: 700;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.talk-line--coach .talk-line__who {
+  color: #7fd39b;
+  opacity: 0.9;
+}
+
+.talk-line__error {
+  color: #ff8a8a;
+  font-size: 0.8rem;
+}

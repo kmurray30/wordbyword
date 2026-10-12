@@ -60,7 +60,7 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key for voice mode's coach voice (`/tts/speak` with `role: "coach"`); the coach falls silent (text still shown) if unset |
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | ElevenLabs model - must be multilingual (the coach mixes English and Spanish in one sentence); `eleven_flash_v2_5` is the faster/cheaper option |
 | `ELEVENLABS_COACH_VOICE_ID` | *(none - auto-picked)* | which ElevenLabs voice the coach speaks with; unset, the server picks one of the account's own premade (English) voices at first use - the free plan rejects "library" voice ids via the API, so a well-known id like Rachel's does NOT work there |
-| `OPENAI_TUTOR_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the tutor's answers to questions about a message (read aloud as they stream, so latency matters) |
+| `OPENAI_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the coach (read aloud as it streams, so latency matters) |
 
 ### Frontend
 
@@ -199,33 +199,32 @@ never any of Kokoro's other languages' voices. `POST /tts/speak` takes an
 optional `voice` field and rejects one that isn't valid for the given
 `language` with a 400.
 
-## Two inputs, two kinds of log, voice, and the tutor
+## Two inputs, the coach, threads, and voice
 
 **The message box** (bottom) holds only what you'll actually send. Send
 sends it as is. 💡 asks the coach to check it.
 
-**Your next message** (the green panel above it) is where you work out
-what to say. It has its own box: type or talk in any mix of English and
-Spanish ("I want to say I like swimming", "more casual", "how do I say
-tired?"). The coach answers there with **one** suggestion and its English
-meaning. **Use this** puts it in the message box and turns Send green.
-The tutor's answers about your reply appear there too. When you send, that
-whole log becomes the thread under the message you sent ("How you worked
-this out").
+**Your next message** (the green panel above it) is a conversation with
+your coach about what to say. It has its own box: type or talk in any mix
+of English and Spanish - cold Spanish ("me gusta swimming"), "I want to
+say ...", "more casual", "what does llamas mean?". The coach answers like a
+coach: explains, corrects, drills, or suggests. A suggestion shows as a
+card with its English meaning and **Use this**, which puts it in the
+message box and turns Send green ("✓ In message" until you edit the box).
+When you send, the conversation becomes the thread under the message you
+sent. Both the panel and the threads scroll and stay on the newest line.
 
-**Their messages** each have their own thread ("About their message", 💬
-under the bubble). A question about their message, asked in the panel, is
-answered there, and the panel notes where it went. While one of those
+**Their messages** each have their own thread (💬 under the bubble). A
+question about their message is answered there. While one of those
 threads is open, follow-ups like "llamas?" continue it.
 
 Under the hood both boxes go to `POST /translate/coach`
-(`app.translate.llm_translate.coach_draft_stream`), whose first token
-routes. `CLEAN` / `MINOR` / `FIX` is something you want to say. `ASK` is a
-question, handed to `tutor_answer_stream`, which picks the message it's
-about, or "your next message". The panel's discussion so far is sent as
-context (`draft_thread`), so "more casual" adjusts the last suggestion.
-Escape hatches go both ways: "That was a question" in the panel, and "That
-was about my reply" under their message.
+(`app.translate.llm_translate.coach_reply_stream`). The model writes three
+fields: which partner message it's about (0 = your next message), whether
+your own Spanish is ready to send, then its reply, with any suggestion
+written as `[[Spanish | English]]` for the app to render as a card. The
+panel's conversation so far is sent along (`draft_thread`). 💡 in the
+message box sends the box's text with `check: true`.
 
 **Voice input is dictation.** Tap 🎤 in either box and your words stream
 into that box as you speak (`WS /voice/listen` in `app/routes/voice.py`,
@@ -237,11 +236,11 @@ finishes. In the panel's box that asks the coach. In the message box the
 text stays (it's your message) and gets checked.
 
 **Read aloud** (☰ menu, on by default, per device) speaks the coach's
-result as it streams ("Did you mean …? If so, try «…», which means
-«…»."), the tutor's answers sentence by sentence, and the
-partner's replies. The coach and tutor use ElevenLabs' multilingual model
+replies sentence by sentence as they stream (a suggestion is read as
+"«Spanish», which means «English»") and the partner's replies. The coach
+uses ElevenLabs' multilingual model
 (`app/tts/elevenlabs_client.py`, `role: "coach"` on `/tts/speak`), because
-their speech is English with Spanish inside it; the partner keeps the
+its speech is English with Spanish inside it; the partner keeps the
 Kokoro Spanish voice. All of it goes through one queue
 (`src/voice/speech.ts`), so voices never overlap, and starting to dictate
 stops whatever is playing.
@@ -253,7 +252,7 @@ for microphone/audio behaviour on a phone.
 Rough cost at personal-use volumes: Deepgram streaming ≈ $0.0077/min of
 listening, ElevenLabs multilingual ≈ $0.12/min of coach speech
 (`eleven_flash_v2_5` is about half that), Kokoro and the coach LLM calls are
-negligible by comparison (the tutor and coach run on the lighter translation model by default).
+negligible by comparison (the coach runs on the lighter translation model by default).
 
 ## Deployed on Railway
 

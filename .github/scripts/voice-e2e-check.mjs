@@ -9,10 +9,9 @@
 //     directly - both must return real audio. The clips are uploaded as
 //     artifacts so a human can listen to the coach's mixed English/Spanish
 //     pronunciation, which no script can judge.
-//  2. /translate/coach directly (OpenAI): a Spanglish attempt must come
-//     back as a coach verdict (not routed to the tutor), and a question
-//     ("what does correr mean?") must be routed to the tutor ("ask") with
-//     a streamed answer. Both printed for eyeballing.
+//  2. /translate/coach directly (OpenAI): cold Spanglish must get a coach
+//     reply with a [[Spanish | English]] suggestion, and a question ("what
+//     does correr mean?") a plain answer. Both printed for eyeballing.
 //  3. WS /voice/listen from a browser context (Deepgram handshake): send
 //     the "start" frame plus a second of silence, assert no "error" event.
 //  4. The real thing: the partner clip from stage 1 (Kokoro saying
@@ -123,23 +122,20 @@ async function coachStream(text) {
 }
 
 async function checkCoachRoutingDirect() {
-  console.log("\n=== Stage 2: /translate/coach (OpenAI) - attempt vs question routing ===");
+  console.log("\n=== Stage 2: /translate/coach (OpenAI) - one conversational coach ===");
   const attempt = await coachStream("hola, te gusta running?");
-  const verdict = attempt.get("verdict")?.verdict;
-  console.log(`attempt (${attempt.elapsed}ms): verdict=${verdict} meaning=${JSON.stringify(attempt.get("meaning_complete")?.meaning)}`);
-  for (const e of attempt.events.filter((e) => e.name === "option_complete" || e.name === "suggestion_complete")) {
-    console.log(`  ${e.name}: ${JSON.stringify(e.data)}`);
-  }
-  if (!["clean", "minor", "fix"].includes(verdict)) fail(`a Spanglish attempt should get a coach verdict, got ${verdict}`);
-  if (!attempt.get("meaning_complete")?.meaning) fail("attempt had no meaning");
+  const reply = attempt.get("reply_complete")?.reply;
+  console.log(`cold Spanglish (${attempt.elapsed}ms): about=${JSON.stringify(attempt.get("about"))} ready=${JSON.stringify(attempt.get("ready"))}`);
+  console.log(`  coach: ${JSON.stringify(reply)}`);
+  if (!reply) fail("no coach reply");
+  if (!/\[\[[^\]|]+\|[^\]]+\]\]/.test(reply)) fail("the coach should suggest a fix as a [[Spanish | English]] block for Spanglish");
+  if (attempt.get("ready")?.ready) fail("Spanglish shouldn't be ready to send");
 
   const question = await coachStream("what does 'correr' mean?");
-  const qVerdict = question.get("verdict")?.verdict;
-  const answer = question.get("answer_complete")?.answer;
-  console.log(`question (${question.elapsed}ms): verdict=${qVerdict}`);
-  console.log(`  tutor: ${JSON.stringify(answer)}`);
-  if (qVerdict !== "ask") fail(`a question should be routed to the tutor ("ask"), got ${qVerdict}`);
-  if (!answer || /^(ABOUT|ANSWER)\b/i.test(answer)) fail("tutor answer missing or starts with an echoed label");
+  const answer = question.get("reply_complete")?.reply;
+  console.log(`question (${question.elapsed}ms): about=${JSON.stringify(question.get("about"))}`);
+  console.log(`  coach: ${JSON.stringify(answer)}`);
+  if (!answer || /^(ABOUT|READY|REPLY|ANSWER)\b/i.test(answer)) fail("coach answer missing or starts with an echoed label");
 }
 
 async function checkListenHandshake(browser) {
@@ -321,7 +317,7 @@ async function checkVoiceConversation(wavPath) {
     await page.goto(FRONTEND_URL);
     await page.waitForSelector(".llm-gate", { state: "hidden", timeout: 60_000 }).catch(() => {});
     // Two inputs: the message box (what you'll send) and "Your next
-    // message" (where you work it out with the coach/tutor).
+    // message" (where you work it out with the coach).
     const TALK = ".chat-input .talk-button";
     const DRAFT = ".chat-input__textarea";
     const SEND = ".chat-input__send";
@@ -361,18 +357,11 @@ async function checkVoiceConversation(wavPath) {
     const submitted = (await draftValue()).trim();
     console.log(`finished -> message box keeps: ${JSON.stringify(submitted)}`);
     if (!/gusta|correr|hola|cómo|como/i.test(submitted)) fail(`final text doesn't look like the spoken sentence: ${submitted}`);
-    await page.waitForFunction(
-      () => {
-        const card = [...document.querySelectorAll(".next-message__check")].at(-1);
-        return !!card && !!card.querySelector(".next-message__actions, .next-message__error");
-      },
-      null,
-      { timeout: 120_000 },
-    );
-    const card = (await page.locator(".next-message__check").last().textContent()).trim();
+    const lastCoach = ".next-message .talk-line--coach:last-child";
+    await page.waitForSelector(`${lastCoach}[data-status="done"], ${lastCoach}[data-status="error"]`, { timeout: 120_000 });
+    const card = (await page.locator(lastCoach).textContent()).trim();
     console.log(`coach (in Your next message): ${JSON.stringify(card.slice(0, 300))}`);
-    if (await page.locator(".next-message__check .next-message__error").count()) fail("coach check failed");
-    if ((await page.locator(".next-message__suggestion").count()) > 1) fail("the coach should give at most one suggestion");
+    if ((await page.locator(`${lastCoach}[data-status="error"]`).count())) fail("coach check failed");
     await page.screenshot({ path: "voice-e2e-3-checked.png" });
     await page.waitForTimeout(1500);
     const coachClips = tts.filter((t) => t.role === "coach");
@@ -380,8 +369,10 @@ async function checkVoiceConversation(wavPath) {
     if (coachClips.some((t) => t.status !== 200)) fail(`coach TTS failures: ${JSON.stringify(coachClips.filter((t) => t.status !== 200))}`);
 
     // 2. Send (taking the suggestion first if the coach made one).
-    if (await page.locator(".next-message__check").last().locator(".next-message__use:not([disabled])").count()) {
-      await page.locator(".next-message__check").last().locator(".next-message__use").click();
+    if (!(await page.locator(".chat-input__send--ready").count())) {
+      const use = page.locator(`${lastCoach} .coach-text__use:not([disabled])`).first();
+      if (await use.count()) await use.click();
+      else fail("coach neither approved the message nor suggested one to use");
     }
     await page.waitForSelector(".chat-input__send--ready", { timeout: 10_000 });
     const bubblesBefore = await page.locator(".chat-message__bubble").count();
@@ -402,16 +393,16 @@ async function checkVoiceConversation(wavPath) {
     }
 
     // 3. A question about THEIR message, asked in Your next message, is
-    //    answered under their message (with a note in the panel).
+    //    answered under their message.
     const coachClipsBefore = tts.filter((t) => t.role === "coach").length;
     await page.fill(BRAIN, "what does 'correr' mean?");
     await page.press(BRAIN, "Enter");
     await page.waitForSelector(".chat-message--assistant .message-thread", { timeout: 120_000 });
     await page.waitForFunction(
       () => {
-        const lines = [...document.querySelectorAll(".chat-message--assistant .message-thread .message-thread__line")];
-        const last = lines.at(-1)?.textContent ?? "";
-        return /tutor/i.test(last) && last.replace(/^tutor/i, "").trim().length > 10 && !document.querySelector(".message-thread__error");
+        const t = document.querySelector(".chat-message--assistant .message-thread");
+        if (!t || t.querySelector('[data-status="error"]')) return !!t;
+        return !t.querySelector('[data-status="streaming"]') && !!t.querySelector(".talk-line--coach");
       },
       null,
       { timeout: 120_000 },
@@ -419,22 +410,22 @@ async function checkVoiceConversation(wavPath) {
     await page.waitForTimeout(2500);
     const thread = (await page.textContent(".chat-message--assistant .message-thread")).trim();
     console.log(`their-message thread: ${JSON.stringify(thread.slice(0, 400))}`);
-    console.log(`panel note: ${JSON.stringify(await page.textContent(".next-message__note").catch(() => null))}`);
-    await page.screenshot({ path: "voice-e2e-4-tutor.png" });
-    if (await page.locator(".message-thread__error").count()) fail("tutor answer failed");
-    if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("the question was sent to the partner instead of the tutor");
+    await page.screenshot({ path: "voice-e2e-4-coach.png" });
+    if (await page.locator('.message-thread [data-status="error"]').count()) fail("coach answer failed");
+    if (/tutor/i.test(thread)) fail("'Tutor' is still shown - it's the coach now");
+    if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("the question was sent to the partner instead of the coach");
     if (await page.inputValue(BRAIN)) fail("the talk-it-through box should clear after asking");
-    if (tts.filter((t) => t.role === "coach").length <= coachClipsBefore) fail("the tutor's answer was not read aloud");
+    if (tts.filter((t) => t.role === "coach").length <= coachClipsBefore) fail("the coach's answer was not read aloud");
 
     // 4. Working out the NEXT reply stays in the panel.
     await page.locator(".chat-message--assistant .chat-message__thread-toggle").last().click();
     await page.fill(BRAIN, "I want to say I like swimming too");
     await page.press(BRAIN, "Enter");
-    await page.waitForFunction(() => !!document.querySelector(".next-message__check .next-message__actions, .next-message__line .next-message__error") || [...document.querySelectorAll(".next-message__line")].some((l) => /tutor/i.test(l.textContent) && l.textContent.length > 12), null, { timeout: 120_000 });
+    await page.waitForSelector(`${lastCoach}[data-status="done"], ${lastCoach}[data-status="error"]`, { timeout: 120_000 });
     const panel = (await page.textContent(".next-message__log")).trim();
     console.log(`Your next message: ${JSON.stringify(panel.slice(0, 300))}`);
     if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("working out a reply sent something to the partner");
-    console.log(`TTS: ${tts.filter((t) => t.role === "coach").length} coach/tutor clips, ${tts.filter((t) => t.role === "partner").length} partner clips, statuses ${[...new Set(tts.map((t) => t.status))].join(",")}`);
+    console.log(`TTS: ${tts.filter((t) => t.role === "coach").length} coach clips, ${tts.filter((t) => t.role === "partner").length} partner clips, statuses ${[...new Set(tts.map((t) => t.status))].join(",")}`);
 
     // While the partner voice is down its failed /tts/speak calls show up as
     // console resource errors - expected, not a page bug.

@@ -86,12 +86,11 @@ ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingu
 # API"), while the voices GET /v1/voices lists for the account itself work.
 ELEVENLABS_COACH_VOICE_ID = os.environ.get("ELEVENLABS_COACH_VOICE_ID", "")
 
-# Model for the tutor's answers to questions about a message
-# (llm_translate.tutor_answer_stream). Latency-critical - the answer is read
-# aloud as it streams - so it defaults to the lighter translation model
-# rather than the main chat model (see the reasoning-overhead notes on
-# MAX_REPLY_TOKENS above).
-OPENAI_TUTOR_MODEL = os.environ.get("OPENAI_TUTOR_MODEL", OPENAI_TRANSLATE_MODEL)
+# Model for the coach (llm_translate.coach_reply_stream). Latency-critical -
+# the reply is read aloud as it streams - so it defaults to the lighter
+# translation model rather than the main chat model (see the
+# reasoning-overhead notes on MAX_REPLY_TOKENS above).
+OPENAI_COACH_MODEL = os.environ.get("OPENAI_COACH_MODEL", OPENAI_TRANSLATE_MODEL)
 
 # Word-bank exposure/familiarity tuning knobs.
 DEFAULT_REVIEW_INTERVAL_DAYS = 1.0

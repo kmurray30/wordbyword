@@ -6,8 +6,8 @@ import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
 import type { ChatInputControl } from "./components/ChatInput";
 import { NextMessagePanel } from "./components/NextMessagePanel";
-import type { NextMessageControl, TutorEvent } from "./components/NextMessagePanel";
-import type { LiveTutorAnswer } from "./components/MessageThread";
+import type { CoachEvent, NextMessageControl } from "./components/NextMessagePanel";
+import type { LiveCoachReply } from "./components/MessageThread";
 import { SegmentedControl } from "./components/SegmentedControl";
 import { getSessionId } from "./lib/session";
 import { isReadAloudOn, setReadAloud, speakPartner, subscribeReadAloud } from "./voice/speech";
@@ -56,14 +56,17 @@ function App() {
   // The thread the learner is currently in: follow-up questions continue
   // it. Cleared when they say something to the partner.
   const [activeThreadId, setActiveThreadId] = useState<number | null>(null);
-  // The tutor's answer while it streams, and which message it's about
+  // The coach's reply while it streams, and which message it's about
   // (null = no message to anchor to yet, shown at the end of the chat).
-  const [liveTutor, setLiveTutor] = useState<(LiveTutorAnswer & { messageId: number }) | null>(null);
+  const [liveCoach, setLiveCoach] = useState<(LiveCoachReply & { messageId: number }) | null>(null);
   const inputControlRef = useRef<ChatInputControl | null>(null);
   const nextMessageRef = useRef<NextMessageControl | null>(null);
   // Text approved to send (the coach said it's fine, or it came from a
   // suggestion the learner chose) - the Send button goes green for it.
   const [readyText, setReadyText] = useState<string | null>(null);
+  // What's in the message box right now (the coach panel marks a used
+  // suggestion only while the box still holds it).
+  const [messageText, setMessageText] = useState("");
   const threadAnchorRef = useRef<HTMLDivElement | null>(null);
   const [voice, setVoice] = useState<string | null>(() => {
     try {
@@ -197,33 +200,33 @@ function App() {
     if (target) setOpenThreads((prev) => new Set(prev).add(target.id));
   };
 
-  // Mirrors liveTutor synchronously: events arrive faster than renders, and
+  // Mirrors liveCoach synchronously: events arrive faster than renders, and
   // "done" needs the question/anchor that "start" set.
-  const liveTutorRef = useRef<(LiveTutorAnswer & { messageId: number }) | null>(null);
-  const handleTutorEvent = (event: TutorEvent) => {
+  const liveCoachRef = useRef<(LiveCoachReply & { messageId: number }) | null>(null);
+  const handleCoachEvent = (event: CoachEvent) => {
     if (event.type === "start") {
-      liveTutorRef.current = { messageId: event.messageId, question: event.question, answer: "", error: null };
-      setLiveTutor(liveTutorRef.current);
+      liveCoachRef.current = { messageId: event.messageId, question: event.question, reply: "", error: null };
+      setLiveCoach(liveCoachRef.current);
       setActiveThreadId(event.messageId);
       openThreadFor(event.messageId);
     } else if (event.type === "chunk") {
-      setLiveTutor((prev) => (prev ? { ...prev, answer: prev.answer + event.delta } : prev));
+      setLiveCoach((prev) => (prev ? { ...prev, reply: prev.reply + event.delta } : prev));
     } else if (event.type === "done") {
-      const live = liveTutorRef.current;
-      liveTutorRef.current = null;
-      setLiveTutor(null);
+      const live = liveCoachRef.current;
+      liveCoachRef.current = null;
+      setLiveCoach(null);
       if (!live) return;
       const entries: ThreadEntry[] = event.entries.length
         ? event.entries
         : [
             { id: nextLocalId--, role: "learner", kind: "question", text: live.question, data: "" },
-            { id: nextLocalId--, role: "tutor", kind: "answer", text: event.answer, data: "" },
+            { id: nextLocalId--, role: "coach", kind: "answer", text: event.reply, data: "" },
           ];
       setMessages((prev) =>
         prev.map((m) => (serverIdOf(m) === live.messageId ? { ...m, thread: [...(m.thread ?? []), ...entries] } : m)),
       );
     } else if (event.type === "error") {
-      setLiveTutor((prev) => (prev ? { ...prev, error: event.message } : prev));
+      setLiveCoach((prev) => (prev ? { ...prev, error: event.message } : prev));
     }
   };
 
@@ -239,19 +242,10 @@ function App() {
     setActiveThreadId(open ? serverIdOf(m) : null);
   };
 
-  // A question answered under their message was really about the
-  // learner's own reply: take it to "Your next message" instead.
-  const handleSayInstead = (question: string) => {
-    liveTutorRef.current = null;
-    setLiveTutor(null);
-    setActiveThreadId(null);
-    nextMessageRef.current?.submit(question, "attempt");
-  };
-
   // Keep the streaming answer in view.
   useEffect(() => {
-    if (liveTutor) threadAnchorRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [liveTutor]);
+    if (liveCoach) threadAnchorRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [liveCoach]);
   return (
     <div className="app">
       <header className="app__header">
@@ -307,7 +301,7 @@ function App() {
           <p className="app__empty">Say hello to start a conversation - ¡Hola!</p>
         )}
         {messages.map((m) => {
-          const live = liveTutor && liveTutor.messageId === serverIdOf(m) ? liveTutor : null;
+          const live = liveCoach && liveCoach.messageId === serverIdOf(m) ? liveCoach : null;
           return (
             <div key={m.id} ref={live ? threadAnchorRef : undefined}>
               <ChatMessage
@@ -315,8 +309,7 @@ function App() {
                 voice={voice ?? undefined}
                 threadOpen={openThreads.has(m.id) || !!live}
                 onToggleThread={() => toggleThread(m)}
-                liveTutor={live}
-                onSayInstead={handleSayInstead}
+                liveCoach={live}
               />
             </div>
           );
@@ -334,7 +327,8 @@ function App() {
       <NextMessagePanel
         sessionId={sessionId}
         activeThreadId={activeThreadId}
-        onTutorEvent={handleTutorEvent}
+        messageText={messageText}
+        onCoachEvent={handleCoachEvent}
         onUse={(text) => inputControlRef.current?.setText(text)}
         onReady={setReadyText}
         controlRef={nextMessageRef}
@@ -344,6 +338,7 @@ function App() {
         onCheck={(text) => nextMessageRef.current?.check(text)}
         sessionId={sessionId}
         readyText={readyText}
+        onValueChange={setMessageText}
         controlRef={inputControlRef}
       />
     </div>
