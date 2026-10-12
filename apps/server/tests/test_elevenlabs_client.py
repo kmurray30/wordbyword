@@ -135,3 +135,24 @@ def test_synthesize_retries_transport_errors_three_times_then_raises():
         with pytest.raises(TTSUnavailableError, match="after 3 attempts"):
             asyncio.run(synthesize("hello"))
     assert client.post.call_count == 3
+
+
+def test_synthesize_retries_a_429_then_succeeds():
+    # Observed live: the third of three parallel coach sentences failed -
+    # ElevenLabs caps concurrent requests per plan. A 429 is retried after
+    # a short wait rather than surfaced as a failed clip.
+    limited = Mock(status_code=429, text="too_many_concurrent_requests")
+    limited.raise_for_status = Mock(side_effect=httpx.HTTPStatusError("429", request=Mock(), response=limited))
+    ok = Mock(content=b"mp3-bytes")
+    ok.raise_for_status = Mock()
+    client_patch, client = _mock_async_client()
+    client.post = AsyncMock(side_effect=[limited, ok])
+
+    with (
+        patch("app.tts.elevenlabs_client.ELEVENLABS_API_KEY", "xi-fake"),
+        patch("app.tts.elevenlabs_client.ELEVENLABS_COACH_VOICE_ID", "voice123"),
+        patch("app.tts.elevenlabs_client._RETRY_AFTER_429_S", 0),
+        client_patch,
+    ):
+        assert asyncio.run(synthesize("hello")) == b"mp3-bytes"
+    assert client.post.call_count == 2

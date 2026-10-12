@@ -139,24 +139,40 @@ async def stream_transcripts(
         raise STTUnavailableError(f"Could not connect to Deepgram: {exc!r}") from exc
 
     async def send_audio() -> None:
-        frames = audio_frames.__aiter__()
+        # Plain iteration, deliberately NOT asyncio.wait_for() around the
+        # iterator's __anext__ to detect gaps: the timeout cancels that
+        # __anext__, which leaves an async generator unusable ("already
+        # running" on the next call) - observed live: the first muted gap
+        # killed this task, no KeepAlive ever went out, and Deepgram closed
+        # the connection 10s later ("Voice connection closed" in the UI).
+        # Gaps are covered by the separate keepalive task below instead.
         try:
-            while True:
-                try:
-                    frame = await asyncio.wait_for(frames.__anext__(), timeout=_KEEPALIVE_INTERVAL_S)
-                except asyncio.TimeoutError:
-                    await ws.send(json.dumps({"type": "KeepAlive"}))
-                    continue
-                except StopAsyncIteration:
-                    frame = None
+            async for frame in audio_frames:
                 if frame is None:
-                    await ws.send(json.dumps({"type": "CloseStream"}))
-                    return
+                    break
                 await ws.send(frame)
+            closing.set()
+            await ws.send(json.dumps({"type": "CloseStream"}))
         except websockets.exceptions.ConnectionClosed:
             return
 
+    async def keepalive() -> None:
+        # Deepgram ignores a KeepAlive that arrives while audio is flowing,
+        # so sending one on a fixed cadence is simpler and safer than
+        # trying to send it only during gaps.
+        try:
+            while not closing.is_set():
+                await asyncio.sleep(_KEEPALIVE_INTERVAL_S)
+                if closing.is_set():
+                    return
+                await ws.send(json.dumps({"type": "KeepAlive"}))
+        except websockets.exceptions.ConnectionClosed:
+            return
+
+    closing = asyncio.Event()
+
     sender = asyncio.create_task(send_audio())
+    pinger = asyncio.create_task(keepalive())
     try:
         async for message in ws:
             if isinstance(message, bytes):
@@ -175,9 +191,10 @@ async def stream_transcripts(
     except websockets.exceptions.ConnectionClosed as exc:
         logger.info("Deepgram connection closed: %r", exc)
     finally:
-        sender.cancel()
-        try:
-            await sender
-        except (asyncio.CancelledError, Exception):
-            pass
+        for task in (sender, pinger):
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         await ws.close()

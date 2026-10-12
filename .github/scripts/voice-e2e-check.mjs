@@ -286,7 +286,9 @@ async function checkVoiceConversation(wavPath) {
       let role = "?", text = "?";
       try { const body = res.request().postDataJSON(); role = body.role; text = body.text; } catch {}
       tts.push({ role, status: res.status(), text });
-      console.log(`  tts role=${role} status=${res.status()} text=${JSON.stringify(text)}`);
+      let detail = "";
+      if (res.status() !== 200) detail = ` body=${JSON.stringify(await res.text().catch(() => "?")).slice(0, 300)}`;
+      console.log(`  tts role=${role} status=${res.status()} text=${JSON.stringify(text)}${detail}`);
     }
     if (url.includes("/voice/coach") || url.includes("/chat/turn/stream")) console.log(`  ${res.status()} ${url.replace(BACKEND_URL, "")}`);
   });

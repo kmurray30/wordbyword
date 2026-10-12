@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import patch
 
 import pytest
@@ -102,3 +103,71 @@ def test_stream_wraps_connection_failure():
                         pass
 
                 asyncio.run(run())
+
+
+class _FakeDeepgramSocket:
+    """Stands in for the websockets connection: records everything sent,
+    and replays canned server messages once the first audio frame arrives."""
+
+    def __init__(self, replies: list[str]):
+        self.sent: list = []
+        self.replies = replies
+        self.closed = False
+        self._got_audio = asyncio.Event()
+
+    async def send(self, data):
+        self.sent.append(data)
+        if isinstance(data, (bytes, bytearray)):
+            self._got_audio.set()
+
+    async def close(self):
+        self.closed = True
+
+    def __aiter__(self):
+        return self._messages()
+
+    async def _messages(self):
+        await self._got_audio.wait()
+        for reply in self.replies:
+            yield reply
+        # Stay open (like the real socket would) until the caller is done.
+        await asyncio.sleep(0.6)
+
+
+def test_stream_keeps_pinging_through_a_long_gap_and_still_forwards_later_audio():
+    # Regression for the live "Voice connection closed" failure: during a
+    # muted gap no frames arrive; a KeepAlive must still go out on cadence
+    # AND audio arriving after the gap must still be forwarded (the old
+    # wait_for-based gap detection cancelled the frame iterator and killed
+    # the sender on the first gap).
+    fake = _FakeDeepgramSocket([json.dumps({"type": "SpeechStarted"})])
+
+    async def connect(*args, **kwargs):
+        return fake
+
+    async def frames():
+        yield b"\x01\x02"
+        await asyncio.sleep(0.35)  # a gap several keepalive intervals long
+        yield b"\x03\x04"
+        yield None
+
+    async def run():
+        events = []
+        async for event in stream_transcripts(frames()):
+            events.append(event)
+        return events
+
+    with (
+        patch("app.stt.deepgram_client.DEEPGRAM_API_KEY", "dg-fake"),
+        patch("app.stt.deepgram_client._KEEPALIVE_INTERVAL_S", 0.1),
+        patch("app.stt.deepgram_client.websockets.connect", side_effect=connect),
+    ):
+        events = asyncio.run(run())
+
+    assert [e.kind for e in events] == ["speech_started"]
+    audio = [s for s in fake.sent if isinstance(s, bytes)]
+    text = [json.loads(s) for s in fake.sent if isinstance(s, str)]
+    assert audio == [b"\x01\x02", b"\x03\x04"]  # audio after the gap still forwarded
+    assert sum(1 for m in text if m["type"] == "KeepAlive") >= 2
+    assert text[-1] == {"type": "CloseStream"}
+    assert fake.closed

@@ -10,6 +10,7 @@ DeepInfra client otherwise: own key, retries only on transport errors,
 raises the shared TTSUnavailableError.
 """
 
+import asyncio
 import logging
 
 import httpx
@@ -25,6 +26,15 @@ logger = logging.getLogger(__name__)
 # The voice picked by _resolve_voice_id when no id is configured - resolved
 # once per process, not per request.
 _discovered_voice_id: str | None = None
+
+# The voice coach fetches TTS one sentence at a time, several in flight at
+# once (so playback can start before the model has finished writing) -
+# observed live: the third parallel request came back as a failure, which
+# matches ElevenLabs' per-plan concurrency cap (2 on the free tier). Cap
+# in-flight requests here, and treat a 429 as retryable rather than final.
+_MAX_CONCURRENT = 2
+_concurrency = asyncio.Semaphore(_MAX_CONCURRENT)
+_RETRY_AFTER_429_S = 0.75
 
 
 def pick_voice(voices: list[dict]) -> str | None:
@@ -80,14 +90,20 @@ async def synthesize(text: str, voice_id: str | None = None, model_id: str | Non
     last_error: httpx.HTTPError | None = None
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resolved = voice_id or await _resolve_voice_id(client, headers)
-                response = await client.post(
-                    ELEVENLABS_TTS_URL.format(voice_id=resolved), json=payload, headers=headers, params=params
-                )
+            async with _concurrency:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resolved = voice_id or await _resolve_voice_id(client, headers)
+                    response = await client.post(
+                        ELEVENLABS_TTS_URL.format(voice_id=resolved), json=payload, headers=headers, params=params
+                    )
             response.raise_for_status()
             return response.content
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and attempt < 2:
+                logger.warning("Coach TTS attempt %d/3: ElevenLabs rate-limited (429), retrying", attempt + 1)
+                last_error = exc
+                await asyncio.sleep(_RETRY_AFTER_429_S)
+                continue
             raise TTSUnavailableError(
                 f"ElevenLabs TTS request failed ({exc.response.status_code}): {exc.response.text}"
             ) from exc
