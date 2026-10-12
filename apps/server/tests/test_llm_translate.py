@@ -805,3 +805,34 @@ def test_voice_coach_stream_wraps_model_server_error():
     with patch("app.translate.llm_translate.model_chat_stream", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError, match="down"):
             list(voice_coach_stream("hola", [], [], [], "en", "es"))
+
+
+def test_voice_coach_stream_strips_echoed_field_labels():
+    # Observed live: "SAY That's correct..." was read aloud, and a verdict
+    # written as "VERDICT ready" fell through to "revise" (so nothing was
+    # sent despite the coach saying "Sending: ...").
+    chunks = [
+        "INTENT attempt<<<INTENT>>>",
+        "VERDICT: ready<<<VERDICT>>>",
+        "DRAFT - ¿Te gusta correr?<<<DRAFT>>>",
+        "SAY Th",
+        "at's correct. Sending: ¿Te gusta correr?<<<SAY>>>",
+    ]
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(voice_coach_stream("te gusta correr", [], [], [], "en", "es"))
+
+    assert ("intent", "attempt") in events
+    assert ("verdict", "ready") in events
+    assert ("draft", "¿Te gusta correr?") in events
+    say = "".join(e[1] for e in events if e[0] == "say_chunk")
+    assert say == "That's correct. Sending: ¿Te gusta correr?"
+    assert events[-1] == ("say_complete", "That's correct. Sending: ¿Te gusta correr?")
+
+
+def test_voice_coach_stream_short_say_without_label_is_not_lost():
+    chunks = _voice_chunks(say="Yes.")
+    with patch("app.translate.llm_translate.model_chat_stream", return_value=iter(chunks)):
+        events = list(voice_coach_stream("sí", [], [], [], "en", "es"))
+
+    assert "".join(e[1] for e in events if e[0] == "say_chunk") == "Yes."
+    assert events[-1] == ("say_complete", "Yes.")

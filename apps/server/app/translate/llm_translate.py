@@ -881,6 +881,19 @@ _VOICE_SAY_MARKER = "<<<SAY>>>"
 # flagging to the coach as a possible mis-hearing.
 _VOICE_LOW_CONFIDENCE = 0.75
 
+# Observed live: the model sometimes echoes the field's name into the field
+# ("SAY That's correct..." / "VERDICT ready"), which would both get read
+# aloud and break the exact-match checks on intent/verdict. Stripped from
+# every field; the prompt also tells it not to.
+_VOICE_LABEL_RE = re.compile(r"^\s*(?:INTENT|VERDICT|DRAFT|SAY)\b\s*[:\-–—]?\s*", re.IGNORECASE)
+# How much of the spoken field to hold back before deciding whether it
+# starts with an echoed label - "SAY" plus a separator is 5 chars at most.
+_VOICE_SAY_HOLDBACK = 6
+
+
+def _strip_voice_label(text: str) -> str:
+    return _VOICE_LABEL_RE.sub("", text, count=1)
+
 
 def voice_coach_stream(
     transcript: str,
@@ -944,7 +957,8 @@ def voice_coach_stream(
                 f"{target_name}, may have grammar mistakes, and may contain mis-heard words.\n\n"
                 f"{context_block}{dialog_block}{confidence_block}"
                 f"Reply with exactly four fields, in this order, each immediately followed by its marker. "
-                f"No other text anywhere.\n\n"
+                f"Write only each field's content - never the field's name (do not write 'INTENT', "
+                f"'VERDICT', 'DRAFT' or 'SAY' themselves). No other text anywhere.\n\n"
                 f"1. INTENT - exactly one word, what the learner's utterance IS:\n"
                 f"- attempt: an attempt at the message they want to send (in {target_name}, {native_name}, or a mix)\n"
                 f"- question: asking you something ('how do I say...', 'what does X mean', 'why...')\n"
@@ -1003,15 +1017,18 @@ def voice_coach_stream(
         intent: str | None = None
         verdict: str | None = None
         draft = ""
+        # The spoken field streams; its first few chars are held back until
+        # it's clear whether they're an echoed "SAY" label to drop.
+        say_head: str | None = ""
         for kind, *rest in stream_sequential_fields(chunks, fields):
             if kind == "intent_complete":
-                intent = rest[0].strip().lower()
+                intent = _strip_voice_label(rest[0]).strip().lower()
                 if intent not in _VOICE_INTENTS:
                     logger.warning("voice_coach_stream: unrecognized intent %r, treating as attempt", rest[0])
                     intent = "attempt"
                 yield ("intent", intent)
             elif kind == "verdict_complete":
-                verdict = rest[0].strip().lower()
+                verdict = _strip_voice_label(rest[0]).strip().lower()
                 if verdict not in _VOICE_VERDICTS:
                     # Never default to "ready" - sending something the
                     # learner didn't approve is the harmful direction.
@@ -1020,7 +1037,7 @@ def voice_coach_stream(
                 # `draft` hasn't arrived yet; the ready-needs-a-draft check
                 # happens once it has, below.
             elif kind == "draft_complete":
-                draft = rest[0].strip()
+                draft = _strip_voice_label(rest[0]).strip()
                 if draft and target_lang == "es" and native_lang == "en" and not _looks_spanish(draft):
                     # The model wrote the "Spanish only" field in English -
                     # same post-hoc guard coach_draft_stream's options use.
@@ -1033,9 +1050,24 @@ def voice_coach_stream(
                 yield ("verdict", verdict or "revise")
                 yield ("draft", draft)
             elif kind == "say_chunk":
-                yield ("say_chunk", rest[0])
+                if say_head is not None:
+                    say_head += rest[0]
+                    if len(say_head) < _VOICE_SAY_HOLDBACK:
+                        continue
+                    head = _strip_voice_label(say_head)
+                    say_head = None
+                    if head:
+                        yield ("say_chunk", head)
+                else:
+                    yield ("say_chunk", rest[0])
             elif kind == "say_complete":
-                yield ("say_complete", rest[0].strip())
+                if say_head:
+                    # Field ended before the holdback filled - flush it.
+                    flushed = _strip_voice_label(say_head)
+                    if flushed:
+                        yield ("say_chunk", flushed)
+                say_head = None
+                yield ("say_complete", _strip_voice_label(rest[0]).strip())
         if intent is None:
             raise TranslationUnavailableError("Model reply had no usable intent")
     except ModelServerUnavailableError as exc:

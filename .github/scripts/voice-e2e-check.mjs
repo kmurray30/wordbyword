@@ -337,6 +337,18 @@ async function checkVoiceConversation(wavPath) {
 
     if (!coachTurns.length || !coachTurns[0]) fail("coach produced no spoken text");
     if (err) fail(`voice session error: ${err}`);
+    if (/^(INTENT|VERDICT|DRAFT|SAY)\b/i.test(coachTurns[0])) fail(`coach text starts with an echoed field label: ${coachTurns[0]}`);
+    // The clip is correct Spanish, so the coach normally judges it ready and
+    // says "Sending:" - in which case the sentence MUST actually have been
+    // sent and answered, with the partner's reply spoken.
+    if (/sending/i.test(coachTurns[0])) {
+      if (!bubbles.some((b) => /gusta correr/i.test(b))) fail(`coach said "Sending" but no user bubble with the sentence appeared: ${JSON.stringify(bubbles)}`);
+      if (bubbles.length < 2) fail(`coach said "Sending" but no partner reply bubble appeared: ${JSON.stringify(bubbles)}`);
+      if (!tts.some((t) => t.role === "partner" && t.status === 200)) fail("coach said \"Sending\" but the partner reply was never spoken");
+      console.log("auto-send after a ready verdict: OK");
+    } else {
+      console.log("coach asked for a revision rather than sending - acceptable, nothing to send-check");
+    }
     const coachOk = tts.filter((t) => t.role === "coach" && t.status === 200).length;
     const coachBad = tts.filter((t) => t.role === "coach" && t.status !== 200);
     console.log(`coach TTS clips: ${coachOk} ok, ${coachBad.length} failed; partner clips: ${tts.filter((t) => t.role === "partner").map((t) => t.status).join(",") || "none"}`);
