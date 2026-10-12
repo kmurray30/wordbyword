@@ -322,11 +322,22 @@ async function checkVoiceConversation(wavPath) {
     if (!/gusta|correr|hola|cómo|como/i.test(transcript)) fail(`transcript doesn't look like the spoken sentence: ${transcript}`);
 
     await page.waitForSelector(".voice-panel__turn--coach", { timeout: 120_000 });
-    await page.waitForFunction(() => {
-      const s = document.querySelector(".voice-panel__state")?.textContent ?? "";
-      return s === "Listening…" || s === "Problem";
-    }, { timeout: 150_000 });
-    const coachTurns = await page.$$eval(".voice-panel__turn--coach", (els) => els.map((e) => e.textContent.replace(/^Coach/, "").trim()));
+    // The coach's text has to be captured while the turn is live: once a
+    // sentence is sent, the panel clears the coach dialog by design, so
+    // reading it after the state settles finds nothing.
+    const coachTurns = [];
+    const noteCoach = async () => {
+      const texts = await page.$$eval(".voice-panel__turn--coach", (els) => els.map((e) => e.textContent.replace(/^Coach/, "").trim())).catch(() => []);
+      for (const t of texts) if (t && !coachTurns.includes(t)) coachTurns.push(t);
+    };
+    await noteCoach();
+    const settled = Date.now() + 150_000;
+    while (Date.now() < settled) {
+      await noteCoach();
+      const s = await page.locator(".voice-panel__state").textContent().catch(() => "");
+      if (s === "Listening…" || s === "Problem") break;
+      await page.waitForTimeout(500);
+    }
     console.log(`coach said: ${JSON.stringify(coachTurns)}`);
     const state = await page.textContent(".voice-panel__state");
     const err = await page.locator(".voice-panel__error").textContent().catch(() => null);
