@@ -1,7 +1,8 @@
 name: Coach probe (deployed Railway app)
 
-# Prints the raw /translate/coach event stream for a few typical inputs.
-# Manual diagnostic; push-triggered for the same reason as chat-sample.yml.
+# Drives the live app's coach panel in WebKit (Safari's engine) and prints
+# what it shows. Manual diagnostic; push-triggered for the same reason as
+# chat-sample.yml.
 on:
   workflow_dispatch:
   push:
@@ -13,14 +14,22 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
-      BACKEND_URL: https://server-production-f688.up.railway.app
-      PROBE_SESSION: da41ac62-3e60-4f0e-a8f4-396bd37e32d4
+      FRONTEND_URL: https://web-production-63d72.up.railway.app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Probe the coach
+      - name: Install Playwright WebKit
+        run: |
+          npm install playwright@1.48
+          npx playwright install --with-deps webkit
+      - name: Probe the coach in WebKit
         run: node .github/scripts/coach-probe.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coach-webkit
+          path: coach-webkit.png
