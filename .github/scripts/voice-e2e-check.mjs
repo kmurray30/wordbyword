@@ -32,6 +32,9 @@ const BACKEND_URL = process.env.BACKEND_URL;
 const FRONTEND_URL = process.env.FRONTEND_URL;
 const TEST_SESSION_ID = `voice-e2e-${crypto.randomUUID()}`;
 const SPANISH_SENTENCE = "Hola, ¿cómo estás? ¿Te gusta correr?";
+// Problems with a third-party provider that shouldn't stop the rest of the
+// check from running - reported (and failed on) at the very end instead.
+const deferredFailures = [];
 
 function fail(message) {
   console.error(`FAIL: ${message}`);
@@ -82,6 +85,19 @@ async function checkTtsDirect() {
     const start = Date.now();
     const res = await post("/tts/speak", body, 90_000);
     const elapsed = Date.now() - start;
+    if (!res.ok && role === "partner") {
+      // The partner voice (DeepInfra) is down - everything else can still
+      // be checked, with the coach voice saying the sentence as the mic.
+      const detail = `/tts/speak role=partner returned ${res.status} after ${elapsed}ms: ${await res.text()}`;
+      console.log(`PARTNER VOICE DOWN - ${detail}`);
+      deferredFailures.push(detail);
+      const fallback = await post("/tts/speak", { text: SPANISH_SENTENCE, role: "coach" }, 90_000);
+      if (!fallback.ok) fail(`fallback mic clip via the coach voice also failed: ${fallback.status}`);
+      clips.mic = Buffer.from(await fallback.arrayBuffer());
+      writeFileSync("voice-mic-fallback.mp3", clips.mic);
+      console.log(`using the coach voice saying ${JSON.stringify(SPANISH_SENTENCE)} as the mic (${clips.mic.length} bytes)`);
+      continue;
+    }
     if (!res.ok) fail(`/tts/speak role=${role} returned ${res.status} after ${elapsed}ms: ${await res.text()}`);
     const buf = Buffer.from(await res.arrayBuffer());
     const type = res.headers.get("content-type");
@@ -89,6 +105,7 @@ async function checkTtsDirect() {
     if (!type?.includes("audio") || buf.length < 1000) fail(`role=${role}: not a real audio response`);
     writeFileSync(`voice-${role}.mp3`, buf);
     clips[role] = buf;
+    if (role === "partner") clips.mic = buf;
   }
   return clips;
 }
@@ -364,7 +381,10 @@ async function checkVoiceConversation(wavPath) {
     const bubbles = await page.$$eval(".chat-message__bubble", (els) => els.map((e) => e.textContent.trim()).slice(-2));
     console.log(`chat: ${JSON.stringify(bubbles)}`);
     await page.waitForTimeout(2000);
-    if (!tts.some((t) => t.role === "partner" && t.status === 200)) fail("the partner's reply was not read aloud");
+    if (!tts.some((t) => t.role === "partner" && t.status === 200)) {
+      if (deferredFailures.length) console.log("partner reply not read aloud - expected while the partner voice is down");
+      else fail("the partner's reply was not read aloud");
+    }
     if (!(await page.locator(".chat-message--user .chat-message__thread-toggle").count())) fail("the sent message has no thread with its check");
 
     // 4. A question goes to the tutor, answered under the partner's message.
@@ -390,8 +410,11 @@ async function checkVoiceConversation(wavPath) {
     if (tts.filter((t) => t.role === "coach").length <= coachClipsBefore) fail("the tutor's answer was not read aloud");
     console.log(`TTS: ${tts.filter((t) => t.role === "coach").length} coach/tutor clips, ${tts.filter((t) => t.role === "partner").length} partner clips, statuses ${[...new Set(tts.map((t) => t.status))].join(",")}`);
 
-    console.log(`console/page errors: ${errors.length ? JSON.stringify(errors) : "none"}`);
-    if (errors.length) fail("page errors during the voice conversation");
+    // While the partner voice is down its failed /tts/speak calls show up as
+    // console resource errors - expected, not a page bug.
+    const pageErrors = deferredFailures.length ? errors.filter((e) => !/status of 50[23]/.test(e)) : errors;
+    console.log(`console/page errors: ${pageErrors.length ? JSON.stringify(pageErrors) : "none"}`);
+    if (pageErrors.length) fail("page errors during the voice conversation");
   } finally {
     // Clean up whatever this browser session chatted (its own session id,
     // kept in localStorage by lib/session.ts).
@@ -408,9 +431,14 @@ const clips = await checkTtsDirect();
 await checkCoachRoutingDirect();
 const helper = await chromium.launch();
 await checkListenHandshake(helper);
-const wavPath = await decodeToWav(helper, clips.partner);
+const wavPath = await decodeToWav(helper, clips.mic);
 await helper.close();
 console.log(`fake-mic wav written: ${wavPath}`);
 await checkVoiceConversation(wavPath);
 await post(`/chat/history/clear?session_id=${encodeURIComponent(TEST_SESSION_ID)}`, {}).catch(() => {});
+if (deferredFailures.length) {
+  console.log("\nEverything else passed, but a provider was down:");
+  for (const f of deferredFailures) console.log(`  - ${f}`);
+  fail("partner voice (DeepInfra) unavailable");
+}
 console.log("\nALL VOICE STAGES PASSED");
