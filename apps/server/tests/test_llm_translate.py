@@ -493,6 +493,7 @@ def test_coach_draft_stream_fix_verdict_streams_one_suggestion_then_its_translat
     ]
     system = mock_stream.call_args.args[0][0]["content"]
     assert "ONE suggested way" in system
+    assert "the meaning is X itself" in system
     assert "<<<OPT2_ES>>>" not in system
 
 
