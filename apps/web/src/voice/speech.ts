@@ -5,9 +5,8 @@ import { speakableCoachText } from "../lib/coachText";
 
 // Everything the app reads aloud goes through ONE queue, so the coach and
 // the partner never talk over each other: the coach's replies in the coach
-// voice (ElevenLabs, English with Spanish inside it), the partner's replies
-// in their Spanish voice (Kokoro). Gated by the "Read aloud" setting in the
-// menu.
+// voice (English with Spanish inside it), the partner's replies in theirs -
+// both ElevenLabs. Gated by the "Read aloud" setting in the menu.
 
 const STORAGE_KEY = "wordbyword.readAloud";
 const queue = new AudioQueue();

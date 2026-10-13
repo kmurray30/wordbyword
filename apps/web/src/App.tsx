@@ -28,12 +28,6 @@ function serverIdOf(m: DisplayMessage): number | null {
 
 const VOICE_STORAGE_KEY = "wordbyword.voice";
 
-// "ef_dora" -> "Dora". Kokoro voice ids are "<lang><gender>_<name>".
-function voiceLabel(voiceId: string): string {
-  const name = voiceId.split("_")[1] ?? voiceId;
-  return name.charAt(0).toUpperCase() + name.slice(1);
-}
-
 function App() {
   const [sessionId] = useState(getSessionId);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -53,7 +47,8 @@ function App() {
   // dropdown instead to keep the header to one line.
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const [voices, setVoices] = useState<string[]>([]);
+  // The partner's voices (ElevenLabs, from the server) - id + name.
+  const [voices, setVoices] = useState<{ id: string; name: string }[]>([]);
   const readAloud = useSyncExternalStore(subscribeReadAloud, isReadAloudOn);
   // Which messages have their side conversation expanded (by display id).
   // The message whose coach conversation is open (as an overlay), if any.
@@ -123,7 +118,9 @@ function App() {
       .listVoices("es")
       .then((res) => {
         setVoices(res.voices);
-        setVoice((current) => (current && res.voices.includes(current) ? current : res.default));
+        // A voice saved before (or from the old provider) that isn't
+        // offered any more falls back to the default.
+        setVoice((current) => (current && res.voices.some((v) => v.id === current) ? current : res.default));
       })
       .catch(() => {});
   }, []);
@@ -323,12 +320,12 @@ function App() {
                 />
               </div>
               {voices.length > 0 && voice && (
-                <div className="app__voice-picker">
-                  Voice:{" "}
+                <div className="app__voice-picker app__voice-picker--voices">
+                  Partner's voice:
                   <SegmentedControl
                     value={voice}
                     onChange={handleVoiceChange}
-                    options={voices.map((v) => ({ value: v, label: voiceLabel(v) }))}
+                    options={voices.map((v) => ({ value: v.id, label: v.name }))}
                   />
                 </div>
               )}

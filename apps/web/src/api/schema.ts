@@ -277,7 +277,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Voices */
+        /**
+         * List Voices
+         * @description The partner voices the app offers (the account's ElevenLabs voices,
+         *     see picker_order), and which one it uses by default. `language` is
+         *     accepted for older clients and ignored - every voice is multilingual.
+         */
         get: operations["list_voices_tts_voices_get"];
         put?: never;
         post?: never;
@@ -681,10 +686,17 @@ export interface components {
              */
             role: string;
         };
+        /** TTSVoice */
+        TTSVoice: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
         /** TTSVoicesResponse */
         TTSVoicesResponse: {
             /** Voices */
-            voices: string[];
+            voices: components["schemas"]["TTSVoice"][];
             /** Default */
             default: string;
         };

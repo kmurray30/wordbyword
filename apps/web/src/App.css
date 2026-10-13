@@ -145,3 +145,16 @@
   cursor: pointer;
 }
 
+
+/* The partner's voices: label on top, the voices in a grid under it. */
+.app__voice-picker--voices {
+  display: block;
+}
+
+.app__voice-picker--voices .segmented-control {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 6px;
+  width: 100%;
+  box-sizing: border-box;
+}

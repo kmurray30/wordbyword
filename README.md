@@ -52,14 +52,12 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `OPENAI_TRANSLATE_MODEL` | same as `OPENAI_CHAT_MODEL` | model id used for the pure translation/glossing calls (whole-message translation, per-word hover glosses, the learner-input interpreter) - override with a smaller/faster model if translation latency matters more than matching the chat model's quality for these short, simple tasks |
 | `MAX_REPLY_TOKENS` | `300` | hard cap on tokens per generation (chat + translation calls alike) |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
-| `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |
-| `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used to synthesize speech |
-| `DEEPINFRA_TTS_VOICE` | *(none)* | force one specific voice regardless of language - normally left unset so the voice is picked per-request from `app/tts/kokoro_voices.py`'s language map |
 | `DEEPGRAM_API_KEY` | *(none)* | Deepgram API key for voice mode's streaming speech-to-text (`WS /voice/listen`); the mic button reports an error if unset |
 | `DEEPGRAM_STT_MODEL` | `nova-3` | Deepgram model for transcription - must support `language=multi` (Spanish/English code-switching) |
-| `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key for voice mode's coach voice (`/tts/speak` with `role: "coach"`); the coach falls silent (text still shown) if unset |
+| `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key - every voice in the app (coach, partner, every 🔊); `/tts/speak` and `/tts/voices` return 503 if unset |
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | ElevenLabs model - must be multilingual (the coach mixes English and Spanish in one sentence); `eleven_flash_v2_5` is the faster/cheaper option |
 | `ELEVENLABS_COACH_VOICE_ID` | *(none - auto-picked)* | which ElevenLabs voice the coach speaks with; unset, the server picks one of the account's own premade (English) voices at first use - the free plan rejects "library" voice ids via the API, so a well-known id like Rachel's does NOT work there |
+| `ELEVENLABS_PARTNER_VOICE_ID` | *(none - auto-picked)* | the partner's default voice (the learner can pick another in ☰); unset, the first of the account's voices that isn't the coach's (own/added voices first, then Spanish-accented ones) |
 | `OPENAI_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the coach (read aloud as it streams, so latency matters) |
 
 ### Frontend
@@ -183,30 +181,21 @@ misplaced.
 
 ## Text-to-speech
 
-Click the 🔊 next to an assistant message to hear it spoken aloud, so you can
-hear correct pronunciation alongside the hover translations. `POST
-/tts/speak` (`app/tts/deepinfra_client.py`) calls DeepInfra's OpenAI-
-compatible `/v1/audio/speech` endpoint, using [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)
-(`hexgrad/Kokoro-82M` on DeepInfra), and streams the mp3 back; the frontend
-plays it via the browser's `Audio` API and caches the blob per message so
-replaying doesn't re-fetch. This is a separate hosted API from the chat
-model above - it needs its own `DEEPINFRA_API_TOKEN` (see env vars).
+Every voice in the app is ElevenLabs (`app/tts/elevenlabs_client.py`,
+`POST /tts/speak`, mp3 back): the 🔊 on a message, the partner's replies
+read aloud, and the coach. Its multilingual model (`ELEVENLABS_TTS_MODEL`)
+reads any language with any voice, so the coach's English-with-Spanish
+needs no splicing and every voice can speak the partner's Spanish.
 
-Kokoro doesn't infer language from the input text - each of its 54 voices is
-tied to one language (its phonemizer rules follow the voice, not the text),
-so the request body includes a `language` field (`es` by default, matching
-`TARGET_LANGUAGE`) and `app/tts/kokoro_voices.py` maps it to the right voice:
-the full 9-language, 54-voice catalog Kokoro ships with, plus one default
-voice per language (`voice_for_language`). Spanish text uses `ef_dora`.
-`DEEPINFRA_TTS_VOICE` overrides the map entirely if you want to force one
-specific voice regardless of language.
-
-The "Voice" picker in the header lets you choose between Spanish's three
-voices - Dora (`ef_dora`), Alex (`em_alex`), Santa (`em_santa`) - fetched
-from `GET /tts/voices?language=es` and persisted in `localStorage`, and
-never any of Kokoro's other languages' voices. `POST /tts/speak` takes an
-optional `voice` field and rejects one that isn't valid for the given
-`language` with a 400.
+The coach and the partner get different voices: `role: "coach"` always
+uses the coach's (`ELEVENLABS_COACH_VOICE_ID`, else one of the account's
+premade voices), and `role: "partner"` (the default) uses the request's
+`voice`, else the partner default (`ELEVENLABS_PARTNER_VOICE_ID`, else the
+first account voice that isn't the coach's). The "Voice" picker in ☰ lists
+up to six of the account's voices from `GET /tts/voices` (voices you've
+added or cloned first, then Spanish-accented ones, then premade) and is
+remembered in `localStorage`. The frontend caches each clip's blob, so a
+replay doesn't re-fetch.
 
 ## Two inputs, the coach, threads, and voice
 
@@ -249,8 +238,8 @@ replies sentence by sentence as they stream (a suggestion is read as
 "«Spanish», which means «English»") and the partner's replies. The coach
 uses ElevenLabs' multilingual model
 (`app/tts/elevenlabs_client.py`, `role: "coach"` on `/tts/speak`), because
-its speech is English with Spanish inside it; the partner keeps the
-Kokoro Spanish voice. All of it goes through one queue
+its speech is English with Spanish inside it; the partner speaks in its
+own (different) ElevenLabs voice. All of it goes through one queue
 (`src/voice/speech.ts`), so voices never overlap, and starting to dictate
 stops whatever is playing.
 
@@ -259,9 +248,9 @@ Send are taps. `public/voice-spike.html` remains as a standalone diagnostic
 for microphone/audio behaviour on a phone.
 
 Rough cost at personal-use volumes: Deepgram streaming ≈ $0.0077/min of
-listening, ElevenLabs multilingual ≈ $0.12/min of coach speech
-(`eleven_flash_v2_5` is about half that), Kokoro and the coach LLM calls are
-negligible by comparison (the coach runs on the lighter translation model by default).
+listening, ElevenLabs multilingual ≈ $0.12/min of speech, coach and
+partner alike (`eleven_flash_v2_5` is about half that); the coach LLM calls
+are negligible by comparison (the coach runs on the lighter translation model by default).
 
 ## Deployed on Railway
 

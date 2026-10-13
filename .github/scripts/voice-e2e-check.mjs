@@ -1,11 +1,11 @@
 // On-demand end-to-end check of VOICE MODE against the deployed Railway
 // services, with the real providers behind them (Deepgram STT, ElevenLabs
-// coach TTS, DeepInfra/Kokoro partner TTS, OpenAI coach LLM). Runs on
+// coach + partner TTS (ElevenLabs), OpenAI coach LLM). Runs on
 // GitHub Actions - see voice-e2e-check.yml for why not the dev sandbox.
 //
 // Stages, cheapest/most-isolating first so a provider problem fails on
 // its own stage rather than masking the rest:
-//  1. /tts/speak role=coach (ElevenLabs) and role=partner (Kokoro)
+//  1. /tts/speak role=coach and role=partner (both ElevenLabs, different voices)
 //     directly - both must return real audio. The clips are uploaded as
 //     artifacts so a human can listen to the coach's mixed English/Spanish
 //     pronunciation, which no script can judge.
@@ -14,13 +14,13 @@
 //     does correr mean?") a plain answer. Both printed for eyeballing.
 //  3. WS /voice/listen from a browser context (Deepgram handshake): send
 //     the "start" frame plus a second of silence, assert no "error" event.
-//  4. The real thing: the partner clip from stage 1 (Kokoro saying
+//  4. The real thing: the partner clip from stage 1 (the partner voice saying
 //     "Hola, ¿cómo estás? ¿Te gusta correr?") is decoded to a WAV and fed
 //     to Chromium as its fake microphone against the deployed frontend.
 //     Dictate into the message box (words stream in, a pause submits
 //     nothing), finish -> the coach checks it in "Your next message" and
 //     reads its one suggestion aloud (ElevenLabs) -> Use it / Send -> the
-//     partner's reply (read aloud, Kokoro). Then a question asked in their
+//     partner's reply (read aloud, partner voice). Then a question asked in their
 //     message's own 💬 conversation is answered there, and working out the
 //     next reply stays in the panel. Screenshots at each step.
 import { chromium } from "playwright";
@@ -72,7 +72,7 @@ async function readSseEvents(response) {
 
 // ---- stage 1: TTS for both roles ------------------------------------------
 async function checkTtsDirect() {
-  console.log("\n=== Stage 1: /tts/speak coach (ElevenLabs) + partner (Kokoro) ===");
+  console.log("\n=== Stage 1: /tts/speak coach + partner (ElevenLabs) ===");
   // Wake a sleeping backend first so the TTS timing below is about the
   // provider, not Railway's cold start.
   await fetch(`${BACKEND_URL}/health`).catch(() => {});
@@ -85,7 +85,7 @@ async function checkTtsDirect() {
     const res = await post("/tts/speak", body, 90_000);
     const elapsed = Date.now() - start;
     if (!res.ok && role === "partner") {
-      // The partner voice (DeepInfra) is down - everything else can still
+      // The partner voice is down - everything else can still
       // be checked, with the coach voice saying the sentence as the mic.
       const detail = `/tts/speak role=partner returned ${res.status} after ${elapsed}ms: ${await res.text()}`;
       console.log(`PARTNER VOICE DOWN - ${detail}`);
@@ -238,7 +238,7 @@ function wavStats(path) {
 }
 
 async function checkVoiceConversation(wavPath) {
-  console.log("\n=== Stage 4: full voice conversation on the deployed site (mic = Kokoro clip) ===");
+  console.log("\n=== Stage 4: full voice conversation on the deployed site (mic = partner-voice clip) ===");
   console.log(`mic clip: ${JSON.stringify(wavStats(wavPath))}`);
   const browser = await chromium.launch({ args: ["--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required"] });
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -384,7 +384,7 @@ async function checkVoiceConversation(wavPath) {
     console.log(`chat: ${JSON.stringify(bubbles)}`);
     if (await page.locator(".next-message__log").count()) fail("Your next message should be empty after sending");
     if (!(await page.locator(".chat-message--user .chat-message__thread-toggle").count())) fail("the sent message has no thread with its check");
-    // The partner voice (DeepInfra) can take ~10s per clip - wait for it.
+    // The partner voice can take several seconds per clip - wait for it.
     const partnerBy = Date.now() + 90_000;
     while (Date.now() < partnerBy && !tts.some((t) => t.role === "partner")) await page.waitForTimeout(500);
     if (!tts.some((t) => t.role === "partner" && t.status === 200)) {
@@ -465,6 +465,6 @@ await post(`/chat/history/clear?session_id=${encodeURIComponent(TEST_SESSION_ID)
 if (deferredFailures.length) {
   console.log("\nEverything else passed, but a provider was down:");
   for (const f of deferredFailures) console.log(`  - ${f}`);
-  fail("partner voice (DeepInfra) unavailable");
+  fail("partner voice unavailable");
 }
 console.log("\nALL VOICE STAGES PASSED");
