@@ -162,7 +162,9 @@ def gloss_message(
                 f"`phrases`: ONLY groups of two or more words whose meaning isn't simply the words "
                 f'added up - idioms and fixed expressions like "qué bueno" ("how wonderful"), "tener '
                 f'que" ("to have to"), "me gusta" ("I like"), "a veces" ("sometimes"). Most messages '
-                f"have none or one. `gloss`: the phrase's {native_name} meaning here. `note`: optional, "
+                f"have none or one. Its `surface` must be the WHOLE expression - every word its gloss "
+                f'covers, including the noun after an article ("seguir la broma", never "seguir la"). '
+                f"`gloss`: the phrase's {native_name} meaning here. `note`: optional, "
                 f"in {native_name}, a short bit of usage or context only if it really helps - usually "
                 f"empty. Do not break a phrase down word by word.\n\n"
                 f"Reply with ONLY one JSON object, no markdown fences, no explanation, exactly:\n"
