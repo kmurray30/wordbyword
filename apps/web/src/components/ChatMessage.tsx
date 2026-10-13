@@ -7,7 +7,6 @@ import { DockedPopover } from "./DockedPopover";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
-import { MessageThread } from "./MessageThread";
 import type { LiveCoachReply } from "./MessageThread";
 import "./ChatMessage.css";
 
@@ -99,20 +98,7 @@ export function ChatMessage({
   savedWords,
   onSaveWord,
   onRemoveWord,
-  onAskCoach,
-  onThreadTyping,
-  canAskCoach = true,
-  sessionId = "",
 }: {
-  // Talk to the coach about this message (its 💬 conversation).
-  onAskCoach?: (question: string) => void;
-  // The cursor is in (or has left) this message's coach box.
-  onThreadTyping?: (typing: boolean) => void;
-  // False while a reply is still coming in, or before a just-sent message
-  // has its id.
-  canAskCoach?: boolean;
-  // For dictating into this message's coach box.
-  sessionId?: string;
   message: DisplayMessage;
   // The newest reply in the chat: its popups open upward, so they don't
   // run off the bottom of the conversation.
@@ -124,6 +110,7 @@ export function ChatMessage({
   onSaveWord?: (entry: { word: string; gloss: string; grammar: string; sentence: string; messageId?: number }) => void;
   onRemoveWord?: (word: string) => void;
   voice?: string;
+  // Its coach conversation is open (the overlay - see ThreadOverlay).
   threadOpen?: boolean;
   onToggleThread?: () => void;
   // The coach's reply while it's still streaming, when it's about this
@@ -612,16 +599,6 @@ export function ChatMessage({
             💬{threadCount + (liveCoach ? 1 : 0) > 0 ? ` ${threadCount + (liveCoach ? 1 : 0)}` : ""}
           </button>
         </div>
-        {threadOpen && (
-          <MessageThread
-            entries={message.thread ?? []}
-            live={liveCoach}
-            sessionId={sessionId}
-            canAsk={canAskCoach}
-            onAsk={(question) => onAskCoach?.(question)}
-            onTyping={(typing) => onThreadTyping?.(typing)}
-          />
-        )}
       </div>
     </div>
   );

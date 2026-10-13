@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ThreadEntry } from "../api/client";
 import { CoachText } from "./CoachText";
 import { useStickToBottom } from "../lib/useStickToBottom";
@@ -7,7 +7,8 @@ import { useDictation } from "../voice/useDictation";
 import { unlockSpeech } from "../voice/speech";
 import "./MessageThread.css";
 
-// The side conversation under a chat message, opened from its 💬: talk
+// The side conversation about a chat message, opened from its 💬 (shown in
+// ThreadOverlay): talk
 // with the coach about that message - what it says, its words, how to
 // answer it (or, under your own, how you worked it out) - in its own box
 // with a mic. The main chat stays just the phrases actually exchanged.
@@ -67,22 +68,11 @@ function ThreadInput({
   sessionId,
   canAsk,
   onAsk,
-  onTyping,
 }: {
   sessionId: string;
   canAsk: boolean;
   onAsk: (question: string) => void;
-  onTyping?: (typing: boolean) => void;
 }) {
-  // Leaving the box is reported a beat late: tapping Send blurs it first,
-  // and the layout shouldn't jump out from under that tap.
-  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
-    },
-    [],
-  );
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dictation = useDictation({ sessionId, onText: setValue });
@@ -128,15 +118,6 @@ function ThreadInput({
         autoCorrect="off"
         spellCheck={false}
         enterKeyHint="send"
-        onFocus={() => {
-          if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
-          onTyping?.(true);
-        }}
-        onBlur={() => {
-          blurTimerRef.current = setTimeout(() => {
-            if (document.activeElement !== textareaRef.current) onTyping?.(false);
-          }, 250);
-        }}
         onChange={(e) => {
           if (!dictation.active) setValue(e.target.value);
         }}
@@ -177,9 +158,7 @@ export function MessageThread({
   sessionId,
   canAsk,
   onAsk,
-  onTyping,
 }: {
-  onTyping?: (typing: boolean) => void;
   entries: ThreadEntry[];
   live: LiveCoachReply | null;
   sessionId: string;
@@ -222,7 +201,7 @@ export function MessageThread({
         )}
       </div>
       )}
-      <ThreadInput sessionId={sessionId} canAsk={canAsk} onAsk={onAsk} onTyping={onTyping} />
+      <ThreadInput sessionId={sessionId} canAsk={canAsk} onAsk={onAsk} />
     </div>
   );
 }

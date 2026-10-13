@@ -392,18 +392,19 @@ async function checkVoiceConversation(wavPath) {
       else fail("the partner's reply was not read aloud");
     }
 
-    // 3. A question asked in THEIR message's own 💬 conversation is
-    //    answered there.
+    // 3. A question asked in THEIR message's own 💬 conversation (an
+    //    overlay sheet over the chat) is answered there.
     const coachClipsBefore = tts.filter((t) => t.role === "coach").length;
     await page.locator(".chat-message--assistant .chat-message__thread-toggle").last().click();
-    const THREAD_BOX = ".chat-message--assistant .message-thread__textarea";
+    const THREAD_BOX = ".thread-overlay .message-thread__textarea";
     await page.waitForSelector(THREAD_BOX);
+    if (!/their message/i.test(await page.textContent(".thread-overlay__label"))) fail("the 💬 overlay isn't about their message");
     await page.fill(THREAD_BOX, "what does 'correr' mean?");
     await page.press(THREAD_BOX, "Enter");
-    await page.waitForSelector(".chat-message--assistant .message-thread .talk-line--coach", { timeout: 120_000 });
+    await page.waitForSelector(".thread-overlay .message-thread .talk-line--coach", { timeout: 120_000 });
     await page.waitForFunction(
       () => {
-        const t = document.querySelector(".chat-message--assistant .message-thread");
+        const t = document.querySelector(".thread-overlay .message-thread");
         if (!t || t.querySelector('[data-status="error"]')) return !!t;
         return !t.querySelector('[data-status="streaming"]') && !!t.querySelector(".talk-line--coach");
       },
@@ -411,7 +412,7 @@ async function checkVoiceConversation(wavPath) {
       { timeout: 120_000 },
     );
     await page.waitForTimeout(2500);
-    const thread = (await page.textContent(".chat-message--assistant .message-thread")).trim();
+    const thread = (await page.textContent(".thread-overlay .message-thread")).trim();
     console.log(`their-message thread: ${JSON.stringify(thread.slice(0, 400))}`);
     await page.screenshot({ path: "voice-e2e-4-coach.png" });
     if (await page.locator('.message-thread [data-status="error"]').count()) fail("coach answer failed");
@@ -419,6 +420,7 @@ async function checkVoiceConversation(wavPath) {
     if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("the question was sent to the partner instead of the coach");
     if (await page.inputValue(THREAD_BOX)) fail("the message's coach box should clear after asking");
     if (tts.filter((t) => t.role === "coach").length <= coachClipsBefore) fail("the coach's answer was not read aloud");
+    await page.click(".thread-overlay__close");
 
     // 4. Working out the NEXT reply happens in the panel.
     // The coach box lives inside the "Discuss your next message" dropdown.

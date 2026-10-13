@@ -126,3 +126,19 @@
   padding: 9px 6px;
   font-size: 0.9rem;
 }
+
+/* The bottom row of the screen: its outer corners follow the screen's
+   rounded corners (see App.css --bottom-round; plain elsewhere). Folded,
+   that's the header; open, the coach box and its send button. */
+.next-message__header--collapsed {
+  border-bottom-left-radius: max(8px, calc(var(--bottom-round) - 11px));
+  border-bottom-right-radius: max(8px, calc(var(--bottom-round) - 11px));
+}
+
+.next-message__textarea {
+  border-bottom-left-radius: max(10px, calc(var(--bottom-round) - 11px));
+}
+
+.next-message__ask {
+  border-bottom-right-radius: max(10px, calc(var(--bottom-round) - 11px));
+}

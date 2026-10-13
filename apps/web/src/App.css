@@ -11,19 +11,24 @@
   flex-direction: column;
   max-width: 720px;
   margin: 0 auto;
-  /* Clear of the phone's rounded corners, home bar and notch (all 0 on
-     screens without them). At the bottom the input bars already have some
-     padding of their own, so only the rest of the inset is added. */
+  /* Clear of a notch/status bar (top) and a landscape notch (sides) - 0 on
+     screens without them. Nothing at the bottom: the bottom row runs all
+     the way down, and instead rounds its outer corners to follow the
+     screen's (--bottom-round). */
   box-sizing: border-box;
   padding-top: env(safe-area-inset-top, 0px);
   padding-left: env(safe-area-inset-left, 0px);
   padding-right: env(safe-area-inset-right, 0px);
-  padding-bottom: max(0px, calc(env(safe-area-inset-bottom, 0px) - 10px));
+  /* Roughly how round the screen's bottom corners are: phones with a home
+     bar report its height as the bottom inset, which scales with the corner
+     radius; 0 (square) everywhere else. Elements in the bottom row use it
+     minus their distance from the edge, so the curves run parallel. */
+  --bottom-round: calc(env(safe-area-inset-bottom, 0px) * 1.35);
 }
 
-/* Keyboard up: it covers the home bar, so no inset under the bars. */
+/* Keyboard up: the bottom row sits on the keyboard, not the screen corners. */
 .app--keyboard {
-  padding-bottom: 0;
+  --bottom-round: 0px;
 }
 
 .app__header {
@@ -140,9 +145,3 @@
   cursor: pointer;
 }
 
-/* Typing in a message's coach box: the message box and the coach box at
-   the bottom step aside, leaving the keyboard's room to the chat. */
-.app--thread-typing .chat-input,
-.app--thread-typing .next-message {
-  display: none;
-}

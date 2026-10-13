@@ -1,0 +1,117 @@
+/* A message's coach conversation as a sheet over most of the screen (see
+   ThreadOverlay.tsx). Positioned inside .app, which tracks the visible part
+   of the screen - so the keyboard just makes the sheet shorter. */
+.thread-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+}
+
+/* The chat stays visible behind it, greyed out. */
+.thread-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 10, 16, 0.62);
+}
+
+.thread-overlay__sheet {
+  position: absolute;
+  top: 6%;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  box-sizing: border-box;
+  /* Bottom corners follow the screen's own (see App.css --bottom-round). */
+  border-radius: 16px 16px max(16px, calc(var(--bottom-round) - 8px)) max(16px, calc(var(--bottom-round) - 8px));
+  border: 1px solid rgba(130, 170, 255, 0.35);
+  background: #161a23;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  font-size: 0.9rem;
+}
+
+/* Under your own message: the green of "Discuss your next message". */
+.thread-overlay__sheet--yours {
+  border-color: rgba(47, 174, 90, 0.45);
+}
+
+/* Keyboard up: every pixel for the conversation. */
+.app--keyboard .thread-overlay__sheet {
+  top: 8px;
+  bottom: 6px;
+}
+
+.thread-overlay__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thread-overlay__label {
+  flex: 1;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #b8c7ee;
+}
+
+.thread-overlay__sheet--yours .thread-overlay__label {
+  color: #b9e6c6;
+}
+
+.thread-overlay__close {
+  border: none;
+  background: none;
+  color: #c9cfdb;
+  font-size: 1rem;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+/* The message it's about, as a reminder. */
+.thread-overlay__quote {
+  flex: none;
+  max-height: 25%;
+  overflow-y: auto;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: #2a2f3a;
+  color: #f2f2f2;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+.thread-overlay__sheet--yours .thread-overlay__quote {
+  background: #3b6ef0;
+  color: white;
+}
+
+/* The conversation fills the sheet; its box sits at the bottom. */
+.thread-overlay .message-thread {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 0.9rem;
+}
+
+.thread-overlay .message-thread__log {
+  flex: 1;
+  max-height: none;
+}
+
+.thread-overlay .message-thread__input {
+  margin-top: auto;
+}
+
+.thread-overlay .message-thread__textarea {
+  border-bottom-left-radius: max(10px, calc(var(--bottom-round) - 20px));
+}
+
+.thread-overlay .message-thread__send {
+  border-bottom-right-radius: max(10px, calc(var(--bottom-round) - 20px));
+}
