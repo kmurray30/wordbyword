@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api/client";
 import type { ThreadEntry, ThreadEntryIn } from "./api/client";
 import type { DisplayMessage } from "./components/ChatMessage";
@@ -65,7 +65,6 @@ function App() {
   // What's in the message box right now (the coach panel marks a used
   // suggestion only while the box still holds it).
   const [messageText, setMessageText] = useState("");
-  const threadAnchorRef = useRef<HTMLDivElement | null>(null);
   const chatRef = useRef<HTMLElement | null>(null);
   const chatContentRef = useRef<HTMLDivElement | null>(null);
   const chatScroll = useChatAutoScroll(chatRef, chatContentRef);
@@ -275,6 +274,7 @@ function App() {
           setMessages((prev) =>
             prev.map((x) => (serverIdOf(x) === messageId ? { ...x, thread: [...(x.thread ?? []), ...entries] } : x)),
           );
+          requestAnimationFrame(() => revealConversation(m.id, false));
         } else if (event.type === "error") {
           throw new Error(event.data.message);
         }
@@ -286,23 +286,39 @@ function App() {
   };
 
   const toggleThread = (m: DisplayMessage) => {
-    // The bubble stays put; its conversation opens (or closes) below it.
+    // The bubble stays put and its conversation opens below it (see
+    // revealConversation), instead of the chat re-pinning to the bottom.
     chatScroll.hold();
+    const opening = !openThreads.has(m.id);
     setOpenThreads((prev) => {
       const next = new Set(prev);
       if (next.has(m.id)) next.delete(m.id);
       else next.add(m.id);
       return next;
     });
+    if (opening) requestAnimationFrame(() => revealConversation(m.id));
   };
 
   // The newest reply's popups open upward (see ChatMessage's `latest`).
   const latestAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
 
-  // Keep the streaming answer in view.
-  useEffect(() => {
-    if (liveCoach) threadAnchorRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [liveCoach]);
+  // A message's coach conversation opens downward under it; if that runs
+  // past the bottom of the screen, scroll just enough to bring its bottom
+  // into view (pushing the bubble up - and if it's all taller than the
+  // screen, the top of the bubble is what gets cut off). Same while the
+  // coach's answer streams in.
+  const revealConversation = (displayId: number, smooth = true) => {
+    const scroller = chatRef.current;
+    const el = scroller?.querySelector(`[data-message-id="${displayId}"]`);
+    if (!scroller || !el) return;
+    const overflow = el.getBoundingClientRect().bottom + 8 - scroller.getBoundingClientRect().bottom;
+    if (overflow > 0) scroller.scrollBy({ top: overflow, behavior: smooth ? "smooth" : "auto" });
+  };
+  const liveDisplayId = liveCoach ? messages.find((m) => serverIdOf(m) === liveCoach.messageId)?.id : undefined;
+  useLayoutEffect(() => {
+    if (liveDisplayId !== undefined) revealConversation(liveDisplayId, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveCoach, liveDisplayId]);
   return (
     <div className="app">
       <header className="app__header">
@@ -366,7 +382,7 @@ function App() {
           const live = liveCoach && liveCoach.messageId === serverIdOf(m) ? liveCoach : null;
           const latest = m.role === "assistant" && m.id === latestAssistantId && streamingText === null;
           return (
-            <div key={m.id} ref={live ? threadAnchorRef : undefined}>
+            <div key={m.id} data-message-id={m.id}>
               <ChatMessage
                 message={m}
                 voice={voice ?? undefined}
