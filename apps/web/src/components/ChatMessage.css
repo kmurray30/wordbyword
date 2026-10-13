@@ -147,9 +147,22 @@
   font-size: 0.78rem;
 }
 
-/* What the phrase the tapped word belongs to means (above the bubble). */
-.chat-message__phrase-popover {
+/* What the phrase the tapped word belongs to means (above the bubble).
+   Amber, like the phrase's highlight in the bubble - the word's own
+   meaning stays grey, like the word's highlight - so the two read as
+   separate things. */
+.chat-message__popup.chat-message__phrase-popover {
   padding: 7px 10px;
+  background: #3a3120;
+  border-color: rgba(255, 196, 70, 0.6);
+}
+
+.chat-message__phrase-popover .chat-message__phrase-gloss {
+  color: #ffd98a;
+}
+
+.chat-message__phrase-popover .chat-message__phrase-note {
+  color: #d9c79c;
 }
 
 /* In the coach overlay both open under the bubble: the word and its phrase
