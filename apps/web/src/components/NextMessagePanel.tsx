@@ -342,7 +342,7 @@ export function NextMessagePanel({
             className="next-message__textarea"
             rows={1}
             value={value}
-            placeholder={dictation.active ? "Listening - tap the bubble when you're done" : "Talk it through with your coach"}
+            placeholder={dictation.active ? "Listening - tap the bubble when you're done" : "Ask your coach…"}
             autoCorrect="off"
             spellCheck={false}
             enterKeyHint="send"
@@ -373,9 +373,12 @@ export function NextMessagePanel({
             className="next-message__fold"
             onClick={fold}
             aria-label="Hide the coach conversation"
-            title="Hide"
+            title="Hide the coach conversation"
           >
-            ▾
+            Hide
+            <span className="next-message__fold-chevron" aria-hidden="true">
+              ▾
+            </span>
           </button>
         </div>
       {dictation.error && !dictation.active && <div className="talk-line__error">{dictation.error}</div>}

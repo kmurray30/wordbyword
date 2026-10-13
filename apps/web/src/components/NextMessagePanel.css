@@ -211,19 +211,29 @@
   border-bottom-right-radius: max(10px, calc(var(--bottom-round) - 11px));
 }
 
-/* Folds it back up - beside the box's mic and send. */
+/* Folds it back up - beside the box's mic and send, labelled so it reads
+   as "close this" rather than a mystery arrow. */
 .next-message__fold {
   flex-shrink: 0;
-  border: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(110, 150, 255, 0.45);
   border-radius: 10px;
-  padding: 9px 8px;
-  background: #2a2f3b;
+  padding: 9px 10px;
+  background: rgba(59, 110, 240, 0.14);
   color: #c9d7ff;
-  font-size: 0.95rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
   line-height: 1;
   cursor: pointer;
 }
 
 .next-message__fold:hover {
-  background: #343a48;
+  background: rgba(59, 110, 240, 0.26);
+}
+
+.next-message__fold-chevron {
+  font-size: 0.85em;
 }
