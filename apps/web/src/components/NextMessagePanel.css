@@ -6,7 +6,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 12px 0;
+  padding: 8px 12px 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -84,7 +84,9 @@
 .next-message__textarea {
   flex: 1;
   min-height: 38px;
-  max-height: 96px;
+  /* Grows with what you type or say (see NextMessagePanel), then scrolls. */
+  max-height: 140px;
+  overflow-y: auto;
   padding: 8px 12px;
   box-sizing: border-box;
   resize: none;

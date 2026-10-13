@@ -118,3 +118,22 @@ class ThreadEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     message: Mapped[ChatMessage] = relationship(back_populates="thread")
+
+
+class SavedWord(Base):
+    """A word the learner chose to keep (tap a word twice in a chat
+    message). Just a list for now - meant to feed a flashcard app later, so
+    it keeps the word's meaning and the sentence it came from."""
+
+    __tablename__ = "saved_word"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # As it appeared, and lowercased (what "already saved" is checked by).
+    word: Mapped[str] = mapped_column(String(128))
+    word_key: Mapped[str] = mapped_column(String(128), index=True)
+    gloss: Mapped[str] = mapped_column(String(256), default="")
+    grammar: Mapped[str] = mapped_column(String(512), default="")
+    sentence: Mapped[str] = mapped_column(Text, default="")
+    message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -161,3 +161,34 @@
   color: #ff8a8a;
   font-style: normal;
 }
+
+/* In the chat as your next message: a dashed, right-aligned draft bubble,
+   with its buttons in a small row underneath. */
+.chat-input--bubble {
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 10px 0 4px;
+  padding: 0;
+  border-top: none;
+}
+
+.chat-input--bubble .chat-input__editor {
+  /* 85% wide, right-aligned; filling the row pushes the buttons onto
+     their own line. */
+  flex: 0 0 85%;
+  margin-left: 15%;
+  border-radius: 14px;
+  border: 1.5px dashed rgba(110, 150, 255, 0.65);
+  background: rgba(59, 110, 240, 0.16);
+}
+
+.chat-input--bubble .chat-input__editor:focus-within {
+  border-style: solid;
+  border-color: rgba(110, 150, 255, 0.9);
+}
+
+.chat-input--bubble > button,
+.chat-input--bubble .talk-button {
+  padding: 6px 12px;
+  font-size: 0.9rem;
+}

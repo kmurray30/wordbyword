@@ -96,11 +96,20 @@ export function ChatMessage({
   onToggleThread,
   liveCoach = null,
   latest = false,
+  savedWords,
+  onSaveWord,
+  onRemoveWord,
 }: {
   message: DisplayMessage;
   // The newest reply in the chat: its popups open upward, so they don't
   // run off the bottom of the conversation.
   latest?: boolean;
+  // Words the learner has saved (lowercased), and how to save/remove one:
+  // tap a word to see its meaning, tap it again for "add word?", and once
+  // more to add it (or "remove?" / remove, if it's saved already).
+  savedWords?: Set<string>;
+  onSaveWord?: (entry: { word: string; gloss: string; grammar: string; sentence: string; messageId?: number }) => void;
+  onRemoveWord?: (word: string) => void;
   voice?: string;
   threadOpen?: boolean;
   onToggleThread?: () => void;
@@ -118,6 +127,14 @@ export function ChatMessage({
   const [hoverOffset, setHoverOffset] = useState<number | null>(null);
   const [pinnedOffset, setPinnedOffset] = useState<number | null>(null);
   const activeOffset = hoverOffset ?? pinnedOffset;
+  // The pinned word is showing "add word?"/"remove?"; then, briefly, what
+  // just happened.
+  const [askOffset, setAskOffset] = useState<number | null>(null);
+  const [flash, setFlash] = useState<{ offset: number; text: string } | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+  }, []);
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelHoverClose = () => {
@@ -218,7 +235,7 @@ export function ChatMessage({
       .translateText({ text: message.text, source_lang: "es", target_lang: "en" })
       .then((res) => {
         fetchedTranslationRef.current = true;
-        setAssistantTranslation(res.translation);
+        setAssistantTranslation(res.translation ?? "");
       })
       .catch(() => setAssistantTranslation("(translation failed)"))
       .finally(() => setAssistantTranslating(false));
@@ -232,8 +249,8 @@ export function ChatMessage({
       .interpretInput({ text: message.text })
       .then((res) => {
         fetchedTranslationRef.current = true;
-        setUserNative(res.native);
-        setUserTarget(res.target);
+        setUserNative(res.native ?? "");
+        setUserTarget(res.target ?? "");
       })
       .catch(() => {
         setUserNative(TRANSLATION_FAILED);
@@ -279,6 +296,7 @@ export function ChatMessage({
     cancelHoverClose();
     setHoverOffset(null);
     setPinnedOffset(null);
+    setAskOffset(null);
     setGlobeOpen(false);
   };
 
@@ -310,13 +328,55 @@ export function ChatMessage({
   );
 
   // A tap pins the word; tapping the pinned word again closes it.
+  // First tap shows the word's meaning; tapping that same word again asks
+  // "add word?" (or "remove?"), and once more does it.
+  const wordText = (offset: number) => {
+    const w = wordAt(offset);
+    if (w) return message.text.slice(w.start, w.end);
+    const i = offsets.findIndex((o) => o.start <= offset && offset < o.end);
+    if (i !== -1) return message.tokens?.[i]?.surface ?? "";
+    return userWordSegments?.find((seg) => seg.start === offset)?.text ?? "";
+  };
+  const isSaved = (offset: number) => !!savedWords?.has(wordText(offset).toLowerCase());
   const togglePinned = (offset: number) => {
-    if (pinnedOffset === offset) {
-      closePopups();
+    if (pinnedOffset !== offset) {
+      setGlobeOpen(false);
+      setAskOffset(null);
+      setPinnedOffset(offset);
       return;
     }
-    setGlobeOpen(false);
-    setPinnedOffset(offset);
+    if (askOffset !== offset) {
+      setAskOffset(offset);
+      return;
+    }
+    const word = wordText(offset);
+    setAskOffset(null);
+    if (!word) return;
+    const saved = isSaved(offset);
+    if (saved) onRemoveWord?.(word);
+    else
+      onSaveWord?.({
+        word,
+        gloss: wordAt(offset)?.gloss ?? fallbackGloss(offset),
+        grammar: wordAt(offset)?.grammar ?? "",
+        sentence: message.text,
+        messageId: glossServerId,
+      });
+    setFlash({ offset, text: saved ? "Removed" : "Added ✓" });
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlash(null), 1300);
+  };
+  // What floats above a word: the question, or what just happened.
+  const badgeFor = (offset: number) => {
+    if (flash?.offset === offset) return <span className="word-ask word-ask--done" role="status">{flash.text}</span>;
+    if (askOffset === offset && pinnedOffset === offset)
+      return (
+        <span className="word-ask" role="status">
+          {isSaved(offset) ? "remove?" : "add word?"}
+          <span className="word-ask__hint">(tap again)</span>
+        </span>
+      );
+    return null;
   };
 
   // A reply saved before word glosses existed still has its per-token
@@ -391,6 +451,7 @@ export function ChatMessage({
                     gloss={tok.gloss || wordAt(start)?.gloss || ""}
                     open={activeOffset !== null && start <= activeOffset && activeOffset < end}
                     inPhrase={inActivePhrase(start, end)}
+                    badge={badgeFor(start)}
                     onOpen={() => {
                       cancelHoverClose();
                       setGlobeOpen(false);
@@ -418,6 +479,7 @@ export function ChatMessage({
                   onClick={() => togglePinned(seg.start)}
                 >
                   {seg.text}
+                  {badgeFor(seg.start)}
                 </span>
               ) : (
                 <span key={i} className={inActivePhrase(seg.start, seg.end) ? "word-token--phrase" : undefined}>

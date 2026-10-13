@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -319,3 +321,30 @@ class WordBankEntryOut(BaseModel):
     review_interval_days: float
 
     model_config = {"from_attributes": True}
+
+
+class SavedWordIn(BaseModel):
+    session_id: str
+    word: str
+    gloss: str = ""
+    grammar: str = ""
+    sentence: str = ""
+    message_id: int | None = None
+
+
+class SavedWordOut(BaseModel):
+    id: int
+    word: str
+    gloss: str
+    grammar: str
+    sentence: str
+    message_id: int | None
+    created_at: datetime
+
+
+class SavedWordsResponse(BaseModel):
+    words: list[SavedWordOut]
+
+
+class RemoveSavedWordResponse(BaseModel):
+    removed: int

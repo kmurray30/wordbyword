@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { api } from "../api/client";
 import type { ThreadEntry, ThreadEntryIn } from "../api/client";
@@ -151,6 +151,14 @@ export function NextMessagePanel({
   }, [turns, sessionId]);
 
   useStickToBottom(logRef, [turns, collapsed]);
+
+  // The box grows with its text (typed or dictated), up to its max height.
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + 2}px`;
+  }, [value]);
 
   function ask(text: string, source: "panel" | "box") {
     const clean = text.trim();

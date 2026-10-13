@@ -30,3 +30,47 @@
 .word-token--phrase.word-token--active {
   background-image: linear-gradient(rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.22));
 }
+
+/* "add word? (tap again)" / "Added" - floating just above the word. Taps
+   go straight through to the word underneath. */
+.word-ask {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: #3a4256;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  color: #f2f2f2;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.word-ask__hint {
+  color: #a9adba;
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.word-ask--done {
+  background: #2f8a50;
+  animation: word-ask-fade 1.3s ease forwards;
+}
+
+@keyframes word-ask-fade {
+  0%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}

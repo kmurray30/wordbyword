@@ -247,6 +247,24 @@ async function clearChatHistory(sessionId: string): Promise<ClearHistoryResponse
   return response.json() as Promise<ClearHistoryResponse>;
 }
 
+export type SavedWord = components["schemas"]["SavedWordOut"];
+type SavedWordIn = components["schemas"]["SavedWordIn"];
+
+// The learner's saved words (tap a word twice in a chat message).
+async function listSavedWords(sessionId: string): Promise<SavedWord[]> {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/words?session_id=${encodeURIComponent(sessionId)}`);
+  if (!response.ok) throw new Error(`/words failed (${response.status})`);
+  return ((await response.json()) as { words: SavedWord[] }).words;
+}
+
+async function removeSavedWord(sessionId: string, word: string): Promise<void> {
+  const response = await fetchWithColdStartRetry(
+    `${BASE_URL}/words?session_id=${encodeURIComponent(sessionId)}&word=${encodeURIComponent(word)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw new Error(`/words delete failed (${response.status})`);
+}
+
 async function listVoices(language: string): Promise<TTSVoicesResponse> {
   const response = await fetchWithColdStartRetry(`${BASE_URL}/tts/voices?language=${encodeURIComponent(language)}`);
   if (!response.ok) {
@@ -320,6 +338,9 @@ export const api = {
   listVoices,
   chatHistory,
   clearChatHistory,
+  listSavedWords,
+  saveWord: (body: SavedWordIn) => post<SavedWordIn, SavedWord>("/words", body),
+  removeSavedWord,
   healthLlm,
 };
 

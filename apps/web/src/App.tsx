@@ -11,6 +11,7 @@ import type { LiveCoachReply } from "./components/MessageThread";
 import { SegmentedControl } from "./components/SegmentedControl";
 import { getSessionId } from "./lib/session";
 import { useAppUpdate } from "./lib/useAppUpdate";
+import { useChatAutoScroll } from "./lib/useChatAutoScroll";
 import { isReadAloudOn, setReadAloud, speakPartner, subscribeReadAloud } from "./voice/speech";
 import "./App.css";
 
@@ -69,6 +70,39 @@ function App() {
   // suggestion only while the box still holds it).
   const [messageText, setMessageText] = useState("");
   const threadAnchorRef = useRef<HTMLDivElement | null>(null);
+  const chatRef = useRef<HTMLElement | null>(null);
+  const chatContentRef = useRef<HTMLDivElement | null>(null);
+  const scrollChatToBottom = useChatAutoScroll(chatRef, chatContentRef);
+
+  // Saved words (lowercased) - see ChatMessage's add-word flow.
+  const [savedWords, setSavedWords] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    api
+      .listSavedWords(sessionId)
+      .then((words) => setSavedWords(new Set(words.map((w) => w.word.toLowerCase()))))
+      .catch(() => {});
+  }, [sessionId]);
+  const saveWord = (entry: { word: string; gloss: string; grammar: string; sentence: string; messageId?: number }) => {
+    setSavedWords((prev) => new Set(prev).add(entry.word.toLowerCase()));
+    api
+      .saveWord({
+        session_id: sessionId,
+        word: entry.word,
+        gloss: entry.gloss,
+        grammar: entry.grammar,
+        sentence: entry.sentence,
+        message_id: entry.messageId ?? null,
+      })
+      .catch(() => {});
+  };
+  const removeWord = (word: string) => {
+    setSavedWords((prev) => {
+      const next = new Set(prev);
+      next.delete(word.toLowerCase());
+      return next;
+    });
+    api.removeSavedWord(sessionId, word).catch(() => {});
+  };
   // A newer build is deployed: update straight away unless that would lose
   // something typed or still arriving.
   const { updateReady, reload } = useAppUpdate(
@@ -320,7 +354,8 @@ function App() {
           A new version of the app is ready - tap to update
         </button>
       )}
-      <main className="app__chat">
+      <main className="app__chat" ref={chatRef}>
+        <div className="app__chat-content" ref={chatContentRef}>
         {!historyLoaded && <p className="app__empty">Loading…</p>}
         {historyLoaded && messages.length === 0 && (
           <p className="app__empty">Say hello to start a conversation - ¡Hola!</p>
@@ -337,6 +372,9 @@ function App() {
                 onToggleThread={() => toggleThread(m)}
                 liveCoach={live}
                 latest={latest}
+                savedWords={savedWords}
+                onSaveWord={saveWord}
+                onRemoveWord={removeWord}
               />
             </div>
           );
@@ -349,6 +387,20 @@ function App() {
           </div>
         )}
         {error && <p className="app__error">{error}. Is the backend running and configured correctly?</p>}
+        {/* Your next message, typed right where it'll appear in the chat. */}
+        <ChatInput
+          bubble
+          onSend={(text) => {
+            scrollChatToBottom();
+            void handleSend(text);
+          }}
+          onCheck={(text) => nextMessageRef.current?.check(text)}
+          sessionId={sessionId}
+          readyText={readyText}
+          onValueChange={setMessageText}
+          controlRef={inputControlRef}
+        />
+        </div>
       </main>
 
       <NextMessagePanel
@@ -359,14 +411,6 @@ function App() {
         onUse={(text) => inputControlRef.current?.setText(text)}
         onReady={setReadyText}
         controlRef={nextMessageRef}
-      />
-      <ChatInput
-        onSend={(text) => void handleSend(text)}
-        onCheck={(text) => nextMessageRef.current?.check(text)}
-        sessionId={sessionId}
-        readyText={readyText}
-        onValueChange={setMessageText}
-        controlRef={inputControlRef}
       />
     </div>
   );

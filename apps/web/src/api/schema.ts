@@ -304,6 +304,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/words": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Words */
+        get: operations["list_words_words_get"];
+        put?: never;
+        /**
+         * Save Word
+         * @description Saving a word that's already saved returns the existing entry.
+         */
+        post: operations["save_word_words_post"];
+        /** Remove Word */
+        delete: operations["remove_word_words_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -553,6 +575,11 @@ export interface components {
              */
             note: string;
         };
+        /** RemoveSavedWordResponse */
+        RemoveSavedWordResponse: {
+            /** Removed */
+            removed: number;
+        };
         /** RewardEventRequest */
         RewardEventRequest: {
             /** Event Type */
@@ -582,6 +609,55 @@ export interface components {
         SaveUserInterpretationResponse: {
             /** Ok */
             ok: boolean;
+        };
+        /** SavedWordIn */
+        SavedWordIn: {
+            /** Session Id */
+            session_id: string;
+            /** Word */
+            word: string;
+            /**
+             * Gloss
+             * @default
+             */
+            gloss: string;
+            /**
+             * Grammar
+             * @default
+             */
+            grammar: string;
+            /**
+             * Sentence
+             * @default
+             */
+            sentence: string;
+            /** Message Id */
+            message_id?: number | null;
+        };
+        /** SavedWordOut */
+        SavedWordOut: {
+            /** Id */
+            id: number;
+            /** Word */
+            word: string;
+            /** Gloss */
+            gloss: string;
+            /** Grammar */
+            grammar: string;
+            /** Sentence */
+            sentence: string;
+            /** Message Id */
+            message_id: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** SavedWordsResponse */
+        SavedWordsResponse: {
+            /** Words */
+            words: components["schemas"]["SavedWordOut"][];
         };
         /** TTSRequest */
         TTSRequest: {
@@ -1185,6 +1261,102 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_words_words_get: {
+        parameters: {
+            query: {
+                session_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedWordsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_word_words_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedWordIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedWordOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_word_words_delete: {
+        parameters: {
+            query: {
+                session_id: string;
+                word: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoveSavedWordResponse"];
                 };
             };
             /** @description Validation Error */

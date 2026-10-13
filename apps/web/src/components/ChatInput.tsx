@@ -81,7 +81,11 @@ export function ChatInput({
   readyText,
   onValueChange,
   controlRef,
+  bubble = false,
 }: {
+  // Shown in the chat as your next message (a draft bubble) rather than as
+  // a bar at the bottom.
+  bubble?: boolean;
   onSend: (text: string) => void;
   onCheck: (text: string) => void;
   sessionId: string;
@@ -616,7 +620,7 @@ export function ChatInput({
   const inEditor = (target: Element) => !!target.closest(".chat-input__editor");
 
   return (
-    <div className="chat-input">
+    <div className={`chat-input${bubble ? " chat-input--bubble" : ""}`}>
       <div className="chat-input__editor">
         <div className="chat-input__highlight" aria-hidden="true" ref={highlightRef}>
           {segments.map((seg, i) =>
@@ -650,6 +654,7 @@ export function ChatInput({
         <textarea
           ref={textareaRef}
           className="chat-input__textarea"
+          rows={1}
           value={value}
           placeholder={dictation.active ? "Listening - tap the bubble when you're done" : "Your message to them"}
           // These don't remove iOS/Safari's native keyboard accessory bar
