@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
+import { flushSync } from "react-dom";
 import { api } from "../api/client";
 import type { ThreadEntryIn } from "../api/client";
 import { CoachText } from "./CoachText";
@@ -232,6 +233,15 @@ export function NextMessagePanel({
   // Talking it through has its own box and mic.
   const dictation = useDictation({ sessionId, onText: (text) => setValue(text) });
 
+  // Opening it from the bar puts the cursor straight in its box. The box is
+  // inert while folded, so the open state is committed first (flushSync),
+  // and the focus happens inside the tap itself - iOS only raises the
+  // keyboard for a focus made during the user's gesture.
+  const openAndFocus = () => {
+    flushSync(() => setCollapsed(false));
+    if (!dictation.active) textareaRef.current?.focus({ preventScroll: true });
+  };
+
   // Folding it away mid-dictation stops the mic (its button goes too).
   const fold = () => {
     if (dictation.active) dictation.cancel();
@@ -299,7 +309,7 @@ export function NextMessagePanel({
           <button
             type="button"
             className="next-message__header"
-            onClick={() => setCollapsed(false)}
+            onClick={openAndFocus}
             aria-expanded={!collapsed}
           >
             <span className="next-message__chevron" aria-hidden="true">
