@@ -8,30 +8,48 @@
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* Expand/collapse row. Folded, it's the way into the coach: big, blue,
-   with a slow glow so it reads as something to tap. Opened, it shrinks to
-   a slim header over the conversation. */
+/* The bar that opens it, shown while folded: big, blue, with a slow glow
+   so it reads as something to tap. Opening, it folds away (rows 1fr ->
+   0fr) as the conversation slides open below. The inner padding leaves
+   room for the glow inside the clip; the wrap's negative margin cancels
+   it out of the layout. */
+.next-message__header-wrap {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin: -8px;
+  transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.next-message__header-wrap--gone {
+  grid-template-rows: 0fr;
+}
+
+.next-message__header-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px;
+  transition: opacity 0.2s ease;
+}
+
+/* Fades as it folds - the glow room would otherwise leave a sliver. */
+.next-message__header-wrap--gone .next-message__header-inner {
+  opacity: 0;
+}
+
 .next-message__header {
   all: unset;
+  box-sizing: border-box;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
-  border-radius: 8px;
-  background: rgba(59, 110, 240, 0.12);
-  border: 1px solid rgba(110, 150, 255, 0.35);
-  cursor: pointer;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #c9d7ff;
-  transition: padding 0.25s ease, font-size 0.25s ease, background-color 0.2s ease;
-}
-
-.next-message__header--collapsed {
   padding: 12px 14px;
-  font-size: 0.92rem;
+  border-radius: 8px;
   background: rgba(59, 110, 240, 0.2);
-  border-color: rgba(110, 150, 255, 0.6);
+  border: 1px solid rgba(110, 150, 255, 0.6);
+  cursor: pointer;
+  font-size: 0.92rem;
+  font-weight: 600;
   color: #e3eaff;
   animation: next-message-glow 2.6s ease-in-out infinite;
 }
@@ -42,12 +60,12 @@
     box-shadow: 0 0 0 0 rgba(90, 140, 255, 0);
   }
   50% {
-    box-shadow: 0 0 14px 2px rgba(90, 140, 255, 0.45);
+    box-shadow: 0 0 7px 1px rgba(90, 140, 255, 0.5);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .next-message__header--collapsed {
+  .next-message__header {
     animation: none;
   }
 }
@@ -102,11 +120,6 @@
   gap: 6px;
   min-height: 0;
   overflow: hidden;
-}
-
-/* The space under the header lives inside, so it folds away too. */
-.next-message__body-inner > :first-child {
-  margin-top: 6px;
 }
 
 .next-message__log {
@@ -185,7 +198,7 @@
 /* The bottom row of the screen: its outer corners follow the screen's
    rounded corners (see App.css --bottom-round; plain elsewhere). Folded,
    that's the header; open, the coach box and its send button. */
-.next-message__header--collapsed {
+.next-message__header {
   border-bottom-left-radius: max(8px, calc(var(--bottom-round) - 11px));
   border-bottom-right-radius: max(8px, calc(var(--bottom-round) - 11px));
 }
@@ -196,4 +209,21 @@
 
 .next-message__ask {
   border-bottom-right-radius: max(10px, calc(var(--bottom-round) - 11px));
+}
+
+/* Folds it back up - beside the box's mic and send. */
+.next-message__fold {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 10px;
+  padding: 9px 8px;
+  background: #2a2f3b;
+  color: #c9d7ff;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.next-message__fold:hover {
+  background: #343a48;
 }

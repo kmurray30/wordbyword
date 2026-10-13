@@ -231,6 +231,12 @@ export function NextMessagePanel({
 
   // Talking it through has its own box and mic.
   const dictation = useDictation({ sessionId, onText: (text) => setValue(text) });
+
+  // Folding it away mid-dictation stops the mic (its button goes too).
+  const fold = () => {
+    if (dictation.active) dictation.cancel();
+    setCollapsed(true);
+  };
   const submitBox = (text: string) => {
     if (!text.trim()) return;
     setValue("");
@@ -286,23 +292,25 @@ export function NextMessagePanel({
 
   return (
     <section className="next-message" aria-label="Discuss your next message">
-      <button
-        type="button"
-        className={`next-message__header${collapsed ? " next-message__header--collapsed" : ""}`}
-        onClick={() => {
-          // Folding it away mid-dictation stops the mic (its button goes too).
-          if (!collapsed && dictation.active) dictation.cancel();
-          setCollapsed((c) => !c);
-        }}
-        aria-expanded={!collapsed}
-      >
-        <span className="next-message__chevron" aria-hidden="true">
-          {collapsed ? "▸" : "▾"}
-        </span>
-        <span className="next-message__title">💬 Discuss your next message</span>
-        {count > 0 && <span className="next-message__count">{count}</span>}
-        <span className="next-message__toggle-label">{collapsed ? "Show" : "Hide"}</span>
-      </button>
+      {/* Folded: a big bar to open it. Open: the bar folds away and a small
+          ▾ next to the box's own buttons folds it back up. */}
+      <div className={`next-message__header-wrap${collapsed ? "" : " next-message__header-wrap--gone"}`} inert={!collapsed}>
+        <div className="next-message__header-inner">
+          <button
+            type="button"
+            className="next-message__header"
+            onClick={() => setCollapsed(false)}
+            aria-expanded={!collapsed}
+          >
+            <span className="next-message__chevron" aria-hidden="true">
+              ▸
+            </span>
+            <span className="next-message__title">💬 Discuss your next message</span>
+            {count > 0 && <span className="next-message__count">{count}</span>}
+            <span className="next-message__toggle-label">Show</span>
+          </button>
+        </div>
+      </div>
       {/* Always there, sliding open/closed (see the CSS); inert while
           folded so nothing inside can be tapped or focused. */}
       <div className={`next-message__body${collapsed ? "" : " next-message__body--open"}`} inert={collapsed}>
@@ -359,6 +367,15 @@ export function NextMessagePanel({
             title="Send to your coach"
           >
             ↑
+          </button>
+          <button
+            type="button"
+            className="next-message__fold"
+            onClick={fold}
+            aria-label="Hide the coach conversation"
+            title="Hide"
+          >
+            ▾
           </button>
         </div>
       {dictation.error && !dictation.active && <div className="talk-line__error">{dictation.error}</div>}
