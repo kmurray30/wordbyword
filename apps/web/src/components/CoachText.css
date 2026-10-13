@@ -21,8 +21,8 @@
 }
 
 .coach-text__suggestion--used {
-  background: rgba(47, 174, 90, 0.16);
-  border-color: rgba(47, 174, 90, 0.5);
+  background: rgba(90, 140, 255, 0.16);
+  border-color: rgba(90, 140, 255, 0.5);
 }
 
 .coach-text__suggestion-body {
@@ -49,7 +49,7 @@
   border: none;
   border-radius: 7px;
   padding: 0 12px;
-  background: #2fae5a;
+  background: #3b6ef0;
   color: white;
   font-weight: 600;
   font-size: 0.78rem;
@@ -57,12 +57,12 @@
 }
 
 .coach-text__use:hover {
-  background: #39c468;
+  background: #4d7ef5;
 }
 
 .coach-text__use:disabled {
   background: transparent;
-  color: #7fd39b;
+  color: #9db8ff;
   cursor: default;
 }
 

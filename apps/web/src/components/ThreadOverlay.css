@@ -36,11 +36,6 @@
   font-size: 0.9rem;
 }
 
-/* Under your own message: the green of "Discuss your next message". */
-.thread-overlay__sheet--yours {
-  border-color: rgba(47, 174, 90, 0.45);
-}
-
 /* Keyboard up: less room, smaller margins (still a visible edge). */
 .app--keyboard .thread-overlay__sheet {
   top: 10px;
@@ -60,10 +55,6 @@
   font-size: 0.78rem;
   font-weight: 600;
   color: #b8c7ee;
-}
-
-.thread-overlay__sheet--yours .thread-overlay__label {
-  color: #b9e6c6;
 }
 
 .thread-overlay__close {
@@ -137,10 +128,6 @@
   border: 1px solid rgba(130, 170, 255, 0.35);
   background: #161a23;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-}
-
-.thread-overlay__plate--yours {
-  border-color: rgba(47, 174, 90, 0.45);
 }
 
 .thread-overlay__flyer {

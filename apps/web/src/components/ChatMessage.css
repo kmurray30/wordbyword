@@ -109,12 +109,6 @@
   opacity: 1;
 }
 
-/* Threads under your own messages carry the green of "Your next message"
-   (that's where they came from); threads under theirs stay blue. */
-.chat-message--user .message-thread {
-  border-left-color: rgba(47, 174, 90, 0.6);
-}
-
 /* The box every popup on a message uses (word, phrase, 🌐). */
 .chat-message__popup {
   background: #262c3a;
