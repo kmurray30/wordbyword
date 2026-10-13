@@ -31,10 +31,18 @@ export function useChatAutoScroll(scrollRef: RefObject<HTMLElement | null>, cont
     };
   }, [scrollRef, contentRef]);
 
-  // Jump to the bottom now and stay there (sending a message).
-  return () => {
-    stickRef.current = true;
-    const scroller = scrollRef.current;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  return {
+    // Jump to the bottom now and stay there (sending a message).
+    toBottom: () => {
+      stickRef.current = true;
+      const scroller = scrollRef.current;
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    },
+    // Leave the view where it is while something opens up in place (a
+    // message's coach conversation unfolding below it) - until you scroll
+    // back to the bottom or send.
+    hold: () => {
+      stickRef.current = false;
+    },
   };
 }

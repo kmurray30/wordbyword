@@ -68,7 +68,7 @@ function App() {
   const threadAnchorRef = useRef<HTMLDivElement | null>(null);
   const chatRef = useRef<HTMLElement | null>(null);
   const chatContentRef = useRef<HTMLDivElement | null>(null);
-  const scrollChatToBottom = useChatAutoScroll(chatRef, chatContentRef);
+  const chatScroll = useChatAutoScroll(chatRef, chatContentRef);
 
   // Saved words (lowercased) - see ChatMessage's add-word flow.
   const [savedWords, setSavedWords] = useState<Set<string>>(new Set());
@@ -286,6 +286,8 @@ function App() {
   };
 
   const toggleThread = (m: DisplayMessage) => {
+    // The bubble stays put; its conversation opens (or closes) below it.
+    chatScroll.hold();
     setOpenThreads((prev) => {
       const next = new Set(prev);
       if (next.has(m.id)) next.delete(m.id);
@@ -395,7 +397,7 @@ function App() {
 
       <ChatInput
         onSend={(text) => {
-          scrollChatToBottom();
+          chatScroll.toBottom();
           void handleSend(text);
         }}
         onCheck={(text) => nextMessageRef.current?.check(text)}
