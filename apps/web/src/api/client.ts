@@ -274,6 +274,8 @@ async function clearChatHistory(sessionId: string): Promise<ClearHistoryResponse
 }
 
 export type SavedWord = components["schemas"]["SavedWordOut"];
+export type VocabDebug = components["schemas"]["VocabDebug"];
+export type VocabDebugWord = components["schemas"]["VocabDebugWord"];
 type SavedWordIn = components["schemas"]["SavedWordIn"];
 
 // The learner's saved words (tap a word twice in a chat message).

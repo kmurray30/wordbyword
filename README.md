@@ -92,10 +92,10 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `ELEVENLABS_PARTNER_VOICE_ID` | *(none - auto-picked)* | the partner's default voice (the learner can pick another in ☰); unset, the first of the account's voices that isn't the coach's (own/added voices first, then Spanish-accented ones) |
 | `OPENAI_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the coach (read aloud as it streams, so latency matters) |
 | `CONTEXTUAL_VOCAB_ENABLED` | `false` | turn on contextual vocabulary suggestions (see "Contextual vocabulary suggestions" below); needs `DEEPINFRA_API_TOKEN` for the relevance half |
-| `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-4B` | DeepInfra embedding model for contextual vocab; changing it re-embeds the word bank in the background |
+| `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-4B` | DeepInfra embedding model for contextual vocab; changing it re-embeds the words in the background |
 | `EMBEDDING_DIMENSIONS` | `1024` | vectors are truncated to this many dimensions (Matryoshka) |
 | `RELEVANT_WORDS_PER_TURN` / `WILDCARD_WORDS_PER_TURN` | `3` / `1` | max words offered per turn in each tier |
-| `RELEVANCE_MIN_Z` | `1.5` | how far above the bank's average similarity a word must be to count as relevant |
+| `RELEVANCE_MIN_Z` | `2.5` | how far above the pool's typical similarity (robust z-score) a word must be to count as relevant - an untuned guess, see the debug view |
 | `SUGGEST_COOLDOWN_TURNS` | `4` | a word used or offered in this many recent turns isn't offered again yet |
 
 ### Frontend
@@ -159,18 +159,28 @@ lemmatized and recorded so familiarity stays up to date.
 ## Contextual vocabulary suggestions
 
 Off by default (`CONTEXTUAL_VOCAB_ENABLED=true` to enable). Rather than
-nudging every token toward target words, each turn offers the model a few
-word-bank words that actually fit where the conversation is, as a strictly
-optional suggestion in the system prompt - "using none is fine" is part of
-the instruction. Code in `apps/server/app/vocab/`.
+nudging every token toward target words, each of the partner's replies (not
+the coach's) is preceded by a search for words that actually fit where the
+conversation is; they're offered to the model as a strictly optional
+suggestion in the system prompt - "using none is fine" is part of the
+instruction. Code in `apps/server/app/vocab/`.
 
-- **Relevant words** - the word bank (nouns/verbs/adjectives/adverbs) is
-  embedded once per word (`lemma: translation`, cached in `word_embedding`)
-  and ranked by cosine similarity against a query built from the running
-  conversation summary plus the latest few messages. No vector DB: the bank
-  is a few thousand rows at most, so this is one numpy matrix-vector product.
-  Only words that stand out from the rest of the bank count (z-score cutoff),
-  weighted toward words due for review, with a little jitter.
+- **Candidates** - the word bank for the conversation's language (every word
+  the partner has used; closed-class and name words are skipped when the
+  language is POS-tagged) plus the learner's **saved word list** (☰ → Word
+  list), which counts as at least moderately due for review and gets extra
+  weight. Each word is embedded once (`lemma: meaning`, cached per language
+  and model in `word_embedding`).
+- **Relevant words** - ranked by cosine similarity against a query built from
+  the running conversation summary plus the latest few messages. No vector DB:
+  the pool is a few thousand rows at most, so this is one numpy matrix-vector
+  product. A word only counts if it clears a cutoff: its robust z-score (how
+  far above the pool's typical similarity, in units of the median absolute
+  deviation) must be at least `RELEVANCE_MIN_Z`; the top few by similarity -
+  nudged toward words due for review, with a little jitter - are offered.
+  The default of 2.5 is an untuned guess: raise it if unrelated words get
+  offered, lower it if obviously relevant ones are cut (the debug view below
+  shows exactly how close they came).
 - **Wildcards** - one low-pressure word, labeled "low priority" in the prompt,
   picked by Thompson sampling: SRS review urgency (overdue and not yet known)
   times a per-word Beta(alpha, beta) estimate of how likely the word is to
@@ -183,10 +193,24 @@ the instruction. Code in `apps/server/app/vocab/`.
   translate model for an updated 1-3 sentence summary of the conversation
   (`conversation_summary`) and embeds any new words. The next turn reads it,
   so neither call adds latency in front of the reply. The only call on the
-  request path is embedding the query (~$0.02 per 1M tokens on DeepInfra).
+  request path is embedding the query (~$0.02 per 1M tokens on DeepInfra) -
+  plus, at most a few words, ones saved a moment ago. The very first turn has
+  nothing embedded yet, so it only gets a wildcard.
 
 Everything here degrades to "no suggestions" on any failure; it never fails
 a turn. `vocab_suggestion` logs every offered word and whether it was used.
+
+**Debug view.** ☰ → Debug (always off when the app opens - it isn't saved)
+adds a 🔍 next to a partner message's audio button. It opens the embedding
+search for that reply: every scored word with its similarity, z-score and
+"due" value; green = offered to the model, amber = cleared the cutoff but not
+picked (or on cooldown), grey = below the cutoff; ★ = from the saved list;
+"used in reply" when the model worked it in; and the random wildcards. Kept
+per reply in `chat_message.vocab_debug`, so it survives a reload.
+
+**Word list.** ☰ → Word list shows the saved words (the ones added by tapping
+a word three times in a message) and lets you add one by hand (its meaning is
+looked up) or remove one.
 
 ## Whole-message translation
 

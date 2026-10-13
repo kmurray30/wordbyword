@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api/client";
-import type { ThreadEntry, ThreadEntryIn } from "./api/client";
+import type { SavedWord, ThreadEntry, ThreadEntryIn } from "./api/client";
 import type { DisplayMessage } from "./components/ChatMessage";
 import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
@@ -11,7 +11,8 @@ import type { LiveCoachReply } from "./components/MessageThread";
 import { ThreadOverlay } from "./components/ThreadOverlay";
 import { SegmentedControl } from "./components/SegmentedControl";
 import { LanguageMenu } from "./components/LanguageMenu";
-import { LANGUAGES, htmlLang, setReadingSettings, useReadingSettings } from "./lib/language";
+import { WordListPanel } from "./components/WordListPanel";
+import { LANGUAGES, apiLanguage, htmlLang, setReadingSettings, useReadingSettings } from "./lib/language";
 import type { LanguageCode, ReadingSettings } from "./lib/language";
 import { getSessionId } from "./lib/session";
 import { useAppUpdate } from "./lib/useAppUpdate";
@@ -74,16 +75,37 @@ function App({ lang, onLanguageChange }: { lang: LanguageCode; onLanguageChange:
   const chatContentRef = useRef<HTMLDivElement | null>(null);
   const chatScroll = useChatAutoScroll(chatRef, chatContentRef);
 
-  // Saved words (lowercased) - see ChatMessage's add-word flow.
-  const [savedWords, setSavedWords] = useState<Set<string>>(new Set());
+  // The saved word list - see ChatMessage's add-word flow and the ☰ menu's
+  // Word list. `savedWords` (lowercased) is what the chat bubbles check.
+  const [savedList, setSavedList] = useState<SavedWord[]>([]);
+  const savedWords = useMemo(() => new Set(savedList.map((w) => w.word.toLowerCase())), [savedList]);
+  const [wordListOpen, setWordListOpen] = useState(false);
+  // Debug view of the vocabulary search next to each reply. Deliberately NOT
+  // remembered: it's off every time the app opens.
+  const [debug, setDebug] = useState(false);
   useEffect(() => {
     api
       .listSavedWords(sessionId)
-      .then((words) => setSavedWords(new Set(words.map((w) => w.word.toLowerCase()))))
+      .then(setSavedList)
       .catch(() => {});
   }, [sessionId]);
   const saveWord = (entry: { word: string; gloss: string; grammar: string; sentence: string; messageId?: number }) => {
-    setSavedWords((prev) => new Set(prev).add(entry.word.toLowerCase()));
+    setSavedList((prev) =>
+      prev.some((w) => w.word.toLowerCase() === entry.word.toLowerCase())
+        ? prev
+        : [
+            {
+              id: nextLocalId--,
+              word: entry.word,
+              gloss: entry.gloss,
+              grammar: entry.grammar,
+              sentence: entry.sentence,
+              message_id: entry.messageId ?? null,
+              created_at: new Date().toISOString(),
+            },
+            ...prev,
+          ],
+    );
     api
       .saveWord({
         session_id: sessionId,
@@ -96,12 +118,20 @@ function App({ lang, onLanguageChange }: { lang: LanguageCode; onLanguageChange:
       .catch(() => {});
   };
   const removeWord = (word: string) => {
-    setSavedWords((prev) => {
-      const next = new Set(prev);
-      next.delete(word.toLowerCase());
-      return next;
-    });
+    setSavedList((prev) => prev.filter((w) => w.word.toLowerCase() !== word.toLowerCase()));
     api.removeSavedWord(sessionId, word).catch(() => {});
+  };
+  // Adding a word by hand: look up its meaning first (best effort - a word
+  // with no meaning is still saved), then save it like a tapped one.
+  const addWordByHand = async (word: string) => {
+    if (savedWords.has(word.toLowerCase())) return;
+    let gloss = "";
+    try {
+      gloss = (await api.translateText({ text: word, source_lang: apiLanguage(lang), target_lang: "en" })).translation ?? "";
+    } catch {
+      // no meaning available right now
+    }
+    saveWord({ word, gloss, grammar: "", sentence: "" });
   };
   // A newer build is deployed: update straight away unless that would lose
   // something typed or still arriving.
@@ -146,6 +176,7 @@ function App({ lang, onLanguageChange }: { lang: LanguageCode; onLanguageChange:
           target: m.target,
           thread: m.thread,
           glosses: m.glosses,
+          vocabDebug: m.vocab_debug,
         }));
         // This fetch can resolve after the user has already sent a message
         // (a cold-started backend makes it slow enough for that to happen) -
@@ -234,6 +265,7 @@ function App({ lang, onLanguageChange }: { lang: LanguageCode; onLanguageChange:
               tokens: res.tokens,
               translation: res.translation,
               glosses: res.glosses,
+              vocabDebug: res.vocab_debug,
             },
           ]);
         }
@@ -340,6 +372,27 @@ function App({ lang, onLanguageChange }: { lang: LanguageCode; onLanguageChange:
               {config.readings && (
                 <ReadingSettingsPicker lang={lang} settings={readingSettings} />
               )}
+              <button
+                type="button"
+                className="app__menu-item"
+                onClick={() => {
+                  setWordListOpen(true);
+                  setMenuOpen(false);
+                }}
+              >
+                Word list ({savedList.length})
+              </button>
+              <div className="app__voice-picker">
+                Debug:{" "}
+                <SegmentedControl
+                  value={debug ? "on" : "off"}
+                  onChange={(v) => setDebug(v === "on")}
+                  options={[
+                    { value: "on", label: "On" },
+                    { value: "off", label: "Off" },
+                  ]}
+                />
+              </div>
               {voices.length > 0 && voice && (
                 <div className="app__voice-picker app__voice-picker--voices">
                   Partner's voice:
@@ -389,6 +442,7 @@ function App({ lang, onLanguageChange }: { lang: LanguageCode; onLanguageChange:
                 savedWords={savedWords}
                 onSaveWord={saveWord}
                 onRemoveWord={removeWord}
+                debug={debug}
               />
             </div>
           );
@@ -424,6 +478,14 @@ function App({ lang, onLanguageChange }: { lang: LanguageCode; onLanguageChange:
         onReady={setReadyText}
         controlRef={nextMessageRef}
       />
+      {wordListOpen && (
+        <WordListPanel
+          words={savedList}
+          onAdd={addWordByHand}
+          onRemove={removeWord}
+          onClose={() => setWordListOpen(false)}
+        />
+      )}
       {threadMessage && (
         <ThreadOverlay
           key={threadMessage.id}

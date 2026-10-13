@@ -129,11 +129,12 @@ EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "1024"))
 
 # How many words the prompt offers per turn, and how picky the relevance
 # side is: a word only counts as relevant if its similarity is at least
-# RELEVANCE_MIN_Z standard deviations above the mean over the whole bank
-# (relative, so it doesn't depend on any one embedding model's raw scale).
+# RELEVANCE_MIN_Z (robust) standard deviations above the typical similarity
+# over the whole pool (relative, so it doesn't depend on any one embedding
+# model's raw scale).
 RELEVANT_WORDS_PER_TURN = int(os.environ.get("RELEVANT_WORDS_PER_TURN", "3"))
 WILDCARD_WORDS_PER_TURN = int(os.environ.get("WILDCARD_WORDS_PER_TURN", "1"))
-RELEVANCE_MIN_Z = float(os.environ.get("RELEVANCE_MIN_Z", "1.5"))
+RELEVANCE_MIN_Z = float(os.environ.get("RELEVANCE_MIN_Z", "2.5"))
 # A word used by the assistant in its last N replies, or suggested in the
 # last N turns, isn't suggested again yet.
 SUGGEST_COOLDOWN_TURNS = int(os.environ.get("SUGGEST_COOLDOWN_TURNS", "4"))

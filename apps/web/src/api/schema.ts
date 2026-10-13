@@ -430,6 +430,7 @@ export interface components {
              */
             thread: components["schemas"]["ThreadEntryOut"][];
             glosses?: components["schemas"]["MessageGlosses"] | null;
+            vocab_debug?: components["schemas"]["VocabDebug"] | null;
         };
         /** ChatHistoryResponse */
         ChatHistoryResponse: {
@@ -472,6 +473,7 @@ export interface components {
              */
             user_message_id: number;
             glosses?: components["schemas"]["MessageGlosses"] | null;
+            vocab_debug?: components["schemas"]["VocabDebug"] | null;
         };
         /** ClearHistoryResponse */
         ClearHistoryResponse: {
@@ -912,6 +914,71 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * VocabDebug
+         * @description What the embedding search did for one assistant reply (debug view).
+         */
+        VocabDebug: {
+            /** Cutoff Z */
+            cutoff_z: number;
+            /**
+             * Searched
+             * @default false
+             */
+            searched: boolean;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /**
+             * Search
+             * @default []
+             */
+            search: components["schemas"]["VocabDebugWord"][];
+            /**
+             * Wildcards
+             * @default []
+             */
+            wildcards: components["schemas"]["VocabDebugWord"][];
+        };
+        /**
+         * VocabDebugWord
+         * @description One row of the debug view's embedding-search results.
+         */
+        VocabDebugWord: {
+            /** Lemma */
+            lemma: string;
+            /**
+             * Translation
+             * @default
+             */
+            translation: string;
+            /** Sim */
+            sim?: number | null;
+            /** Z */
+            z?: number | null;
+            /**
+             * Urgency
+             * @default 0
+             */
+            urgency: number;
+            /**
+             * Status
+             * @default below
+             */
+            status: string;
+            /**
+             * Saved
+             * @default false
+             */
+            saved: boolean;
+            /**
+             * Used
+             * @default false
+             */
+            used: boolean;
         };
         /** WordGloss */
         WordGloss: {

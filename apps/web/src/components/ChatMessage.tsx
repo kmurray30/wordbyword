@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api/client";
-import type { MessageGlosses, ThreadEntry, TokenAnnotation } from "../api/client";
+import type { MessageGlosses, ThreadEntry, TokenAnnotation, VocabDebug } from "../api/client";
 import { apiLanguage, htmlLang, useLanguage } from "../lib/language";
 import { diffRawWords, pickDiffReference, tokenizeSegments } from "../lib/wordDiff";
 import { DockedPopover } from "./DockedPopover";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
+import { VocabDebugPanel } from "./VocabDebugPanel";
 import { TranslationRow } from "./TranslationRow";
 import { ReadingText } from "./ReadingText";
 import type { Piece, WordRange } from "./ReadingText";
@@ -60,6 +61,9 @@ export interface DisplayMessage {
   // What each word (and multi-word phrase) means - see MessageGlosses.
   // Saved with the message; null/absent until made (fetched below).
   glosses?: MessageGlosses | null;
+  // Assistant replies, contextual vocab on: what the embedding search
+  // offered before the reply (shown by the debug 🔍 - see VocabDebugPanel).
+  vocabDebug?: VocabDebug | null;
 }
 
 // Where each token sits in the message text (tokens are its words and
@@ -167,6 +171,7 @@ export function ChatMessage({
   savedWords,
   onSaveWord,
   onRemoveWord,
+  debug = false,
 }: {
   // "sheet": the same bubble at the top of its coach overlay (ThreadOverlay)
   // - every popup opens underneath it (over the conversation below, word
@@ -192,8 +197,12 @@ export function ChatMessage({
   // The coach's reply while it's still streaming, when it's about this
   // message.
   liveCoach?: LiveCoachReply | null;
+  // The ☰ menu's debug switch: adds a 🔍 next to an assistant message's
+  // audio button, showing what the embedding search offered for that reply.
+  debug?: boolean;
 }) {
   const lang = useLanguage();
+  const [debugOpen, setDebugOpen] = useState(false);
   const resolvedLemmas = useRef<Set<string>>(new Set());
   // Checks count once each; a question and its answer count as one.
   const threadCount = (message.thread ?? []).filter((e) => e.kind !== "answer").length;
@@ -713,6 +722,18 @@ export function ChatMessage({
           {message.role === "assistant" && (
             <AudioButton text={message.text} language={lang} voice={voice} label="Play pronunciation" />
           )}
+          {debug && message.role === "assistant" && !sheet && (
+            <button
+              type="button"
+              className={`chat-message__debug-toggle${debugOpen ? " chat-message__debug-toggle--active" : ""}`}
+              onClick={() => setDebugOpen((open) => !open)}
+              aria-expanded={debugOpen}
+              aria-label="Show the vocabulary search for this reply"
+              title="What the embedding search offered for this reply"
+            >
+              🔍
+            </button>
+          )}
           {!sheet && (
           <button
             type="button"
@@ -726,6 +747,7 @@ export function ChatMessage({
           </button>
           )}
         </div>
+        {debug && debugOpen && message.role === "assistant" && !sheet && <VocabDebugPanel debug={message.vocabDebug} />}
       </div>
     </div>
   );

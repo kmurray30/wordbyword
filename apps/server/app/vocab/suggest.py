@@ -211,18 +211,28 @@ def score_candidates(
     every lemma its (similarity, z-score, status) - see DebugWord.status).
 
     A word clears the cutoff if its similarity stands out from the pool
-    (z-score >= min_z - relative, so it doesn't depend on any one embedding
-    model's raw scale). Of those, the top-k - by similarity, nudged toward
+    (z >= min_z - relative, so it doesn't depend on any one embedding
+    model's raw scale). The z is robust - measured from the pool's median
+    in units of its median absolute deviation (scaled to match a standard
+    deviation) - so a big cluster of relevant words can't drag the baseline
+    up and hide itself, which a plain mean/std z-score does in a small pool. Of those, the top-k - by similarity, nudged toward
     words due for review (and toward saved words, via `weights`), with a
     little jitter so the same conversation doesn't always produce the
     identical list - are offered."""
     sims = matrix @ query
-    std = float(sims.std())
-    z = (sims - sims.mean()) / std if std > 0 else np.zeros_like(sims)
+    median = float(np.median(sims))
+    mad = float(np.median(np.abs(sims - median)))
+    if mad > 1e-9:
+        spread, z = mad, 0.6745 * (sims - median) / mad
+    else:
+        # More than half the pool scores the same (e.g. no vectors tell
+        # them apart) - fall back to the plain standard deviation.
+        spread = float(sims.std())
+        z = (sims - median) / spread if spread > 0 else np.zeros_like(sims)
     info: dict[str, tuple[float, float, str]] = {}
     pickable: list[int] = []
     for i, lemma in enumerate(lemmas):
-        if z[i] < min_z or std == 0.0:
+        if z[i] < min_z or spread == 0.0:
             status = "below"
         elif lemma in cooldown:
             status = "cooldown"

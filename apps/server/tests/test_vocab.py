@@ -127,6 +127,48 @@ def test_score_candidates_offers_only_words_that_stand_out():
     assert info["w0"][2] == "below"
 
 
+def _noisy_pool(n, relevant, rng):
+    """`relevant` words close to the query, the rest unrelated noise."""
+    # The query has a little noise of its own, so unrelated words don't all
+    # score exactly 0 (real embeddings never tie like that).
+    query = rng.normal(0, 0.1, DIM).astype(np.float32)
+    query[0] = 1.0
+    query /= np.linalg.norm(query)
+    rows = []
+    for i in range(n):
+        v = rng.normal(0, 0.1, DIM).astype(np.float32)
+        v[0] = 1.0 if i < relevant else 0.0
+        rows.append(v / np.linalg.norm(v))
+    return query, [f"w{i}" for i in range(n)], np.stack(rows)
+
+
+def test_a_big_cluster_of_relevant_words_still_clears_the_cutoff_in_a_small_pool():
+    # 6 of 20 words are on-topic. A plain mean/std z-score tops out near
+    # 1.5 here (the cluster inflates both) and would drop every one of them.
+    query, lemmas, matrix = _noisy_pool(20, 6, np.random.default_rng(1))
+    offered, info = suggest.score_candidates(
+        query, lemmas, matrix, np.zeros(20), set(), 3, np.random.default_rng(0)
+    )
+    assert len(offered) == 3 and all(int(lemma[1:]) < 6 for lemma in offered)
+    assert all(info[f"w{i}"][2] in ("offered", "passed") for i in range(6))
+    assert all(info[f"w{i}"][2] == "below" for i in range(6, 20))
+
+
+def test_noise_alone_does_not_flood_the_offer_list():
+    # Nothing relevant: random vectors. With the default cutoff almost none
+    # should clear it (a looser one lets ~3 in 100 through - and up to 3 get
+    # offered per turn, all mislabeled "related to the conversation").
+    cleared = 0
+    for seed in range(100):
+        rng = np.random.default_rng(seed)
+        query, lemmas, matrix = _noisy_pool(100, 0, rng)
+        query = rng.normal(0, 1, DIM).astype(np.float32)
+        query /= np.linalg.norm(query)
+        _, info = suggest.score_candidates(query, lemmas, matrix, np.zeros(100), set(), 3, rng)
+        cleared += sum(1 for _, _, status in info.values() if status != "below")
+    assert cleared / 100 < 1.0  # of 100 words, on average under one clears the cutoff
+
+
 def test_score_candidates_reports_the_ones_cut_by_the_limit_and_by_cooldown():
     # Three equally-relevant words, room for one, one of them on cooldown.
     query = (_one_hot(1) + _one_hot(2) + _one_hot(3)) / np.sqrt(3)

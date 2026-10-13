@@ -1,0 +1,114 @@
+/* The per-message debug view of the embedding search (VocabDebugPanel.tsx):
+   small, grey, scrollable, under the bubble's action row. */
+.vocab-debug {
+  width: 100%;
+  max-width: min(34rem, 100%);
+  margin-top: 4px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  background: #181b22;
+  color: #aab2c4;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.vocab-debug__head {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.66rem;
+  color: #8b93a6;
+  margin-bottom: 4px;
+}
+
+.vocab-debug__head--sub {
+  margin-top: 8px;
+}
+
+.vocab-debug__empty {
+  margin: 2px 0;
+  color: #8b93a6;
+}
+
+.vocab-debug__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 14rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.vocab-debug__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "word nums" "tags tags";
+  gap: 0 8px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  border-left: 3px solid transparent;
+}
+
+.vocab-debug__word {
+  grid-area: word;
+  color: #d6dbe6;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.vocab-debug__gloss {
+  font-weight: 400;
+  color: #8b93a6;
+}
+
+.vocab-debug__saved {
+  color: #e6c76b;
+}
+
+.vocab-debug__nums {
+  grid-area: nums;
+  display: flex;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.vocab-debug__tags {
+  grid-area: tags;
+  display: flex;
+  gap: 8px;
+  color: #7b8396;
+}
+
+.vocab-debug__used {
+  color: #7fd39a;
+  font-weight: 600;
+}
+
+/* Made the cutoff and went to the model. */
+.vocab-debug__row--offered {
+  border-left-color: #2fae5a;
+  background: rgba(47, 174, 90, 0.12);
+}
+
+/* Cleared the cutoff but didn't make it in. */
+.vocab-debug__row--passed,
+.vocab-debug__row--cooldown {
+  border-left-color: #d6a53a;
+  background: rgba(214, 165, 58, 0.08);
+}
+
+/* The random picks. */
+.vocab-debug__row--wildcard {
+  border-left-color: #8f7bd6;
+  background: rgba(143, 123, 214, 0.1);
+}
+
+.vocab-debug__row--below {
+  opacity: 0.65;
+}

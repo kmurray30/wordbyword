@@ -109,6 +109,23 @@
   opacity: 1;
 }
 
+/* Debug switch only (see App's ☰ menu): the vocabulary-search view. */
+.chat-message__debug-toggle {
+  margin: 0;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.45;
+  font-size: 0.8em;
+}
+
+.chat-message__debug-toggle:hover,
+.chat-message__debug-toggle--active {
+  opacity: 1;
+}
+
 /* The box every popup on a message uses (word, phrase, 🌐). */
 .chat-message__popup {
   background: #262c3a;
