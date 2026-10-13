@@ -1,4 +1,5 @@
 import { CandidateCycler } from "./CandidateCycler";
+import { LANGUAGES, useLanguage } from "../lib/language";
 import "./WordCandidatesPopover.css";
 
 export interface WordCandidate {
@@ -9,8 +10,8 @@ export interface WordCandidate {
 interface WordCandidatesPopoverProps {
   candidates: WordCandidate[];
   // False when there's nothing to replace (the span is already natural,
-  // correct Spanish as typed) - just its in-context gloss. True when it
-  // offers a Spanish replacement to swap in.
+  // correct target language as typed) - just its in-context gloss. True
+  // when it offers a target-language replacement to swap in.
   clickable: boolean;
   onSelect: (translation: string) => void;
   // True while the real (LLM-backed) gloss for this word/group is still
@@ -32,7 +33,7 @@ interface WordCandidatesPopoverProps {
 }
 
 // The one popover widget for hovering/tapping a word or group in the chat
-// input, and for highlighting a phrase. No Spanish/English toggle for the
+// input, and for highlighting a phrase. No target/English toggle for the
 // common case - the backend's LLM call already has full sentence context,
 // so it picks the one sense that applies here rather than needing two
 // independent readings reconciled in the UI. A span with multiple senses
@@ -49,6 +50,7 @@ export function WordCandidatesPopover({
   onToggleAlternate,
   literal,
 }: WordCandidatesPopoverProps) {
+  const lang = useLanguage();
   if (loading) {
     return (
       <div className="word-candidates-popover" role="tooltip">
@@ -74,9 +76,11 @@ export function WordCandidatesPopover({
             e.stopPropagation();
             onToggleAlternate?.();
           }}
-          title={showAlternate ? "Show the Spanish reading" : "Also an English word - show that reading"}
+          title={
+            showAlternate ? `Show the ${LANGUAGES[lang].name} reading` : "Also an English word - show that reading"
+          }
         >
-          {showAlternate ? "ES" : "EN"}
+          {showAlternate ? lang.toUpperCase() : "EN"}
         </button>
       )}
     </div>

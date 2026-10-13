@@ -161,7 +161,7 @@ async function checkListenHandshake(browser) {
           if (String(m.data).includes('"error"')) done("error event");
         };
         ws.onopen = () => {
-          ws.send(JSON.stringify({ type: "start", session_id: "voice-e2e-handshake" }));
+          ws.send(JSON.stringify({ type: "start", session_id: "voice-e2e-handshake", language: "es" }));
           const silence = new ArrayBuffer(3200);
           let n = 0;
           const tick = setInterval(() => {
@@ -445,7 +445,9 @@ async function checkVoiceConversation(wavPath) {
     // Clean up whatever this browser session chatted (its own session id,
     // kept in localStorage by lib/session.ts).
     try {
-      const sid = await page.evaluate(() => Object.entries(localStorage).find(([k, v]) => /session/i.test(k) && /^[0-9a-f-]{36}$/i.test(v))?.[1] ?? null);
+      // Spanish (the default language) keeps its session under the
+      // original key; other languages use wordbyword.sessionId.<lang>.
+      const sid = await page.evaluate(() => localStorage.getItem("wordbyword.sessionId"));
       if (sid) await post(`/chat/history/clear?session_id=${encodeURIComponent(sid)}`, {});
     } catch {}
     await browser.close();

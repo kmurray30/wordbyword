@@ -6,6 +6,7 @@ import { TalkButton } from "./TalkButton";
 import { useDictation } from "../voice/useDictation";
 import { unlockSpeech } from "../voice/speech";
 import "./MessageThread.css";
+import { isComposing } from "../lib/ime";
 
 // The side conversation about a chat message, opened from its 💬 (shown in
 // ThreadOverlay): talk
@@ -122,6 +123,7 @@ function ThreadInput({
           if (!dictation.active) setValue(e.target.value);
         }}
         onKeyDown={(e) => {
+          if (isComposing(e)) return;
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             handleSend();

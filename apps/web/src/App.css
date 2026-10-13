@@ -40,8 +40,16 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.app__header h1 {
+/* The title, with the language's flag right after it. */
+.app__brand {
   flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.app__header h1 {
   margin: 0;
   font-size: 1.15rem;
   line-height: 1.2;
@@ -157,4 +165,14 @@
   margin-top: 6px;
   width: 100%;
   box-sizing: border-box;
+}
+
+/* A setting with its label on top and the choices under it. */
+.app__voice-picker--block {
+  display: block;
+}
+
+.app__voice-picker--block .segmented-control {
+  display: flex;
+  margin-top: 6px;
 }

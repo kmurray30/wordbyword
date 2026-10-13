@@ -1,5 +1,6 @@
 import { useCallback, useRef } from "react";
 import type { VoiceTranscriptEvent } from "../api/client";
+import { LANGUAGES, getLanguage } from "../lib/language";
 import { playEarcon } from "./earcons";
 import { stopSpeech } from "./speech";
 import { useMicStream } from "./useMicStream";
@@ -12,11 +13,12 @@ interface UseDictationOptions {
   onText: (text: string) => void;
 }
 
+// Japanese and Chinese run words together without spaces.
 function join(...parts: string[]): string {
   return parts
     .map((p) => p.trim())
     .filter(Boolean)
-    .join(" ");
+    .join(LANGUAGES[getLanguage()].spaced ? " " : "");
 }
 
 // Voice input as plain dictation: words stream into the chat input as the

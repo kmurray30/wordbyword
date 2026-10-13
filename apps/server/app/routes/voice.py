@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from app.db import get_session
+from app.languages import get_language
 from app.stt import deepgram_client
 from app.stt.deepgram_client import STTUnavailableError
 from app.wordbank import store
@@ -38,11 +39,11 @@ async def ping(websocket: WebSocket) -> None:
         return
 
 
-def keyterms_for(session: Session, limit: int = deepgram_client.MAX_KEYTERMS) -> list[str]:
-    """The learner's most recently seen word-bank lemmas - fed to Deepgram's
-    keyterm prompting so the exact words they're studying are the ones the
-    recognizer is biased toward hearing."""
-    entries = sorted(store.list_all(session), key=lambda e: e.last_seen_at, reverse=True)
+def keyterms_for(session: Session, limit: int = deepgram_client.MAX_KEYTERMS, language: str = "es") -> list[str]:
+    """The learner's most recently seen word-bank lemmas in this language -
+    fed to Deepgram's keyterm prompting so the exact words they're studying
+    are the ones the recognizer is biased toward hearing."""
+    entries = sorted(store.list_all(session, language), key=lambda e: e.last_seen_at, reverse=True)
     return [e.lemma for e in entries if e.lemma.isalpha()][:limit]
 
 
@@ -52,7 +53,8 @@ async def listen(websocket: WebSocket, session: Session = Depends(get_session)) 
     back (keeps the Deepgram key server-side).
 
     Client -> server: binary frames are 16kHz mono 16-bit PCM audio; JSON
-    text frames are control messages - {"type":"start"} (must come first),
+    text frames are control messages - {"type":"start", "language"} (must
+    come first; `language` as on every request, default Spanish),
     {"type":"mute"} / {"type":"unmute"} (frames are dropped while muted -
     the app's own TTS is playing and the mic would just hear it; dropping
     server-side is cheaper than reconnecting to Deepgram every turn), and
@@ -118,7 +120,9 @@ async def listen(websocket: WebSocket, session: Session = Depends(get_session)) 
 
     reader = asyncio.create_task(read_client())
     try:
-        async for event in deepgram_client.stream_transcripts(frame_iter(), keyterms_for(session)):
+        language = str(first.get("language") or "es")
+        keyterms = keyterms_for(session, language=get_language(language).code)
+        async for event in deepgram_client.stream_transcripts(frame_iter(), keyterms, language):
             await websocket.send_json({"type": event.kind, "text": event.text, "words": event.words})
     except STTUnavailableError as exc:
         await _send_error(websocket, str(exc))

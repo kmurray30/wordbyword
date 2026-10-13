@@ -2,12 +2,11 @@
 // LLM-corrected version of it, so the chat bubble can underline them in
 // place - a lightweight "here's what looked off" cue, not a full spell
 // checker. Two corrected versions exist (an English restatement and a
-// Spanish translation - see llm_translate.interpret_user_input), and the
-// raw text might be mostly in either language, so the caller picks
+// target-language translation - see llm_translate.interpret_user_input),
+// and the raw text might be mostly in either language, so the caller picks
 // whichever one shares more words with the raw text before diffing
-// against it - diffing English input against a from-scratch Spanish
-// translation would flag nearly every word as "wrong", which isn't the
-// point.
+// against it - diffing English input against a from-scratch translation
+// would flag nearly every word as "wrong", which isn't the point.
 
 export interface Segment {
   text: string;
@@ -16,9 +15,22 @@ export interface Segment {
 
 // Splits into alternating word / non-word (whitespace, punctuation) runs.
 // Rejoining every segment's `text` in order exactly reproduces the input.
+// Japanese and Chinese have no spaces - the browser's word segmenter finds
+// their words (`lang`); everything else splits on letters/digits.
 const WORD_RE = /[\p{L}\p{N}]+/gu;
 
-export function tokenizeSegments(text: string): Segment[] {
+export function tokenizeSegments(text: string, lang?: string): Segment[] {
+  if (lang && (lang.startsWith("ja") || lang.startsWith("zh")) && typeof Intl.Segmenter === "function") {
+    const segments: Segment[] = [];
+    for (const seg of new Intl.Segmenter(lang, { granularity: "word" }).segment(text)) {
+      const isWord = !!seg.isWordLike;
+      const last = segments[segments.length - 1];
+      // Neighbouring non-word bits (spaces, punctuation) stay one run.
+      if (!isWord && last && !last.isWord) last.text += seg.segment;
+      else segments.push({ text: seg.segment, isWord });
+    }
+    return segments;
+  }
   const segments: Segment[] = [];
   let cursor = 0;
   for (const match of text.matchAll(WORD_RE)) {

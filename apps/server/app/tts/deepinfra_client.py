@@ -10,7 +10,7 @@ import logging
 
 import httpx
 
-from app.config import DEEPINFRA_API_TOKEN, DEEPINFRA_TTS_MODEL, DEEPINFRA_TTS_VOICE, TARGET_LANGUAGE
+from app.config import DEEPINFRA_API_TOKEN, DEEPINFRA_TTS_MODEL, DEEPINFRA_TTS_VOICE
 from app.tts.errors import TTSUnavailableError
 from app.tts.kokoro_voices import voice_for_language
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 _RETRY_AFTER_429_S = 1.0
 
 
-async def synthesize(text: str, language: str = TARGET_LANGUAGE, voice: str | None = None) -> bytes:
+async def synthesize(text: str, language: str = "es", voice: str | None = None) -> bytes:
     if not DEEPINFRA_API_TOKEN:
         raise TTSUnavailableError("DEEPINFRA_API_TOKEN is not configured on the server")
 

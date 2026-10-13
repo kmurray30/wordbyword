@@ -2,7 +2,9 @@ import type { ReactNode } from "react";
 import "./WordToken.css";
 
 interface WordTokenProps {
-  surface: string;
+  // The word as shown (its romanization, or kana for kanji, depending on
+  // the reading settings - see ReadingText).
+  surface: ReactNode;
   gloss: string;
   open: boolean;
   // Part of the phrase the open word belongs to (highlighted together).

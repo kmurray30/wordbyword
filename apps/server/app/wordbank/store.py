@@ -17,11 +17,16 @@ def _to_state(entry: WordBankEntry) -> WordState:
     )
 
 
-def get_or_create(session: Session, lemma: str, pos: str = "", translation: str = "") -> WordBankEntry:
-    entry = session.scalar(select(WordBankEntry).where(WordBankEntry.lemma == lemma))
+def get_or_create(
+    session: Session, lemma: str, pos: str = "", translation: str = "", language: str = "es"
+) -> WordBankEntry:
+    entry = session.scalar(
+        select(WordBankEntry).where(WordBankEntry.language == language, WordBankEntry.lemma == lemma)
+    )
     if entry is None:
         now = datetime.utcnow()
         entry = WordBankEntry(
+            language=language,
             lemma=lemma,
             pos=pos,
             primary_translation=translation,
@@ -37,10 +42,12 @@ def get_or_create(session: Session, lemma: str, pos: str = "", translation: str 
     return entry
 
 
-def record_exposure(session: Session, lemma: str, pos: str = "", translation: str = "") -> WordBankEntry:
+def record_exposure(
+    session: Session, lemma: str, pos: str = "", translation: str = "", language: str = "es"
+) -> WordBankEntry:
     """Called for every lemma the agent produces this turn, whether or not
     it was one of the words we deliberately steered toward."""
-    entry = get_or_create(session, lemma, pos=pos, translation=translation)
+    entry = get_or_create(session, lemma, pos=pos, translation=translation, language=language)
     entry.exposure_count += 1
     entry.last_seen_at = datetime.utcnow()
     if translation and not entry.primary_translation:
@@ -48,12 +55,12 @@ def record_exposure(session: Session, lemma: str, pos: str = "", translation: st
     return entry
 
 
-def _apply(session: Session, lemma: str, transform) -> WordBankEntry:
-    # get_or_create, not a plain lookup: userTypedSpanishWord can name a word
+def _apply(session: Session, lemma: str, transform, language: str) -> WordBankEntry:
+    # get_or_create, not a plain lookup: userTypedTargetWord can name a word
     # the agent has never produced (so it has no word_bank row yet) but the
     # user clearly already knows - that's still real active-recall evidence
     # and shouldn't be dropped just because nothing introduced the word first.
-    entry = get_or_create(session, lemma)
+    entry = get_or_create(session, lemma, language=language)
     now = datetime.utcnow()
     updated = transform(_to_state(entry), now)
     entry.familiarity = updated.familiarity
@@ -62,17 +69,22 @@ def _apply(session: Session, lemma: str, transform) -> WordBankEntry:
     return entry
 
 
-def apply_reward_event(session: Session, event_type: str, lemma: str) -> WordBankEntry:
+def apply_reward_event(session: Session, event_type: str, lemma: str, language: str = "es") -> WordBankEntry:
     transforms = {
         "wordSeenNoHover": apply_passive_exposure,
         "wordHovered": apply_hover_penalty,
+        "userTypedTargetWord": apply_active_recall,
+        # Its name from when Spanish was the only language.
         "userTypedSpanishWord": apply_active_recall,
     }
     transform = transforms.get(event_type)
     if transform is None:
         raise ValueError(f"unknown reward event type: {event_type}")
-    return _apply(session, lemma, transform)
+    return _apply(session, lemma, transform, language)
 
 
-def list_all(session: Session) -> list[WordBankEntry]:
-    return list(session.scalars(select(WordBankEntry).order_by(WordBankEntry.lemma)).all())
+def list_all(session: Session, language: str | None = None) -> list[WordBankEntry]:
+    query = select(WordBankEntry).order_by(WordBankEntry.lemma)
+    if language is not None:
+        query = query.where(WordBankEntry.language == language)
+    return list(session.scalars(query).all())

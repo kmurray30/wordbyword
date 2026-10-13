@@ -2,7 +2,8 @@
 // each one can be sent to TTS (and start playing) before the model has
 // finished the whole reply. Anything after the last sentence boundary is
 // returned as `rest` to be prepended to the next chunk.
-const BOUNDARY = /([.!?…]+["'”’)\]]?)(\s+|$)/g;
+// Japanese/Chinese sentence ends (。！？) need no space after them.
+const BOUNDARY = /([.!?…]+["'”’)\]」』]?)(\s+|$)|([。！？]+["'”’）」』]?)(\s*)/g;
 
 // A boundary inside an open quotation is not a sentence end for TTS
 // purposes: the coach reads Spanish in quoted phrases ("Say: “Hola, ¿cómo
@@ -14,8 +15,8 @@ function insideOpenQuote(text: string): boolean {
   let single = 0;
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
-    if (ch === "“" || ch === "‘") curly += 1;
-    else if (ch === "”" || ch === "’") curly = Math.max(0, curly - 1);
+    if (ch === "“" || ch === "‘" || ch === "「" || ch === "『" || ch === "«") curly += 1;
+    else if (ch === "”" || ch === "’" || ch === "」" || ch === "』" || ch === "»") curly = Math.max(0, curly - 1);
     else if (ch === '"') straight += 1;
     else if (ch === "'") {
       // A straight single quote is an apostrophe inside a word (don't)
@@ -37,13 +38,13 @@ export function takeCompleteSentences(buffer: string): { sentences: string[]; re
     // A boundary at the very end of the buffer might still be followed by
     // more of the same sentence in the next chunk (e.g. "3." then "5") -
     // only split on it once whitespace has confirmed it.
-    if (match[2] === "" && match.index! + match[0].length === buffer.length) break;
     const end = match.index! + match[0].length;
+    if (!(match[2] ?? match[4]) && end === buffer.length) break;
     if (insideOpenQuote(buffer.slice(cursor, end))) continue;
     // A quoted question/exclamation that the sentence carries on past
     // ("Try “¿Qué tal?” instead.") isn't a boundary either - the next word
     // starting lowercase gives it away.
-    if (/["'”’)\]]$/.test(match[1]) && /^\p{Ll}/u.test(buffer.slice(end))) continue;
+    if (/["'”’)\]」』]$/.test(match[1] ?? match[3]) && /^\p{Ll}/u.test(buffer.slice(end))) continue;
     const sentence = buffer.slice(cursor, end).trim();
     if (sentence) sentences.push(sentence);
     cursor = end;

@@ -6,3 +6,7 @@ httpx>=0.27
 websockets>=13
 spacy>=3.7
 pytest>=8.0
+# Readings for Japanese/Chinese/Korean (app/translate/readings.py).
+pykakasi>=2.3
+pypinyin>=0.55
+opencc-python-reimplemented>=0.1.7

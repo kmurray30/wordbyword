@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { voiceListenUrl } from "../api/client";
 import type { VoiceTranscriptEvent } from "../api/client";
+import { apiLanguage } from "../lib/language";
 
 export type MicState = "idle" | "starting" | "listening" | "finishing" | "error";
 
@@ -154,7 +155,8 @@ export function useMicStream({ sessionId, onEvent }: UseMicStreamOptions) {
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "start", session_id: sessionIdRef.current }));
+        // The language decides how Deepgram listens (see app/languages.py).
+        ws.send(JSON.stringify({ type: "start", session_id: sessionIdRef.current, language: apiLanguage() }));
         if (mutedRef.current) ws.send(JSON.stringify({ type: "mute" }));
         resolve();
       };

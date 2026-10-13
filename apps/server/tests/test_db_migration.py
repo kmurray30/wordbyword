@@ -117,3 +117,36 @@ def test_legacy_message_token_rows_get_empty_string_note_and_literal_not_null(tm
     assert row.note == ""
     assert row.literal == ""
     assert row.surface == "hola"
+
+
+def test_word_bank_gets_a_language_and_a_per_language_unique_lemma(tmp_path):
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE word_bank (id INTEGER PRIMARY KEY, lemma VARCHAR(128) NOT NULL, pos VARCHAR(32), "
+        "primary_translation VARCHAR(256), familiarity FLOAT, exposure_count INTEGER, introduced_at DATETIME, "
+        "last_seen_at DATETIME, last_reviewed_at DATETIME, review_interval_days FLOAT)"
+    )
+    conn.execute("CREATE UNIQUE INDEX ix_word_bank_lemma ON word_bank (lemma)")
+    conn.execute("INSERT INTO word_bank (lemma) VALUES ('la')")
+    conn.commit()
+    conn.close()
+    engine = create_engine(f"sqlite:///{db_path}")
+
+    add_missing_columns(engine)
+    add_missing_columns(engine)  # idempotent
+
+    with engine.begin() as conn:
+        assert conn.exec_driver_sql("SELECT language FROM word_bank").scalar() == "es"
+        # The same word in another language is a separate entry now.
+        conn.exec_driver_sql("INSERT INTO word_bank (lemma, language) VALUES ('la', 'fr')")
+        assert conn.exec_driver_sql("SELECT count(*) FROM word_bank").scalar() == 2
+
+
+def test_chat_message_gets_a_language(tmp_path):
+    db_path = tmp_path / "old.db"
+    _make_old_schema_db(db_path)
+    engine = create_engine(f"sqlite:///{db_path}")
+    add_missing_columns(engine)
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT language FROM chat_message").scalar() == "es"

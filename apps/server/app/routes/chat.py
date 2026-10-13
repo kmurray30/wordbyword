@@ -5,10 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.chat.prompt_builder import build_messages
-from app.chat.glosses import build_glosses, load_glosses, save_glosses, token_glosses
+from app.chat.glosses import build_glosses, load_glosses, reply_tokens, save_glosses, token_glosses
 from app.chat.threads import append_entries, entry_out
-from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
+from app.languages import NATIVE_LANGUAGE, get_language
 from app.models import ChatMessage, MessageToken
 from app.schemas import (
     ChatHistoryMessage,
@@ -27,7 +27,6 @@ from app.schemas import (
 )
 from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
-from app.translate.lemmatizer import analyze
 from app.wordbank import store
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -133,12 +132,13 @@ def message_glosses(req: MessageGlossesRequest, session: Session = Depends(get_s
         return saved
     text = message.text
     learner = message.role == "user"
+    language = message.language or "es"
     session.rollback()  # no transaction open while the model runs (see _gloss_and_persist_reply)
     try:
-        _translation, words, phrases = llm_translate.gloss_message(text, NATIVE_LANGUAGE, TARGET_LANGUAGE, learner=learner)
+        _translation, words, phrases = llm_translate.gloss_message(text, NATIVE_LANGUAGE, language, learner=learner)
     except llm_translate.TranslationUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    glosses = build_glosses(text, words, phrases)
+    glosses = build_glosses(text, words, phrases, language)
     message = session.get(ChatMessage, req.message_id)
     if message is not None and glosses.words:
         save_glosses(message, glosses)
@@ -161,6 +161,7 @@ def _gloss_and_persist_reply(
     reply_text: str,
     user_message: ChatMessage,
     user_thread: list[ThreadEntryIn] | None = None,
+    language: str = "es",
 ) -> ChatTurnResponse:
     """Shared by both /chat/turn and /chat/turn/stream - everything that
     happens once the model's full reply text is known: one LLM call glosses
@@ -181,11 +182,12 @@ def _gloss_and_persist_reply(
     particular - timed out with "database is locked" (seen live). Now the
     lock is held only for the few milliseconds between this flush and the
     commit at the end."""
+    base = get_language(language).code
     try:
-        translation, words, phrases = llm_translate.gloss_message(reply_text, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+        translation, words, phrases = llm_translate.gloss_message(reply_text, NATIVE_LANGUAGE, language)
     except llm_translate.TranslationUnavailableError:
         translation, words, phrases = "", [], []
-    glosses = build_glosses(reply_text, words, phrases)
+    glosses = build_glosses(reply_text, words, phrases, base)
 
     session.add(user_message)
     session.flush()  # assigns user_message.id without committing yet - needed below
@@ -193,20 +195,21 @@ def _gloss_and_persist_reply(
         # The coach checks behind this message, kept as its thread.
         append_entries(session, user_message.id, user_thread)
 
-    tokens = analyze(reply_text)
+    tokens = reply_tokens(reply_text, base, glosses)
     per_token = token_glosses(tokens, glosses)
     annotations: list[TokenAnnotation] = []
     token_rows: list[MessageToken] = []
 
     for position, (tok, (word_gloss, word_note)) in enumerate(zip(tokens, per_token)):
-        # tok.is_spanish is a heuristic built for the learner's own possibly-
+        # tok.is_target is a heuristic built for the learner's own possibly-
         # English-mixed input (see lemmatizer.py); it's gated on a small
-        # ~300-word frequency list, so applying it here to the agent's own
-        # reply - which is always Spanish - silently dropped the gloss (and
-        # word-bank tracking) for any real Spanish word outside that list,
-        # e.g. "tormenta". Every alphabetic token in the agent's reply is
-        # Spanish by construction; only punctuation has nothing to gloss.
-        if not tok.surface.isalpha():
+        # ~300-word frequency list for Spanish, so applying it here to the
+        # agent's own reply - which is always in the target language -
+        # silently dropped the gloss (and word-bank tracking) for any real
+        # word outside that list, e.g. "tormenta". Every word in the agent's
+        # reply is in the target language by construction; only
+        # punctuation has nothing to gloss.
+        if not any(c.isalpha() for c in tok.surface):
             annotations.append(TokenAnnotation(surface=tok.surface, lemma=tok.lemma, pos=tok.pos, gloss="", is_new=False))
             # Persisted too (not just returned live) - a MessageToken row
             # with no gloss, same as any other token with nothing to show.
@@ -219,7 +222,7 @@ def _gloss_and_persist_reply(
             continue
 
         word_note = word_note if word_gloss else ""
-        entry = store.record_exposure(session, tok.lemma, pos=tok.pos, translation=word_gloss)
+        entry = store.record_exposure(session, tok.lemma, pos=tok.pos, translation=word_gloss, language=base)
         is_new = entry.exposure_count == 1
 
         annotations.append(
@@ -245,7 +248,12 @@ def _gloss_and_persist_reply(
         )
 
     assistant_message = ChatMessage(
-        session_id=session_id, role="assistant", text=reply_text, tokens=token_rows, native_text=translation
+        session_id=session_id,
+        language=base,
+        role="assistant",
+        text=reply_text,
+        tokens=token_rows,
+        native_text=translation,
     )
     if glosses.words:
         save_glosses(assistant_message, glosses)
@@ -266,7 +274,7 @@ def _gloss_and_persist_reply(
 @router.post("/turn", response_model=ChatTurnResponse)
 def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> ChatTurnResponse:
     history = _recent_history(session, req.session_id)
-    messages = build_messages(history, req.message)
+    messages = build_messages(history, req.message, req.language)
 
     try:
         reply_text = model_chat(messages)
@@ -284,8 +292,10 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
         # in history forever once saved.
         raise HTTPException(status_code=502, detail="Model returned an empty reply")
 
-    user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
-    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, req.thread)
+    user_message = ChatMessage(
+        session_id=req.session_id, language=get_language(req.language).code, role="user", text=req.message
+    )
+    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, req.thread, req.language)
 
 
 @router.post("/turn/stream")
@@ -299,11 +309,13 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
     shape /chat/turn returns - so the frontend ends up with one consistent
     payload either way, just delivered progressively here."""
     history = _recent_history(session, req.session_id)
-    messages = build_messages(history, req.message)
+    messages = build_messages(history, req.message, req.language)
     # Not added to the session until the reply is in (see
     # _gloss_and_persist_reply) - no DB write, and so no SQLite write lock,
     # is held while the model streams.
-    user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
+    user_message = ChatMessage(
+        session_id=req.session_id, language=get_language(req.language).code, role="user", text=req.message
+    )
 
     def events():
         # A leading SSE comment line (any line starting with ":" - part of
@@ -341,7 +353,9 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
             # history either.
             yield _sse("error", ChatTurnErrorEvent(message="Model returned an empty reply").model_dump_json())
             return
-        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, req.thread)
+        result = _gloss_and_persist_reply(
+            session, req.session_id, reply_text, user_message, req.thread, req.language
+        )
         yield _sse("done", result.model_dump_json())
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)

@@ -5,8 +5,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
+from app.languages import NATIVE_LANGUAGE, get_language
 from app.chat.threads import append_entries, entry_out
 from app.models import ChatMessage
 from app.schemas import (
@@ -22,16 +22,21 @@ from app.schemas import (
     GlossSpansResponse,
     InterpretInputRequest,
     InterpretInputResponse,
+    ReadingOut,
+    ReadingsRequest,
+    ReadingsResponse,
     TagInputRequest,
     TagInputResponse,
     ThreadEntryIn,
     TranslateCandidate,
     TranslateTextRequest,
     TranslateTextResponse,
+    TextReadings,
 )
 from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
+from app.translate.readings import readings_for
 from app.translate.span_matching import match_spans
 
 logger = logging.getLogger(__name__)
@@ -92,12 +97,13 @@ def translate_text(req: TranslateTextRequest) -> TranslateTextResponse:
 @router.post("/interpret", response_model=InterpretInputResponse)
 def interpret_input(req: InterpretInputRequest) -> InterpretInputResponse:
     """For the learner's own message: infers what they meant across a
-    possible mix of English/Spanish and grammar mistakes, returning a
-    corrected English restatement alongside its Spanish translation - used
+    possible mix of English/the target language and grammar mistakes,
+    returning a corrected English restatement alongside its target-language
+    translation - used
     to show both under the user's chat bubble rather than a single literal
     (and possibly nonsensical) pass."""
     try:
-        native, target = llm_translate.interpret_user_input(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+        native, target = llm_translate.interpret_user_input(req.text, NATIVE_LANGUAGE, req.language)
     except llm_translate.TranslationUnavailableError as exc:
         msg = f"(translation unavailable: {exc})"
         return InterpretInputResponse(native=msg, target=msg)
@@ -111,7 +117,7 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     saved in its thread; without it, it's about the learner's next message
     (the coach box at the bottom; with `check`, the exact message they're
     about to send) and lives in the coach panel until it's sent. Events:
-    "about" (that message's id, or null), "ready" (their own Spanish is
+    "about" (that message's id, or null), "ready" (their own target-language text is
     fine to send as written), "reply_chunk"s and "reply_complete"; "error"
     if nothing came back. See app.translate.llm_translate.coach_reply_stream."""
     history_rows = list(
@@ -170,7 +176,7 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
                     thread_turns,
                     draft_turns,
                     NATIVE_LANGUAGE,
-                    TARGET_LANGUAGE,
+                    req.language,
                     check=req.check,
                     message_draft="" if req.check else req.message_draft,
                 )
@@ -210,17 +216,20 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
 
 @router.post("/tag-input", response_model=TagInputResponse)
 def tag_input(req: TagInputRequest) -> TagInputResponse:
-    """Cheap, synchronous, LLM-free per-word classification (spaCy +
-    lemmatizer.py's is_spanish heuristic) - fast enough to call on every
-    keystroke (debounced). Needed for reward-event tracking
-    (userTypedSpanishWord) and the phrase-selection direction vote. The
+    """Cheap, synchronous, LLM-free per-word classification (see
+    app.translate.lemmatizer) - fast enough to call on every keystroke
+    (debounced). Needed for reward-event tracking (userTypedTargetWord) and
+    the phrase-selection direction vote. The
     slower LLM-backed word/group glossing that drives the hover-to-
     translate UI lives separately in /translate/gloss-spans below, fetched
     lazily on interaction rather than on every edit."""
+    spaced = get_language(req.language).spaced
     tokens = [
-        DraftToken(surface=tok.surface, lemma=tok.lemma, is_spanish=tok.is_spanish, start=tok.start, end=tok.end)
-        for tok in analyze(req.text)
-        if tok.surface.isalpha() and len(tok.surface) > 1
+        DraftToken(surface=tok.surface, lemma=tok.lemma, is_target=tok.is_target, start=tok.start, end=tok.end)
+        for tok in analyze(req.text, req.language)
+        # A one-letter "word" is noise in a spaced language; a single
+        # character is a real word in Japanese/Chinese.
+        if any(c.isalpha() for c in tok.surface) and (len(tok.surface) > 1 or not spaced)
     ]
     return TagInputResponse(tokens=tokens)
 
@@ -234,7 +243,7 @@ def gloss_spans(req: GlossSpansRequest) -> GlossSpansResponse:
     real LLM call. On failure, returns an empty span list - no dictionary/
     MT fallback."""
     try:
-        _translation, raw_spans = llm_translate.tag_draft(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+        _translation, raw_spans = llm_translate.tag_draft(req.text, NATIVE_LANGUAGE, req.language)
     except llm_translate.TranslationUnavailableError as exc:
         logger.warning("tag_draft unavailable for %r: %s", req.text, exc)
         raw_spans = []
@@ -249,3 +258,21 @@ def gloss_spans(req: GlossSpansRequest) -> GlossSpansResponse:
         logger.warning("tag_draft returned %d span(s) but none matched %r: %r", len(raw_spans), req.text, raw_spans)
 
     return GlossSpansResponse(spans=spans)
+
+
+@router.post("/readings", response_model=ReadingsResponse)
+def readings(req: ReadingsRequest) -> ReadingsResponse:
+    """How to read each text: romanization for every word, kana over kanji,
+    and Mandarin in the learner's characters (see app.translate.readings).
+    Deterministic and fast - no LLM. Empty readings for a language written
+    in the Latin alphabet."""
+    items = []
+    for text in req.texts[:100]:
+        shown, found = readings_for(text, req.language) if len(text) <= 4000 else (text, [])
+        items.append(
+            TextReadings(
+                text=shown,
+                readings=[ReadingOut(start=r.start, end=r.end, roman=r.roman, kana=r.kana, cont=r.cont) for r in found],
+            )
+        )
+    return ReadingsResponse(items=items)

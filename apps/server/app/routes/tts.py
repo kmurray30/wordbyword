@@ -10,10 +10,14 @@ from app.tts.kokoro_voices import voice_for_language, voices_for_language
 router = APIRouter(prefix="/tts", tags=["tts"])
 
 
-def _provider(name: str | None) -> str:
+def _provider(name: str | None, language: str = "es") -> str:
     provider = name or TTS_PROVIDER
     if provider not in TTS_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"unknown TTS provider: {provider!r}")
+    # Kokoro has no voice for some languages (Korean) - ElevenLabs speaks
+    # every language the app teaches.
+    if provider == "kokoro" and not voices_for_language(language.split("-")[0]):
+        return "elevenlabs"
     return provider
 
 
@@ -28,7 +32,8 @@ async def list_voices(language: str = "es", provider: str | None = None) -> TTSV
     """The partner voices a provider offers, and its default. ElevenLabs:
     the account's voices (see picker_order) - multilingual, so `language`
     doesn't narrow them. Kokoro: that language's voices."""
-    provider = _provider(provider)
+    provider = _provider(provider, language)
+    language = language.split("-")[0]
     if provider == "kokoro":
         voices = voices_for_language(language)
         if not voices:
@@ -39,8 +44,8 @@ async def list_voices(language: str = "es", provider: str | None = None) -> TTSV
             default=voice_for_language(language),
         )
     try:
-        voices = elevenlabs_client.picker_order(await elevenlabs_client.account_voices())
-        default = await elevenlabs_client.partner_voice_id()
+        voices = elevenlabs_client.picker_order(await elevenlabs_client.account_voices(), language)
+        default = await elevenlabs_client.partner_voice_id(language=language)
     except TTSUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     offered = voices[: elevenlabs_client.MAX_PICKER_VOICES]
@@ -60,24 +65,25 @@ async def speak(req: TTSRequest) -> Response:
         raise HTTPException(status_code=400, detail="text must not be empty")
     if req.role not in ("partner", "coach"):
         raise HTTPException(status_code=400, detail=f"unknown role: {req.role!r}")
-    provider = _provider(req.provider)
+    provider = _provider(req.provider, req.language)
+    language = req.language.split("-")[0]
 
     try:
         if provider == "kokoro":
             # One language per Kokoro voice: the coach speaks in the request
             # language's default voice; the partner's voice must match it.
             voice = None if req.role == "coach" else req.voice
-            if voice is not None and voice not in voices_for_language(req.language):
+            if voice is not None and voice not in voices_for_language(language):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"{voice!r} is not a valid voice for language {req.language!r}",
+                    detail=f"{voice!r} is not a valid voice for language {language!r}",
                 )
-            audio = await deepinfra_client.synthesize(req.text, language=req.language, voice=voice)
+            audio = await deepinfra_client.synthesize(req.text, language=language, voice=voice)
         else:
             if req.role == "coach":
                 voice_id = await elevenlabs_client.coach_voice_id()
             else:
-                voice_id = req.voice or await elevenlabs_client.partner_voice_id()
+                voice_id = req.voice or await elevenlabs_client.partner_voice_id(language=language)
             audio = await elevenlabs_client.synthesize(req.text, voice_id=voice_id)
     except TTSUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -16,12 +16,11 @@ import re
 
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.config import OPENAI_COACH_MODEL, OPENAI_TRANSLATE_MODEL
-from app.translate.lemmatizer import analyze
+from app.languages import NATIVE_LANGUAGE, get_language, has_foreign_script, language_name
+from app.translate.lemmatizer import looks_like_target
 from app.translate.sequential_stream import Field, stream_sequential_fields
 
 logger = logging.getLogger(__name__)
-
-_LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 
 # gloss_reply's JSON response needs room for a translation plus one span
 # per TOKEN in the source text (not per distinct word, unlike the old
@@ -50,28 +49,31 @@ _GLOSS_MESSAGE_MAX_TOKENS = 3200
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
-# Qwen3 is heavily trained on Chinese data and, on a bad roll, can emit CJK
-# tokens instead of the requested Spanish/English - observed live: a
-# translation click inserted Chinese characters into the input. Neither
-# language this app handles uses these scripts, so any hit here means the
-# reply is garbage, not a real translation.
-_UNEXPECTED_SCRIPT_RE = re.compile(r"[一-鿿぀-ヿ가-힯]")
 
 
 class TranslationUnavailableError(RuntimeError):
     pass
 
 
-def _looks_garbled(text: str) -> bool:
-    return bool(_UNEXPECTED_SCRIPT_RE.search(text))
+def _looks_garbled(text: str, language: str) -> bool:
+    """A reply meant to be in `language` and English that contains a script
+    neither uses - observed live (with an earlier model): Chinese characters
+    in a Spanish translation. Garbage, not a real answer."""
+    return has_foreign_script(text, language)
+
+
+def _non_english(*codes: str) -> str:
+    """Of a translation's two languages, the one being learned."""
+    return next((c for c in codes if c.split("-")[0].lower() != NATIVE_LANGUAGE), codes[0])
 
 
 def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     if not text.strip():
         return ""
 
-    source_name = _LANGUAGE_NAMES.get(source_lang, source_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    source_name = language_name(source_lang)
+    target_name = language_name(target_lang)
+    studied = _non_english(source_lang, target_lang)
     messages = [
         {
             "role": "system",
@@ -91,7 +93,7 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> str:
             last_result = model_chat(messages, model=OPENAI_TRANSLATE_MODEL).strip()
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if not _looks_garbled(last_result):
+        if not _looks_garbled(last_result, studied):
             return last_result
     raise TranslationUnavailableError(f"Model returned a garbled reply: {last_result!r}")
 
@@ -126,8 +128,9 @@ def gloss_message(
     if not text.strip():
         return "", [], []
 
-    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    native_name = language_name(native_lang)
+    target_name = language_name(target_lang)
+    lang = get_language(target_lang)
     if learner:
         intro = (
             f"This is a message a {native_name}-speaking learner wrote to their {target_name} "
@@ -149,31 +152,26 @@ def gloss_message(
             "content": (
                 f"{intro}\n\n"
                 f"`words`: EVERY word in the message, one word per entry, in order (left to right), "
-                f"including short words like el, la, de, que, y, mi - skip only punctuation. Copy "
-                f"`surface` exactly as written (same spelling, case and accents). `gloss`: the word's "
-                f"OWN basic dictionary meaning - the sense that fits here, but never the meaning of an "
-                f"idiom or phrase it's part of (that goes in `phrases`, so the learner sees both and "
-                f'can connect them): in "seguir la broma" ("to play along"), seguir is "to follow", '
-                f'not "to play along"; in "echar de menos", echar is "to throw". As short as a '
-                f'dictionary entry - one to three words, e.g. "good", "to eat", "the", "you '
-                f'(informal)". A conjugated verb is glossed as conjugated, with the subject it has '
-                f'here: "puede" in "puede ser" is "it can", "echo" is "I throw", "fueron" is "they '
-                f'went" - never just the infinitive (that goes in `grammar`). No explanations in '
-                f"`gloss`. `grammar`: "
-                f"optional, in {native_name}, about the word's form - for a conjugated verb give the "
-                f'infinitive and its meaning, then person and tense, e.g. "comer (to eat): I, present" '
-                f'or "ir (to go): they, preterite"; for a plural, feminine, contracted (del, al) or '
-                f"object-pronoun form, say so briefly. Leave it EMPTY for a word already in its basic "
-                f'dictionary form - never write "masculine singular" or the like for one - and for any '
-                f"word that needs nothing more; most words get none.\n\n"
+                f"including short function words (articles, particles, prepositions) - skip only "
+                f"punctuation. Copy `surface` exactly as written (same characters, spelling, case and "
+                f"accents). `gloss`: the word's OWN basic dictionary meaning - the sense that fits "
+                f"here, but never the meaning of an idiom or phrase it's part of (that goes in "
+                f"`phrases`, so the learner sees both and can connect them). As short as a dictionary "
+                f'entry - one to three words, e.g. "good", "to eat", "the", "you (informal)". A '
+                f"conjugated verb is glossed as conjugated, with the subject it has here - never just "
+                f"the dictionary form (that goes in `grammar`). No explanations in `gloss`. "
+                f"`grammar`: optional, in {native_name}, about the word's form - for a conjugated verb "
+                f"its dictionary form and meaning, then person/tense/politeness; for a plural, "
+                f"feminine, contracted or object-pronoun form, say so briefly. Leave it EMPTY for a "
+                f'word already in its basic dictionary form - never write "masculine singular" or the '
+                f"like for one - and for any word that needs nothing more; most words get none.\n\n"
                 f"`phrases`: ONLY groups of two or more words whose meaning isn't simply the words "
-                f'added up - idioms and fixed expressions like "qué bueno" ("how wonderful"), "tener '
-                f'que" ("to have to"), "me gusta" ("I like"), "a veces" ("sometimes"). Most messages '
-                f"have none or one. Its `surface` must be the WHOLE expression - every word its gloss "
-                f'covers, including the noun after an article ("seguir la broma", never "seguir la"). '
+                f"added up - idioms and fixed expressions. Most messages have none or one. Its "
+                f"`surface` must be the WHOLE expression - every word its gloss covers. "
                 f"`gloss`: the phrase's {native_name} meaning here. `note`: optional, "
                 f"in {native_name}, a short bit of usage or context only if it really helps - usually "
                 f"empty. Do not break a phrase down word by word.\n\n"
+                f"For {lang.name}: {lang.gloss_examples}\n\n"
                 f"Reply with ONLY one JSON object, no markdown fences, no explanation, exactly:\n"
                 f'{{{translation_field}"words": [{{"surface": "...", "gloss": "...", "grammar": ""}}, ...], '
                 f'"phrases": [{{"surface": "...", "gloss": "...", "note": ""}}, ...]}}'
@@ -191,12 +189,12 @@ def gloss_message(
             last_reply = model_chat(messages, max_tokens=_GLOSS_MESSAGE_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if not last_reply.strip() or _looks_garbled(last_reply):
+        if not last_reply.strip() or _looks_garbled(last_reply, target_lang):
             last_error = ValueError("empty or garbled reply")
             logger.warning("gloss_message attempt %d/3 for %r: empty or garbled reply (len=%d)", attempt + 1, text, len(last_reply))
             continue
         try:
-            return _extract_gloss_json(last_reply)
+            return _extract_gloss_json(last_reply, spaced=lang.spaced)
         except (ValueError, json.JSONDecodeError, KeyError) as exc:
             last_error = exc
             logger.warning(
@@ -205,7 +203,7 @@ def gloss_message(
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
 
 
-def _extract_gloss_json(reply: str) -> tuple[str, list[dict[str, str]], list[dict[str, str]]]:
+def _extract_gloss_json(reply: str, spaced: bool = True) -> tuple[str, list[dict[str, str]], list[dict[str, str]]]:
     match = _JSON_OBJECT_RE.search(reply)
     if not match:
         raise ValueError(f"no JSON object found in reply: {reply!r}")
@@ -225,7 +223,14 @@ def _extract_gloss_json(reply: str) -> tuple[str, list[dict[str, str]], list[dic
         return out
 
     words = entries(raw_words, ("gloss", "grammar"))
-    phrases = [p for p in entries(raw_phrases, ("gloss", "note")) if len(p["surface"].split()) > 1]
+    # A "phrase" of one word is the model repeating a word. Without spaces
+    # (Japanese, Chinese) that can't be told from the text - any phrase of
+    # two or more characters stays.
+    phrases = [
+        p
+        for p in entries(raw_phrases, ("gloss", "note"))
+        if (len(p["surface"].split()) > 1 if spaced else len(p["surface"].strip()) > 1)
+    ]
     return translation.strip(), words, phrases
 
 
@@ -265,15 +270,12 @@ def _looks_like_unwanted_reply(original: str, restated: str) -> bool:
     return restated_words > original_words * 2 and restated_words - original_words >= 4
 
 
-def _looks_spanish(text: str) -> bool:
-    """Rough majority-vote check reusing the same Spanish/English classifier
+def _looks_target(text: str, target_lang: str) -> bool:
+    """Rough majority-vote check reusing the same target/English classifier
     the word bank already relies on (app/translate/lemmatizer.py) - used to
     catch the case where the model labeled its two lines correctly but put
     the wrong language's content under one of them."""
-    words = [t for t in analyze(text) if t.surface.isalpha() and len(t.surface) > 1]
-    if not words:
-        return False
-    return sum(1 for t in words if t.is_spanish) > len(words) / 2
+    return looks_like_target(text, target_lang)
 
 
 def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
@@ -287,8 +289,8 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
     if not text.strip():
         return "", ""
 
-    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    native_name = language_name(native_lang)
+    target_name = language_name(target_lang)
     messages = [
         {
             "role": "system",
@@ -322,7 +324,7 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
             reply = model_chat(messages, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if not _looks_garbled(reply):
+        if not _looks_garbled(reply, target_lang):
             break
     else:
         # Both attempts came back garbled - fall back to translate_text
@@ -330,7 +332,7 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
         # translate_text has its own retry, so this is a genuinely
         # independent second chance, not just repeating the same failure.
         target_text = translate_text(text, native_lang, target_lang)
-        native_text = translate_text(text, target_lang, native_lang) if _looks_spanish(text) else text
+        native_text = translate_text(text, target_lang, native_lang) if _looks_target(text, target_lang) else text
         return native_text, target_text
 
     native_text, target_text = _parse_labeled_lines(reply, native_name, target_name)
@@ -342,20 +344,18 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
         # has no "conversation" framing for the model to go off-script
         # with.
         target_text = translate_text(text, native_lang, target_lang)
-        native_text = translate_text(text, target_lang, native_lang) if _looks_spanish(text) else text
+        native_text = translate_text(text, target_lang, native_lang) if _looks_target(text, target_lang) else text
         return native_text, target_text
 
     # A small model can label its two lines correctly but swap which
     # language's content goes under which label - observed live: the
     # "English" row came back showing Spanish text. Catch that rather than
-    # trust the labels blindly, when we know target_lang is Spanish (the
-    # only case this app actually exercises - the classifier is Spanish-
-    # specific, see _looks_spanish).
-    if native_text and target_text and target_lang == "es" and native_lang == "en":
-        if _looks_spanish(native_text) and not _looks_spanish(target_text):
+    # trust the labels blindly (see _looks_target).
+    if native_text and target_text and native_lang == NATIVE_LANGUAGE:
+        if _looks_target(native_text, target_lang) and not _looks_target(target_text, target_lang):
             native_text, target_text = target_text, native_text
-        elif not _looks_spanish(target_text):
-            # Not a swap - the model just left the "Spanish" line in
+        elif not _looks_target(target_text, target_lang):
+            # Not a swap - the model just left the target-language line in
             # English too (observed live: "sup bro. there once was a red
             # monkey" came back with the same English text under both
             # labels). The swap above only fixes mislabeled lines; this
@@ -488,8 +488,8 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
     if not draft.strip():
         return "", []
 
-    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    native_name = language_name(native_lang)
+    target_name = language_name(target_lang)
     messages = [
         {
             "role": "system",
@@ -516,15 +516,16 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
                 f"word, check whether that exact spelling is ALSO a legitimate, "
                 f"different word in {native_name} (a true cross-language cognate - "
                 f'for example "once" is Spanish for "eleven" but also an ordinary '
-                f"English word). If so, give that other word's meaning as "
+                f"English word; there are none between English and a language in "
+                f"another script). If so, give that other word's meaning as "
                 f"`alternate_gloss`, in {native_name} - otherwise leave "
                 f"`alternate_gloss` an empty string; it will be empty for nearly "
                 f"every span. For a MULTI-WORD span only, also give a short "
                 f"`literal` word-by-word breakdown in {native_name}, showing what "
                 f"each individual word in the group means on its own and, if the "
                 f"group's overall sense isn't a literal/word-for-word match for "
-                f'`gloss`, making that plain too - e.g. for a {target_name} idiom '
-                f'span like "tener en cuenta" meaning "take into account", '
+                f'`gloss`, making that plain too - e.g. for the Spanish idiom '
+                f'"tener en cuenta" meaning "take into account", '
                 f'`literal` could be "tener (to have) + en (in) + cuenta '
                 f'(account)" - so the learner can see how the phrase is built, '
                 f"not just what it means overall. Leave `literal` an empty string "
@@ -561,7 +562,7 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
             last_reply = model_chat(messages, max_tokens=_TAG_DRAFT_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if not last_reply.strip() or _looks_garbled(last_reply):
+        if not last_reply.strip() or _looks_garbled(last_reply, target_lang):
             last_error = ValueError("empty or garbled reply")
             # Per-attempt, not just on final failure - if this keeps
             # happening, knowing whether EVERY attempt came back truly
@@ -583,7 +584,7 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
 # The coach: one conversation about what the learner wants to say next and
 # about the messages so far. It answers questions, explains words and
 # grammar, drills, and - whenever it suggests something to say - writes
-# the suggestion as a [[Spanish | English meaning]] block, which the app
+# the suggestion as a [[target language | English meaning]] block, which the app
 # renders as a card with "Use this". Read aloud as well as shown.
 _COACH_MAX_TOKENS = 1800
 _COACH_HISTORY_MESSAGES = 8
@@ -646,7 +647,7 @@ def coach_reply_stream(
     sent), if anything.
 
     Yields, in order:
-      ("ready", bool) - the learner's own Spanish in `text` is already
+      ("ready", bool) - the learner's own target-language text in `text` is already
         correct and natural to send as written.
       ("reply_chunk", delta) ... then ("reply_complete", full_text).
     Raises TranslationUnavailableError if the model can't be reached or
@@ -654,8 +655,9 @@ def coach_reply_stream(
     if not text.strip():
         return
 
-    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    native_name = language_name(native_lang)
+    target_name = language_name(target_lang)
+    lang = get_language(target_lang)
     recent = messages[-_COACH_HISTORY_MESSAGES:]
     listing = "\n".join(
         f"[{m['number']}] {'Learner' if m['role'] == 'user' else 'Partner'}: {m['text']}"
@@ -686,6 +688,28 @@ def coach_reply_stream(
             f"whether it's right, how it sounds, or refer to \"this\"/\"it\" without saying what, they "
             f"mean this.\n\n"
         )
+    if lang.script == "latin":
+        mechanics_note = (
+            "Ignore punctuation and capitalization (a missing opening \"¿\"/\"¡\" in Spanish, "
+            "a final period, a lowercase first letter) - that counts as right unless it changes the "
+            "meaning. Missing or wrong accents are worth fixing: then give the corrected sentence as "
+            "a block and say plainly that the only change is the accent(s), naming them (e.g. "
+            "\"Just one accent: 'está'\")."
+        )
+        ready_rule = "punctuation and capitalization don't count; accents do"
+        romanized_note = ""
+    else:
+        mechanics_note = (
+            "Ignore punctuation (a missing final 。 or ？, spacing) - that counts as right unless "
+            "it changes the meaning."
+        )
+        script_name = {"japanese": "kana and kanji", "chinese": "Chinese characters", "korean": "Hangul"}[lang.script]
+        ready_rule = f"punctuation doesn't count; it must be written in {script_name}, not romanization"
+        romanized_note = (
+            f"- They may write {target_name} in romanization (romaji, pinyin, romanized Korean) "
+            f"when they can't type the script yet - that's {target_name} too: react to it, and "
+            f"always write suggestions in {script_name}.\n"
+        )
     check_note = (
         "\nThe learner's message below is the exact message they're about to send to their partner "
         "(typed or dictated in their message box) - treat it as what they want to say.\n"
@@ -709,7 +733,9 @@ def coach_reply_stream(
                 f"framing, it's most likely what they want to say to their partner - react to it "
                 f"as an attempt.\n"
                 f"- \"I want to say ...\", \"how do I tell him ...\" = they want to say that.\n"
-                f"- \"More casual\", \"shorter\", \"use querer\" adjust your last suggestion.\n"
+                f"- \"More casual\", \"shorter\", \"use a different word\" adjust your last "
+                f"suggestion.\n"
+                f"{romanized_note}"
                 f"- Questions about words, grammar or meaning - answer them; drill if they repeat "
                 f"a word back.\n\n"
                 f"Suggestions: whenever you suggest something for them to say, write it exactly "
@@ -719,18 +745,14 @@ def coach_reply_stream(
                 f"When their {target_name} is already right, say so briefly and stop - no "
                 f"suggestion block if it's already in their message box (it's ready to send); "
                 f"only give it back as a block if they wrote it here and haven't put it in their "
-                f"message box yet. Ignore punctuation and capitalization (missing opening \"¿\"/"
-                f"\"¡\", a final period, a lowercase first letter) - that counts as right unless "
-                f"it changes the meaning. Missing or wrong accents are worth fixing: then give the "
-                f"corrected sentence as a block and say plainly that the only change is the "
-                f"accent(s), naming them (e.g. \"Just one accent: 'está'\").\n\n"
+                f"message box yet. {mechanics_note}\n\n"
                 f"Style: {native_name}, with {target_name} words in quotes outside the blocks. "
                 f"Short, natural sentences - it's read aloud. No markdown, lists, headings or "
                 f"emoji. Don't open with \"Did you mean\" by default; talk normally.\n\n"
                 f"Write exactly two fields, in order, and never write a field's name:\n"
                 f"1. yes if the learner's own {target_name} in their latest message is already "
-                f"correct and natural to send as written (punctuation and capitalization don't "
-                f"count; accents do), otherwise no (no for questions and for {native_name}). "
+                f"correct and natural to send as written ({ready_rule}), otherwise no (no for "
+                f"questions and for {native_name}). "
                 f"Then this marker: {_COACH_READY_MARKER}\n"
                 f"2. Your reply, and nothing after it."
                 f"{check_note}"

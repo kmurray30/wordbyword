@@ -8,6 +8,7 @@ import { CoachSpeaker, stopSpeech, unlockSpeech } from "../voice/speech";
 import { useDictation } from "../voice/useDictation";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import "./NextMessagePanel.css";
+import { isComposing } from "../lib/ime";
 
 // "Discuss your next message": a conversation with the coach about what
 // you're about to say, folded into a dropdown under the message box (opens
@@ -224,9 +225,9 @@ export function NextMessagePanel({
     })();
   }
 
-  const handleUse = (spanish: string) => {
-    propsRef.current.onUse(spanish);
-    propsRef.current.onReady(spanish);
+  const handleUse = (text: string) => {
+    propsRef.current.onUse(text);
+    propsRef.current.onReady(text);
   };
 
   // Talking it through has its own box and mic.
@@ -350,6 +351,7 @@ export function NextMessagePanel({
               if (!dictation.active) setValue(e.target.value);
             }}
             onKeyDown={(e) => {
+              if (isComposing(e)) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 handleAsk();

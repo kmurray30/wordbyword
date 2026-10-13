@@ -1,9 +1,14 @@
 import type { components, paths } from "./schema";
+import { apiLanguage } from "../lib/language";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
-type ChatTurnRequest =
-  paths["/chat/turn"]["post"]["requestBody"]["content"]["application/json"];
+// A request whose `language` is filled in by default (see withLanguage).
+type WithOptionalLanguage<T> = Omit<T, "language"> & { language?: string };
+
+type ChatTurnRequest = WithOptionalLanguage<
+  paths["/chat/turn"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type ChatTurnResponse =
   paths["/chat/turn"]["post"]["responses"][200]["content"]["application/json"];
 type ChatHistoryResponse =
@@ -16,18 +21,21 @@ type TranslateTextRequest =
 type TranslateTextResponse =
   paths["/translate/text"]["post"]["responses"][200]["content"]["application/json"];
 
-type TagInputRequest =
-  paths["/translate/tag-input"]["post"]["requestBody"]["content"]["application/json"];
+type TagInputRequest = WithOptionalLanguage<
+  paths["/translate/tag-input"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type TagInputResponse =
   paths["/translate/tag-input"]["post"]["responses"][200]["content"]["application/json"];
 
-type GlossSpansRequest =
-  paths["/translate/gloss-spans"]["post"]["requestBody"]["content"]["application/json"];
+type GlossSpansRequest = WithOptionalLanguage<
+  paths["/translate/gloss-spans"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type GlossSpansResponse =
   paths["/translate/gloss-spans"]["post"]["responses"][200]["content"]["application/json"];
 
-type InterpretInputRequest =
-  paths["/translate/interpret"]["post"]["requestBody"]["content"]["application/json"];
+type InterpretInputRequest = WithOptionalLanguage<
+  paths["/translate/interpret"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type InterpretInputResponse =
   paths["/translate/interpret"]["post"]["responses"][200]["content"]["application/json"];
 
@@ -40,14 +48,16 @@ export type MessageGlosses = components["schemas"]["MessageGlosses"];
 type SaveUserInterpretationResponse =
   paths["/chat/message/interpretation"]["post"]["responses"][200]["content"]["application/json"];
 
-type CoachDraftRequest =
-  paths["/translate/coach"]["post"]["requestBody"]["content"]["application/json"];
+type CoachDraftRequest = WithOptionalLanguage<
+  paths["/translate/coach"]["post"]["requestBody"]["content"]["application/json"]
+>;
 
 // /translate/coach streams Server-Sent Events (see app/routes/translate.py's
 // coach_draft and app.translate.llm_translate.coach_reply_stream): which
 // partner message the reply is about (null = the learner's next message),
-// whether the learner's own Spanish is ready to send, then the coach's
-// reply text - suggestions are written inside it as [[Spanish | English]].
+// whether the learner's own target-language text is ready to send, then the
+// coach's reply text - suggestions are written inside it as
+// [[target language | English]].
 export type ThreadEntry = components["schemas"]["ThreadEntryOut"];
 export type ThreadEntryIn = components["schemas"]["ThreadEntryIn"];
 
@@ -98,7 +108,7 @@ async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal):
   const response = await fetchWithColdStartRetry(`${BASE_URL}/translate/coach`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(withLanguage(body)),
     signal,
   });
   if (!response.ok || !response.body) {
@@ -160,7 +170,7 @@ async function* chatTurnStream(body: ChatTurnRequest, signal?: AbortSignal): Asy
   const response = await fetchWithColdStartRetry(`${BASE_URL}/chat/turn/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(withLanguage(body)),
     signal,
   });
   if (!response.ok || !response.body) {
@@ -174,8 +184,9 @@ async function* chatTurnStream(body: ChatTurnRequest, signal?: AbortSignal): Asy
   }
 }
 
-type RewardEventRequest =
-  paths["/events/reward"]["post"]["requestBody"]["content"]["application/json"];
+type RewardEventRequest = WithOptionalLanguage<
+  paths["/events/reward"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type RewardEventResponse =
   paths["/events/reward"]["post"]["responses"][200]["content"]["application/json"];
 
@@ -183,6 +194,14 @@ type TTSRequest =
   paths["/tts/speak"]["post"]["requestBody"]["content"]["application/json"];
 type TTSVoicesResponse =
   paths["/tts/voices"]["get"]["responses"][200]["content"]["application/json"];
+
+type ReadingsRequest = WithOptionalLanguage<
+  paths["/translate/readings"]["post"]["requestBody"]["content"]["application/json"]
+>;
+type ReadingsResponse =
+  paths["/translate/readings"]["post"]["responses"][200]["content"]["application/json"];
+export type TextReadings = components["schemas"]["TextReadings"];
+export type Reading = components["schemas"]["ReadingOut"];
 
 type LlmHealthResponse =
   paths["/health/llm"]["get"]["responses"][200]["content"]["application/json"];
@@ -212,6 +231,13 @@ async function fetchWithColdStartRetry(input: string, init?: RequestInit): Promi
       throw err;
     }
   }
+}
+
+// Requests about the conversation carry the language being learned (and,
+// for Mandarin, which characters - see apiLanguage), unless they say
+// otherwise.
+function withLanguage<T extends object>(body: T): T & { language: string } {
+  return { language: apiLanguage(), ...body };
 }
 
 async function post<Req, Res>(path: string, body: Req): Promise<Res> {
@@ -320,13 +346,18 @@ async function healthLlm(): Promise<LlmHealthResponse> {
 }
 
 export const api = {
-  chatTurn: (body: ChatTurnRequest) => post<ChatTurnRequest, ChatTurnResponse>("/chat/turn", body),
+  chatTurn: (body: ChatTurnRequest) => post<ChatTurnRequest, ChatTurnResponse>("/chat/turn", withLanguage(body)),
   translateText: (body: TranslateTextRequest) =>
     post<TranslateTextRequest, TranslateTextResponse>("/translate/text", body),
-  tagInput: (body: TagInputRequest) => post<TagInputRequest, TagInputResponse>("/translate/tag-input", body),
-  glossSpans: (body: GlossSpansRequest) => post<GlossSpansRequest, GlossSpansResponse>("/translate/gloss-spans", body),
+  tagInput: (body: TagInputRequest) =>
+    post<TagInputRequest, TagInputResponse>("/translate/tag-input", withLanguage(body)),
+  glossSpans: (body: GlossSpansRequest) =>
+    post<GlossSpansRequest, GlossSpansResponse>("/translate/gloss-spans", withLanguage(body)),
   interpretInput: (body: InterpretInputRequest) =>
-    post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", body),
+    post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", withLanguage(body)),
+  // How to read Japanese/Korean/Chinese text (see lib/readings.ts, which
+  // batches and caches these).
+  readings: (body: ReadingsRequest) => post<ReadingsRequest, ReadingsResponse>("/translate/readings", withLanguage(body)),
   saveUserInterpretation: (body: SaveUserInterpretationRequest) =>
     post<SaveUserInterpretationRequest, SaveUserInterpretationResponse>("/chat/message/interpretation", body),
   // A message's word/phrase glosses, made and saved on first request.
@@ -335,7 +366,7 @@ export const api = {
   coachDraftStream,
   chatTurnStream,
   rewardEvent: (body: RewardEventRequest) =>
-    post<RewardEventRequest, RewardEventResponse>("/events/reward", body),
+    post<RewardEventRequest, RewardEventResponse>("/events/reward", withLanguage(body)),
   speak,
   listVoices,
   chatHistory,

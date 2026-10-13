@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.config import DEFAULT_REVIEW_INTERVAL_DAYS
@@ -19,9 +19,12 @@ class WordBankEntry(Base):
     weighting algorithm reads from and writes back to."""
 
     __tablename__ = "word_bank"
+    # One entry per word per language ("la" is Spanish's and French's both).
+    __table_args__ = (Index("uq_word_bank_language_lemma", "language", "lemma", unique=True),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    lemma: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    language: Mapped[str] = mapped_column(String(8), default="es")
+    lemma: Mapped[str] = mapped_column(String(128), index=True)
     pos: Mapped[str] = mapped_column(String(32), default="")
     primary_translation: Mapped[str] = mapped_column(String(256), default="")
 
@@ -44,6 +47,10 @@ class ChatMessage(Base):
     # history. Empty string on rows written before this column existed;
     # those are simply invisible to every session now, which is fine.
     session_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # The language the conversation is in (each language has its own
+    # session - see lib/session.ts on the frontend). Rows from before more
+    # languages existed are Spanish.
+    language: Mapped[str] = mapped_column(String(8), default="es")
     role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

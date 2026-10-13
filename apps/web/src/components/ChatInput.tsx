@@ -7,6 +7,8 @@ import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import { TalkButton } from "./TalkButton";
 import { stopSpeech, unlockSpeech } from "../voice/speech";
 import { useDictation } from "../voice/useDictation";
+import { apiLanguage } from "../lib/language";
+import { isComposing } from "../lib/ime";
 import "./ChatInput.css";
 
 // The cheap, LLM-free per-word pass (/translate/tag-input - spaCy
@@ -18,9 +20,10 @@ import "./ChatInput.css";
 // separately and lazily, only once a word is actually hovered/tapped.
 const BOUNDARY_DEBOUNCE_MS = 60;
 const IDLE_DEBOUNCE_MS = 400;
-const WORD_BOUNDARY_RE = /[\s.,!?;:¡¿()"'«»…]/;
+const WORD_BOUNDARY_RE = /[\s.,!?;:¡¿()"'«»…。、！？「」『』，]/;
 const PHRASE_DEBOUNCE_MS = 300;
-const SPANISH_WORD_RE = /^[a-zA-Zñáéíóúü]+$/i;
+// A real word (letters only, any script) - what counts toward the word bank.
+const TARGET_WORD_RE = /^\p{L}+$/u;
 // How far a touch can drift between start and end before it's treated as a
 // drag/scroll/selection rather than a tap.
 const TAP_MOVE_TOLERANCE_PX = 10;
@@ -134,7 +137,7 @@ export function ChatInput({
   // naively-hovered single word can later resolve to a wider real
   // multi-word group once ensureGlossSpans's fetch completes.
   const [openOffset, setOpenOffset] = useState<number | null>(null);
-  // Per-word-instance memory of the dual Spanish/English toggle (see
+  // Per-word-instance memory of the dual target/English toggle (see
   // DraftSpan.alternate_gloss), keyed by that span's own start offset -
   // reset whenever a fresh gloss-spans fetch lands (a genuinely new
   // instance, offsets may no longer mean the same thing).
@@ -142,13 +145,13 @@ export function ChatInput({
   const [phraseSelection, setPhraseSelection] = useState<{ text: string; start: number; end: number } | null>(null);
   const [phraseTranslation, setPhraseTranslation] = useState<string | null>(null);
   const [phraseState, setPhraseState] = useState<"idle" | "loading" | "error">("idle");
-  // Which way the phrase popover translates: "es" (candidate IS Spanish -
-  // a mostly-English/mixed selection, corrected and translated INTO
-  // Spanish, clickable to swap in) or "en" (candidate IS English - a
-  // mostly-Spanish selection, translated INTO English, just a gloss).
-  // Decided per-selection below from the majority language of the words it
-  // covers.
-  const [phraseDirection, setPhraseDirection] = useState<"es" | "en">("es");
+  // Which way the phrase popover translates: "target" (the candidate is in
+  // the language being learned - a mostly-English/mixed selection,
+  // corrected and translated INTO it, clickable to swap in) or "native"
+  // (the candidate is English - a mostly-target-language selection,
+  // translated INTO English, just a gloss). Decided per-selection below
+  // from the majority language of the words it covers.
+  const [phraseDirection, setPhraseDirection] = useState<"target" | "native">("target");
 
   const fireTagInput = (text: string) => {
     const seq = ++tagSeqRef.current;
@@ -383,24 +386,24 @@ export function ChatInput({
       return;
     }
     // Majority-vote the language of the real words the selection covers
-    // (same per-word is_spanish flags /translate/tag-input's cheap token
+    // (same per-word is_target flags /translate/tag-input's cheap token
     // pass already computed) to decide which way to translate: a mostly-
-    // Spanish selection goes to English, a mostly-English (or mixed/typo-
-    // ridden) one goes to Spanish, same as the per-word popover's two
-    // directions.
+    // target-language selection goes to English, a mostly-English (or
+    // mixed/typo-ridden) one goes to the target language, same as the
+    // per-word popover's two directions.
     const overlapping = effectiveTokens.filter(
       (t) => t.end > phraseSelection.start && t.start < phraseSelection.end,
     );
-    const spanishCount = overlapping.filter((t) => t.is_spanish).length;
-    const isSpanishPhrase = overlapping.length > 0 && spanishCount * 2 > overlapping.length;
-    setPhraseDirection(isSpanishPhrase ? "en" : "es");
+    const targetCount = overlapping.filter((t) => t.is_target).length;
+    const isTargetPhrase = overlapping.length > 0 && targetCount * 2 > overlapping.length;
+    setPhraseDirection(isTargetPhrase ? "native" : "target");
 
     setPhraseState("loading");
     setPhraseTranslation(null);
     const handle = setTimeout(() => {
-      const translation = isSpanishPhrase
+      const translation = isTargetPhrase
         ? api
-            .translateText({ text: phraseSelection.text, source_lang: "es", target_lang: "en" })
+            .translateText({ text: phraseSelection.text, source_lang: apiLanguage(), target_lang: "en" })
             .then((res) => res.translation)
         : api.interpretInput({ text: phraseSelection.text }).then((res) => res.target);
       translation
@@ -557,15 +560,16 @@ export function ChatInput({
     }, HOVER_CLOSE_DELAY_MS);
   };
 
-  // The one send path: reward events for the Spanish the learner produced,
+  // The one send path: reward events for the target-language words the
+  // learner produced,
   // hand the text up, clear the draft and everything derived from it.
   const sendText = (raw: string) => {
     const text = raw.trim();
     if (!text) return;
 
     for (const tok of effectiveTokens) {
-      if (tok.is_spanish && SPANISH_WORD_RE.test(tok.surface) && tok.surface.length > 1) {
-        api.rewardEvent({ event_type: "userTypedSpanishWord", lemma: tok.lemma }).catch(() => {});
+      if (tok.is_target && TARGET_WORD_RE.test(tok.surface)) {
+        api.rewardEvent({ event_type: "userTypedTargetWord", lemma: tok.lemma }).catch(() => {});
       }
     }
 
@@ -669,6 +673,9 @@ export function ChatInput({
           onTouchMove={handleTextareaTouchMove}
           onTouchEnd={handleTextareaTouchEnd}
           onKeyDown={(e) => {
+            // Enter while a Japanese/Chinese/Korean input method is still
+            // composing confirms the characters - it doesn't send.
+            if (isComposing(e)) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               handlePrimaryAction();
@@ -746,7 +753,7 @@ export function ChatInput({
                   ? { translation: "(translation failed)" }
                   : { translation: phraseTranslation ?? "…" },
             ]}
-            clickable={phraseDirection === "es"}
+            clickable={phraseDirection === "target"}
             onSelect={(translation) => {
               const next = value.slice(0, phraseSelection.start) + translation + value.slice(phraseSelection.end);
               handleValueChange(next);

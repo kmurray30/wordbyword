@@ -40,6 +40,10 @@ class ThreadEntryOut(ThreadEntryIn):
 class ChatTurnRequest(BaseModel):
     message: str
     session_id: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
     # The coach checks the learner ran before sending this message - stored
     # as the sent message's thread so the deliberation stays viewable under
     # it instead of cluttering the main conversation.
@@ -165,6 +169,10 @@ class TranslateTextResponse(BaseModel):
 
 class InterpretInputRequest(BaseModel):
     text: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
 
 
 class InterpretInputResponse(BaseModel):
@@ -174,19 +182,24 @@ class InterpretInputResponse(BaseModel):
 
 class TagInputRequest(BaseModel):
     text: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
 
 
 class DraftToken(BaseModel):
-    # Cheap, LLM-free per-word classification (spaCy tokenize/lemmatize +
-    # app.translate.lemmatizer's existing is_spanish heuristic) from
+    # Cheap, LLM-free per-word classification (app.translate.lemmatizer:
+    # spaCy for Spanish, a plain tokenizer otherwise) from
     # /translate/tag-input - fast enough to keep calling on every keystroke
     # (debounced), unlike the LLM-backed per-word/group glossing
     # (GlossSpansResponse.spans below), which is fetched lazily instead.
-    # Needed for reward-event tracking (userTypedSpanishWord) and the
+    # Needed for reward-event tracking (userTypedTargetWord) and the
     # phrase-selection direction vote.
     surface: str
     lemma: str
-    is_spanish: bool
+    # In the language being learned, not an English word dropped in.
+    is_target: bool
     start: int
     end: int
 
@@ -199,10 +212,10 @@ class DraftSpan(BaseModel):
     surface: str
     start: int
     end: int
-    # False for a span that's already natural, correct Spanish as typed -
-    # nothing to replace, candidates[0] is just its in-context gloss. True
-    # for a span offering a Spanish replacement to swap in. Always the
-    # EN->ES direction - the default/primary reading.
+    # False for a span that's already natural, correct target language as
+    # typed - nothing to replace, candidates[0] is just its in-context
+    # gloss. True for a span offering a replacement to swap in. Always the
+    # English -> target direction - the default/primary reading.
     clickable: bool
     candidates: list[TranslateCandidate]
     # Non-empty only for a standalone word that's ALSO a legitimate,
@@ -232,6 +245,10 @@ class TagInputResponse(BaseModel):
 
 class GlossSpansRequest(BaseModel):
     text: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
 
 
 class GlossSpansResponse(BaseModel):
@@ -246,6 +263,10 @@ class DraftTurn(BaseModel):
 class CoachDraftRequest(BaseModel):
     text: str
     session_id: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
     # The message this conversation is about (opened from its 💬), if any;
     # otherwise it's about the learner's next message.
     thread_message_id: int | None = None
@@ -263,8 +284,8 @@ class CoachDraftRequest(BaseModel):
 
 # /translate/coach streams these as SSE events (see
 # app.translate.llm_translate.coach_reply_stream): which message the reply
-# is about, whether the learner's own Spanish is ready to send, then the
-# coach's reply text (suggestions inside it as [[Spanish | English]]).
+# is about, whether the learner's own target-language text is ready to send, then the
+# coach's reply text (suggestions inside it as [[target language | English]]).
 class CoachAboutEvent(BaseModel):
     message_id: int | None  # None = the learner's next message
 
@@ -289,8 +310,12 @@ class CoachErrorEvent(BaseModel):
 
 
 class RewardEventRequest(BaseModel):
-    event_type: str  # "wordSeenNoHover" | "wordHovered" | "userTypedSpanishWord"
+    event_type: str  # "wordSeenNoHover" | "wordHovered" | "userTypedTargetWord"
     lemma: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
 
 
 class RewardEventResponse(BaseModel):
@@ -362,3 +387,32 @@ class SavedWordsResponse(BaseModel):
 
 class RemoveSavedWordResponse(BaseModel):
     removed: int
+
+
+class ReadingsRequest(BaseModel):
+    texts: list[str]
+    # As on every request (see ChatTurnRequest.language) - for Mandarin,
+    # "zh-Hant" also returns the text in Traditional characters.
+    language: str = "es"
+
+
+class ReadingOut(BaseModel):
+    start: int
+    end: int
+    # Romanization (romaji, pinyin, Korean romanization).
+    roman: str
+    # Japanese: the kana over a word written in kanji (furigana).
+    kana: str = ""
+    # Same word as the reading before it - romanized without a space.
+    cont: bool = False
+
+
+class TextReadings(BaseModel):
+    # The text as it should be shown - differs from what was sent only for
+    # Mandarin in the other script (same length, same offsets).
+    text: str
+    readings: list[ReadingOut]
+
+
+class ReadingsResponse(BaseModel):
+    items: list[TextReadings]

@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "../api/client";
 import type { MessageGlosses, ThreadEntry, TokenAnnotation } from "../api/client";
-import { joinTokens } from "../lib/spacing";
+import { apiLanguage, htmlLang, useLanguage } from "../lib/language";
 import { diffRawWords, pickDiffReference, tokenizeSegments } from "../lib/wordDiff";
 import { DockedPopover } from "./DockedPopover";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
+import { ReadingText } from "./ReadingText";
+import type { Piece, WordRange } from "./ReadingText";
 import type { LiveCoachReply } from "./MessageThread";
 import "./ChatMessage.css";
 
@@ -190,6 +193,7 @@ export function ChatMessage({
   // message.
   liveCoach?: LiveCoachReply | null;
 }) {
+  const lang = useLanguage();
   const resolvedLemmas = useRef<Set<string>>(new Set());
   // Checks count once each; a question and its answer count as one.
   const threadCount = (message.thread ?? []).filter((e) => e.kind !== "answer").length;
@@ -237,13 +241,13 @@ export function ChatMessage({
   const [globeOpen, setGlobeOpen] = useState(false);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
 
-  // Assistant: single ES->EN translation row.
+  // Assistant: single target -> English translation row.
   const [assistantTranslation, setAssistantTranslation] = useState<string | null>(null);
   const [assistantTranslating, setAssistantTranslating] = useState(false);
 
   // User: two rows - a corrected/interpreted English restatement (in case
-  // the learner typed a mix of English/Spanish, or made mistakes in
-  // either) and its Spanish translation.
+  // the learner typed a mix of English and the target language, or made
+  // mistakes in either) and its target-language translation.
   const [userNative, setUserNative] = useState<string | null>(null);
   const [userTarget, setUserTarget] = useState<string | null>(null);
   const [userInterpreting, setUserInterpreting] = useState(false);
@@ -310,7 +314,7 @@ export function ChatMessage({
     translationRequestedRef.current = true;
     setAssistantTranslating(true);
     api
-      .translateText({ text: message.text, source_lang: "es", target_lang: "en" })
+      .translateText({ text: message.text, source_lang: apiLanguage(lang), target_lang: "en" })
       .then((res) => {
         fetchedTranslationRef.current = true;
         setAssistantTranslation(res.translation ?? "");
@@ -410,7 +414,6 @@ export function ChatMessage({
   // an array, so this has to check length, not just presence) and should
   // fall through to plain/diffed text below.
   const hasTokens = !!message.tokens && message.tokens.length > 0;
-  const spaced = hasTokens ? joinTokens(message.tokens!.map((t) => t.surface)) : null;
   const offsets = useMemo(
     () => (hasTokens ? tokenOffsets(message.text, message.tokens!) : []),
     [hasTokens, message.text, message.tokens],
@@ -497,7 +500,7 @@ export function ChatMessage({
   const userWordSegments = useMemo(() => {
     if (message.role !== "user") return null;
 
-    const rawSegments = tokenizeSegments(message.text);
+    const rawSegments = tokenizeSegments(message.text, lang);
     const rawWords = rawSegments.filter((s) => s.isWord).map((s) => s.text);
 
     let matched: boolean[] | null = null;
@@ -511,7 +514,7 @@ export function ChatMessage({
       const nativeWords = tokenizeSegments(userNative)
         .filter((s) => s.isWord)
         .map((s) => s.text);
-      const targetWords = tokenizeSegments(userTarget)
+      const targetWords = tokenizeSegments(userTarget, lang)
         .filter((s) => s.isWord)
         .map((s) => s.text);
       const reference = pickDiffReference(rawWords, nativeWords, targetWords);
@@ -529,68 +532,68 @@ export function ChatMessage({
       wordIndex++;
       return { text: seg.text, start, end, isWord: true, flagged };
     });
-  }, [message.role, message.text, userNative, userTarget]);
+  }, [message.role, message.text, userNative, userTarget, lang]);
+
+  // The tappable words: a reply's tokens (or its glossed words), your own
+  // message's words.
+  const userWords = userWordSegments?.filter((seg) => seg.isWord) ?? [];
+  const glossWords = !hasTokens && message.role === "assistant" ? (glosses?.words ?? []) : [];
+  const wordRanges: WordRange[] = hasTokens ? offsets : message.role === "user" ? userWords : glossWords;
+
+  // One piece of one word (see ReadingText) - `content` is the word as
+  // shown (as written, romanized, ...).
+  const renderPiece = (piece: Piece, content: ReactNode, first: boolean) => {
+    if (piece.word === -1) {
+      // Text between words inside the open phrase is part of its highlight.
+      return inActivePhrase(piece.start, piece.end) ? <span className="word-token--phrase">{content}</span> : content;
+    }
+    if (message.role === "user") {
+      const seg = userWords[piece.word];
+      const active = activeOffset !== null && seg.start <= activeOffset && activeOffset < seg.end;
+      return (
+        <span
+          className={`word-token${active ? " word-token--active" : ""}${
+            inActivePhrase(seg.start, seg.end) ? " word-token--phrase" : ""
+          }${seg.flagged ? " chat-message__typo" : ""}${toneFor(seg.start) ? ` word-token--${toneFor(seg.start)}` : ""}`}
+          title={seg.flagged ? "Looks different from the corrected version" : undefined}
+          onClick={() => togglePinned(seg.start)}
+        >
+          {content}
+          {first && badgeFor(seg.start)}
+        </span>
+      );
+    }
+    const { start, end } = wordRanges[piece.word];
+    const tok = hasTokens ? message.tokens![piece.word] : undefined;
+    const lemma = tok?.lemma ?? message.text.slice(start, end).toLowerCase();
+    return (
+      <WordToken
+        surface={content}
+        gloss={tok?.gloss || wordAt(start)?.gloss || ""}
+        open={activeOffset !== null && start <= activeOffset && activeOffset < end}
+        inPhrase={inActivePhrase(start, end)}
+        badge={first ? badgeFor(start) : null}
+        tone={toneFor(start)}
+        onOpen={() => {
+          cancelHoverClose();
+          setGlobeOpen(false);
+          setHoverOffset(start);
+          handleHover(lemma);
+        }}
+        onClose={scheduleHoverClose}
+        onTogglePin={() => {
+          togglePinned(start);
+          handleHover(lemma);
+        }}
+      />
+    );
+  };
 
   return (
     <div className={`chat-message chat-message--${message.role}${sheet ? " chat-message--sheet" : ""}`}>
       <div className="chat-message__column">
-        <div className="chat-message__bubble" ref={bubbleRef}>
-          {hasTokens && spaced ? (
-            message.tokens!.map((tok, i) => {
-              const { start, end } = offsets[i];
-              // The space before a word inside the open phrase is part of
-              // the phrase's highlight too.
-              const spaceInPhrase = i > 0 && inActivePhrase(offsets[i - 1].start, end);
-              return (
-                <span key={i}>
-                  {spaced[i].spaceBefore && (spaceInPhrase ? <span className="word-token--phrase"> </span> : " ")}
-                  <WordToken
-                    surface={tok.surface}
-                    gloss={tok.gloss || wordAt(start)?.gloss || ""}
-                    open={activeOffset !== null && start <= activeOffset && activeOffset < end}
-                    inPhrase={inActivePhrase(start, end)}
-                    badge={badgeFor(start)}
-                    tone={toneFor(start)}
-                    onOpen={() => {
-                      cancelHoverClose();
-                      setGlobeOpen(false);
-                      setHoverOffset(start);
-                      handleHover(tok.lemma);
-                    }}
-                    onClose={scheduleHoverClose}
-                    onTogglePin={() => {
-                      togglePinned(start);
-                      handleHover(tok.lemma);
-                    }}
-                  />
-                </span>
-              );
-            })
-          ) : userWordSegments ? (
-            userWordSegments.map((seg, i) =>
-              seg.isWord ? (
-                <span
-                  key={i}
-                  className={`word-token${
-                    activeOffset !== null && seg.start <= activeOffset && activeOffset < seg.end ? " word-token--active" : ""
-                  }${inActivePhrase(seg.start, seg.end) ? " word-token--phrase" : ""}${seg.flagged ? " chat-message__typo" : ""}${
-                    toneFor(seg.start) ? ` word-token--${toneFor(seg.start)}` : ""
-                  }`}
-                  title={seg.flagged ? "Looks different from the corrected version" : undefined}
-                  onClick={() => togglePinned(seg.start)}
-                >
-                  {seg.text}
-                  {badgeFor(seg.start)}
-                </span>
-              ) : (
-                <span key={i} className={inActivePhrase(seg.start, seg.end) ? "word-token--phrase" : undefined}>
-                  {seg.text}
-                </span>
-              ),
-            )
-          ) : (
-            message.text
-          )}
+        <div className="chat-message__bubble" ref={bubbleRef} lang={htmlLang(lang)}>
+          <ReadingText text={message.text} words={wordRanges} renderPiece={renderPiece} />
           <button
             type="button"
             className={`chat-message__globe${globeOpen ? " chat-message__globe--active" : ""}`}
@@ -708,7 +711,7 @@ export function ChatMessage({
         </div>
         <div className="chat-message__actions">
           {message.role === "assistant" && (
-            <AudioButton text={message.text} language="es" voice={voice} label="Play pronunciation" />
+            <AudioButton text={message.text} language={lang} voice={voice} label="Play pronunciation" />
           )}
           {!sheet && (
           <button

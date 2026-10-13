@@ -58,13 +58,24 @@ def test_keyterms_are_most_recent_alphabetic_lemmas():
     assert voice.keyterms_for(session) == ["nuevo", "viejo"]
 
 
+def test_keyterms_are_the_language_being_spoken():
+    session = _session()
+    store.get_or_create(session, "nuevo")
+    store.get_or_create(session, "nouveau", language="fr")
+    session.commit()
+
+    assert "nouveau" not in voice.keyterms_for(session, language="es")
+    assert voice.keyterms_for(session, language="fr") == ["nouveau"]
+
+
 def _fake_stream(received: list):
     """Stands in for deepgram_client.stream_transcripts: drains the frame
     iterator (recording what the route forwarded) and emits a canned
     interim -> final -> utterance_end sequence once audio shows up."""
 
-    async def fake(audio_frames, keyterms=()):
+    async def fake(audio_frames, keyterms=(), language="es"):
         received.append(("keyterms", list(keyterms)))
+        received.append(("language", language))
         async for frame in audio_frames:
             if frame is None:
                 return
@@ -97,7 +108,7 @@ def test_listen_relays_audio_and_transcript_events():
 def test_listen_drops_audio_while_muted():
     received: list = []
 
-    async def fake(audio_frames, keyterms=()):
+    async def fake(audio_frames, keyterms=(), language="es"):
         async for frame in audio_frames:
             if frame is None:
                 return
@@ -126,7 +137,7 @@ def test_listen_requires_a_start_frame_first():
 
 
 def test_listen_reports_provider_unavailable_as_an_error_event():
-    async def unavailable(audio_frames, keyterms=()):
+    async def unavailable(audio_frames, keyterms=(), language="es"):
         raise STTUnavailableError("DEEPGRAM_API_KEY is not configured on the server")
         yield  # pragma: no cover
 
@@ -138,3 +149,15 @@ def test_listen_reports_provider_unavailable_as_an_error_event():
             assert "DEEPGRAM_API_KEY" in error["message"]
 
 
+
+
+def test_listen_passes_the_start_frames_language_on():
+    received: list = []
+    with patch("app.routes.voice.deepgram_client.stream_transcripts", _fake_stream(received)):
+        with _client().websocket_connect("/voice/listen") as ws:
+            ws.send_text(json.dumps({"type": "start", "language": "zh-Hant"}))
+            ws.send_bytes(b"\x00\x01" * 10)
+            ws.receive_json()
+            ws.send_text(json.dumps({"type": "stop"}))
+
+    assert ("language", "zh-Hant") in received

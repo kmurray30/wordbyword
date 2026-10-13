@@ -12,22 +12,22 @@ def test_conjugated_verb_collapses_to_infinitive():
     assert by_surface["comimos"] == "comer"
 
 
-def test_known_spanish_word_flagged_as_spanish():
+def test_known_spanish_word_flagged_as_target():
     tokens = analyze("El perro es grande")
     for tok in tokens:
         if tok.surface.lower() == "perro":
-            assert tok.is_spanish is True
+            assert tok.is_target is True
 
 
 def test_english_word_dropped_into_spanish_sentence_flagged():
     tokens = analyze("Quiero comprar a house nueva")
     house = [t for t in tokens if t.surface.lower() == "house"]
     assert house, "expected 'house' to be tokenized"
-    assert house[0].is_spanish is False
+    assert house[0].is_target is False
 
 
 def test_punctuation_not_flagged_as_unknown():
     tokens = analyze("¿Hola, cómo estás?")
     for tok in tokens:
         if not tok.surface.isalpha():
-            assert tok.is_spanish is True
+            assert tok.is_target is True

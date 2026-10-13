@@ -1,18 +1,46 @@
 # wordbyword
 
-A chat-based Spanish tutor. You talk to an LLM, and every word you've been
+A chat-based language tutor - Spanish, French, Japanese, Korean and
+Mandarin (pick one from the flag menu in the header; each language is its
+own conversation). You talk to an LLM, and every word you've been
 exposed to has a mastery score that decays over time and gets reinforced (or
 penalized) based on how you interact with it - mainly whether you hover to
 translate it. Hover any word (or short group of words), in the agent's
 replies or in your own draft, to see its translation in context; click the
 🌐 at the end of a message to toggle a full translation underneath it.
 
+## Languages
+
+Everything that varies by language lives in one place per side:
+`apps/server/app/languages.py` (prompt names and examples, which script
+it's written in, Deepgram settings, articles for phrase completion) and
+`apps/web/src/lib/language.ts` (flag, greeting, reading options). Every
+request carries a `language` (`es`, `fr`, `ja`, `ko`, `zh`, or for
+Mandarin `zh-Hans`/`zh-Hant` - the learner's characters), and each
+language has its own session id in the browser (Spanish keeps the original
+`wordbyword.sessionId` key), so chats, saved words and coach notes are
+separate per language.
+
+Japanese, Korean and Mandarin can be shown (☰ menu) as romanization only,
+the script with readings over it, or the script alone; Japanese also picks
+its reading aids (furigana over kanji, romaji under) and can swap kanji for
+kana, Mandarin picks Simplified or Traditional characters (the partner and
+coach write in them too). Readings come from `POST /translate/readings`,
+which is deterministic - pykakasi (Japanese), pypinyin (Mandarin, with its
+phrase dictionary for characters read more than one way), opencc
+(Simplified/Traditional) and a Revised Romanization of Korean
+(`app/translate/readings.py`) - never the LLM.
+
+Spanish words are lemmatized with spaCy for the word bank; other languages
+use the words the LLM glossed (it splits Japanese and Chinese into words,
+which a plain tokenizer can't).
+
 ## Architecture
 
 ```
 apps/server   Python (FastAPI) - word bank exposure/familiarity tracking,
               chat orchestration (talks to OpenAI), translation (spaCy for
-              lemmatizing/word-bank tracking, the LLM itself for every
+              Spanish lemmatizing/word-bank tracking, the LLM itself for every
               actual translation - single words, the learner's in-progress
               draft, and whole messages), SQLite storage.
 apps/web      React + Vite + TypeScript - chat UI, hover tooltips, the
@@ -53,7 +81,7 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `MAX_REPLY_TOKENS` | `300` | hard cap on tokens per generation (chat + translation calls alike) |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
 | `DEEPGRAM_API_KEY` | *(none)* | Deepgram API key for voice mode's streaming speech-to-text (`WS /voice/listen`); the mic button reports an error if unset |
-| `DEEPGRAM_STT_MODEL` | `nova-3` | Deepgram model for transcription - must support `language=multi` (Spanish/English code-switching) |
+| `DEEPGRAM_STT_MODEL` | `nova-3` | Deepgram model for transcription - must support `language=multi` (code-switching with English, for Spanish/French/Japanese); Korean uses Nova-3 in Korean alone, Mandarin Nova-2 (`zh-CN`/`zh-TW`) - see `app/languages.py` |
 | `TTS_PROVIDER` | `elevenlabs` | which text-to-speech provider every voice uses unless a request names one (`provider` on `/tts/speak` and `/tts/voices`): `elevenlabs` or `kokoro` |
 | `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for the `kokoro` provider; requests for it return 503 if unset |
 | `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used by the `kokoro` provider |

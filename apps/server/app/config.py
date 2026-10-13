@@ -46,8 +46,8 @@ OPENAI_TRANSLATE_MODEL = os.environ.get("OPENAI_TRANSLATE_MODEL", OPENAI_CHAT_MO
 # before any visible tokens are expected.
 MAX_REPLY_TOKENS = int(os.environ.get("MAX_REPLY_TOKENS", "1200"))
 
-TARGET_LANGUAGE = "es"
-NATIVE_LANGUAGE = "en"
+# The languages themselves (what the learner studies, in English) live in
+# app/languages.py.
 
 # Text-to-speech providers. Every voice in the app (the coach's, the
 # partner's, every 🔊) goes through TTS_PROVIDER unless a request names
@@ -67,17 +67,18 @@ DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "")
 
 # Speech-to-text for voice mode (Deepgram, streaming over a WebSocket - see
 # app/stt/deepgram_client.py). Chosen for its code-switching mode
-# (`language=multi`): the learner's speech is genuinely mixed Spanish/
-# English inside one utterance. Empty key means voice mode is disabled -
+# (`language=multi`): the learner's speech is genuinely mixed with English
+# inside one utterance (per-language settings in app/languages.py). Empty key means voice mode is disabled -
 # /voice/listen reports a clear error rather than failing obscurely, same
 # convention as the other provider keys above.
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 DEEPGRAM_STT_MODEL = os.environ.get("DEEPGRAM_STT_MODEL", "nova-3")
 
 # ElevenLabs text-to-speech (the default provider - see
-# app/tts/elevenlabs_client.py): the coach speaks English with Spanish
-# phrases embedded in it, and the multilingual models switch pronunciation
-# inside a single text; the partner speaks Spanish in a different voice.
+# app/tts/elevenlabs_client.py): the coach speaks English with
+# target-language phrases embedded in it, and the multilingual models switch
+# pronunciation inside a single text; the partner speaks the target language
+# in a different voice.
 # ELEVENLABS_TTS_MODEL: eleven_multilingual_v2 for quality;
 # eleven_flash_v2_5 is the lower-latency/cheaper multilingual alternative.
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -88,7 +89,8 @@ ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingu
 # plan as a *library* voice ("Free users cannot use library voices via the
 # API"), while the voices GET /v1/voices lists for the account itself work.
 ELEVENLABS_COACH_VOICE_ID = os.environ.get("ELEVENLABS_COACH_VOICE_ID", "")
-# The partner's default voice (the learner can pick another in the app).
+# The partner's default voice for Spanish (the learner can pick another in
+# the app; other languages prefer a voice that sounds native).
 # Empty: the first of the account's voices that isn't the coach's.
 ELEVENLABS_PARTNER_VOICE_ID = os.environ.get("ELEVENLABS_PARTNER_VOICE_ID", "")
 

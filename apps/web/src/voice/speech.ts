@@ -2,11 +2,12 @@ import { api } from "../api/client";
 import { AudioQueue } from "./audioQueue";
 import { takeCompleteSentences } from "./sentences";
 import { speakableCoachText } from "../lib/coachText";
+import { getLanguage } from "../lib/language";
 
 // Everything the app reads aloud goes through ONE queue, so the coach and
 // the partner never talk over each other: the coach's replies in the coach
-// voice (English with Spanish inside it), the partner's replies in theirs -
-// both ElevenLabs. Gated by the "Read aloud" setting in the menu.
+// voice (English with the target language inside it), the partner's
+// replies in theirs - both ElevenLabs by default. Gated by the "Read aloud" setting in the menu.
 
 const STORAGE_KEY = "wordbyword.readAloud";
 const queue = new AudioQueue();
@@ -61,11 +62,11 @@ export function speakCoach(text: string): void {
 export function speakPartner(text: string, voice?: string): void {
   const clean = text.trim();
   if (!readAloud || !clean) return;
-  void queue.enqueue(api.speak({ text: clean, language: "es", voice, role: "partner" })).catch(() => {});
+  void queue.enqueue(api.speak({ text: clean, language: getLanguage(), voice, role: "partner" })).catch(() => {});
 }
 
 // Speaks a streamed coach reply as it arrives: plain sentences as soon as
-// they're complete, each [[Spanish | English]] suggestion as “Spanish”,
+// they're complete, each [[target | English]] suggestion as “target”,
 // which means “English” once its block has closed.
 export class CoachSpeaker {
   private raw = "";

@@ -1,0 +1,36 @@
+/* Script with readings: each unit is a little column - the reading over
+   it (furigana, pinyin, romanization) and, for Japanese, romaji under it.
+   Every unit has the same lines, top-aligned, so they line up. */
+.reading {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: top;
+}
+
+.reading__over,
+.reading__under {
+  font-size: 0.6em;
+  line-height: 1.25;
+  opacity: 0.75;
+  white-space: nowrap;
+  /* Readings aren't tappable on their own - the word under them is. */
+  pointer-events: none;
+}
+
+.reading__over {
+  margin-bottom: -0.05em;
+}
+
+.reading__under {
+  margin-top: -0.05em;
+}
+
+.reading__base {
+  white-space: pre;
+}
+
+/* A bit more room between lines when readings sit above them. */
+.reading-text--both {
+  line-height: 1.35;
+}

@@ -10,6 +10,9 @@ import type { NextMessageControl } from "./components/NextMessagePanel";
 import type { LiveCoachReply } from "./components/MessageThread";
 import { ThreadOverlay } from "./components/ThreadOverlay";
 import { SegmentedControl } from "./components/SegmentedControl";
+import { LanguageMenu } from "./components/LanguageMenu";
+import { LANGUAGES, htmlLang, setReadingSettings, useReadingSettings } from "./lib/language";
+import type { LanguageCode, ReadingSettings } from "./lib/language";
 import { getSessionId } from "./lib/session";
 import { useAppUpdate } from "./lib/useAppUpdate";
 import { useChatAutoScroll } from "./lib/useChatAutoScroll";
@@ -26,10 +29,14 @@ function serverIdOf(m: DisplayMessage): number | null {
   return m.id > 0 ? m.id : null;
 }
 
-const VOICE_STORAGE_KEY = "wordbyword.voice";
+// The partner's voice, per language (Spanish keeps its original key).
+const voiceStorageKey = (lang: LanguageCode) => (lang === "es" ? "wordbyword.voice" : `wordbyword.voice.${lang}`);
 
-function App() {
-  const [sessionId] = useState(getSessionId);
+function App({ lang, onLanguageChange }: { lang: LanguageCode; onLanguageChange: (code: LanguageCode) => void }) {
+  const config = LANGUAGES[lang];
+  const readingSettings = useReadingSettings();
+  const VOICE_STORAGE_KEY = voiceStorageKey(lang);
+  const [sessionId] = useState(() => getSessionId(lang));
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +122,7 @@ function App() {
 
   useEffect(() => {
     api
-      .listVoices("es")
+      .listVoices(lang)
       .then((res) => {
         setVoices(res.voices);
         // A voice saved before (or from the old provider) that isn't
@@ -123,7 +130,7 @@ function App() {
         setVoice((current) => (current && res.voices.some((v) => v.id === current) ? current : res.default));
       })
       .catch(() => {});
-  }, []);
+  }, [lang]);
 
   useEffect(() => {
     api
@@ -302,7 +309,10 @@ function App() {
   return (
     <div className={`app${keyboardUp ? " app--keyboard" : ""}`}>
       <header className="app__header">
-        <h1>wordbyword</h1>
+        <div className="app__brand">
+          <h1>wordbyword</h1>
+          <LanguageMenu current={lang} onSelect={onLanguageChange} />
+        </div>
         <div className="app__menu" ref={menuRef}>
           <button
             type="button"
@@ -327,6 +337,9 @@ function App() {
                   ]}
                 />
               </div>
+              {config.readings && (
+                <ReadingSettingsPicker lang={lang} settings={readingSettings} />
+              )}
               {voices.length > 0 && voice && (
                 <div className="app__voice-picker app__voice-picker--voices">
                   Partner's voice:
@@ -356,7 +369,9 @@ function App() {
         <div className="app__chat-content" ref={chatContentRef}>
         {!historyLoaded && <p className="app__empty">Loading…</p>}
         {historyLoaded && messages.length === 0 && (
-          <p className="app__empty">Say hello to start a conversation - ¡Hola!</p>
+          <p className="app__empty">
+            Say hello to start a conversation in {config.name} - <span lang={lang}>{config.greeting}</span>
+          </p>
         )}
         {messages.map((m) => {
           const live = liveCoach && liveCoach.messageId === serverIdOf(m) ? liveCoach : null;
@@ -381,7 +396,9 @@ function App() {
         {streamingText !== null && (
           <div className="chat-message chat-message--assistant">
             <div className="chat-message__column">
-              <div className="chat-message__bubble">{streamingText || "…"}</div>
+              <div className="chat-message__bubble" lang={htmlLang(lang)}>
+                {streamingText || "…"}
+              </div>
             </div>
           </div>
         )}
@@ -425,6 +442,76 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+// How Japanese, Korean and Chinese are shown (see ReadingText): just the
+// romanization, the script with readings over it, or the script alone -
+// plus, for Japanese, which readings (furigana, romaji) and whether kanji
+// show as kanji; for Mandarin, Simplified or Traditional characters.
+function ReadingSettingsPicker({ lang, settings }: { lang: LanguageCode; settings: ReadingSettings }) {
+  const readings = LANGUAGES[lang].readings!;
+  const set = (patch: Partial<ReadingSettings>) => setReadingSettings(patch, lang);
+  const toggle = (key: "furigana" | "romaji", label: string) => (
+    <button
+      type="button"
+      aria-pressed={settings[key]}
+      className={`segmented-control__option${settings[key] ? " segmented-control__option--active" : ""}`}
+      onClick={() => set({ [key]: !settings[key] })}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <>
+      <div className="app__voice-picker app__voice-picker--block">
+        Show {LANGUAGES[lang].name} as:
+        <SegmentedControl
+          value={settings.mode}
+          onChange={(mode) => set({ mode })}
+          options={[
+            { value: "roman", label: readings.roman },
+            { value: "both", label: "Both" },
+            { value: "script", label: readings.script },
+          ]}
+        />
+      </div>
+      {lang === "ja" && settings.mode === "both" && (
+        <div className="app__voice-picker app__voice-picker--block">
+          Reading aids:
+          <div className="segmented-control">
+            {toggle("furigana", "Furigana")}
+            {toggle("romaji", "Romaji")}
+          </div>
+        </div>
+      )}
+      {lang === "ja" && settings.mode !== "roman" && (
+        <div className="app__voice-picker app__voice-picker--block">
+          Kanji:
+          <SegmentedControl
+            value={settings.kanji ? "kanji" : "kana"}
+            onChange={(v) => set({ kanji: v === "kanji" })}
+            options={[
+              { value: "kanji", label: "漢字 Kanji" },
+              { value: "kana", label: "かな Kana only" },
+            ]}
+          />
+        </div>
+      )}
+      {lang === "zh" && (
+        <div className="app__voice-picker app__voice-picker--block">
+          Characters:
+          <SegmentedControl
+            value={settings.chineseScript}
+            onChange={(chineseScript) => set({ chineseScript })}
+            options={[
+              { value: "simplified", label: "简体 Simplified" },
+              { value: "traditional", label: "繁體 Traditional" },
+            ]}
+          />
+        </div>
+      )}
+    </>
   );
 }
 

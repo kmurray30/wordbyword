@@ -1,5 +1,5 @@
 """Shared accent-insensitive normalization for dictionary lookups - a
-learner typing "como" should still hit "cómo"'s entry, and vice versa,
+learner typing "como" should still hit "cómo"'s entry (or "cafe" "café"), and vice versa,
 rather than silently missing because of one accent mark.
 
 Deliberately an explicit table, not a blanket Unicode decompose-and-strip:
@@ -8,7 +8,12 @@ Spanish, not an accented "n" - stripping it would collide real word pairs
 that differ only by ñ/n (e.g. "año" "year" vs "ano" - not a hypothetical,
 an actual embarrassing bug this specifically avoids)."""
 
-_ACCENT_MAP = str.maketrans("áéíóúÁÉÍÓÚüÜ", "aeiouAEIOUuU")
+# Spanish and French accents (one character in, one out - callers rely on
+# offsets staying aligned).
+_ACCENT_MAP = str.maketrans(
+    "áéíóúÁÉÍÓÚüÜàâäçèêëîïôöùûÿÀÂÄÇÈÊËÎÏÔÖÙÛŸ",
+    "aeiouAEIOUuUaaaceeeiioouuyAAACEEEIIOOUUY",
+)
 
 
 def strip_accents(text: str) -> str:

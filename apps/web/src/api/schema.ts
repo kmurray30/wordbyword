@@ -163,8 +163,9 @@ export interface paths {
         /**
          * Interpret Input
          * @description For the learner's own message: infers what they meant across a
-         *     possible mix of English/Spanish and grammar mistakes, returning a
-         *     corrected English restatement alongside its Spanish translation - used
+         *     possible mix of English/the target language and grammar mistakes,
+         *     returning a corrected English restatement alongside its target-language
+         *     translation - used
          *     to show both under the user's chat bubble rather than a single literal
          *     (and possibly nonsensical) pass.
          */
@@ -191,7 +192,7 @@ export interface paths {
          *     saved in its thread; without it, it's about the learner's next message
          *     (the coach box at the bottom; with `check`, the exact message they're
          *     about to send) and lives in the coach panel until it's sent. Events:
-         *     "about" (that message's id, or null), "ready" (their own Spanish is
+         *     "about" (that message's id, or null), "ready" (their own target-language text is
          *     fine to send as written), "reply_chunk"s and "reply_complete"; "error"
          *     if nothing came back. See app.translate.llm_translate.coach_reply_stream.
          */
@@ -213,10 +214,10 @@ export interface paths {
         put?: never;
         /**
          * Tag Input
-         * @description Cheap, synchronous, LLM-free per-word classification (spaCy +
-         *     lemmatizer.py's is_spanish heuristic) - fast enough to call on every
-         *     keystroke (debounced). Needed for reward-event tracking
-         *     (userTypedSpanishWord) and the phrase-selection direction vote. The
+         * @description Cheap, synchronous, LLM-free per-word classification (see
+         *     app.translate.lemmatizer) - fast enough to call on every keystroke
+         *     (debounced). Needed for reward-event tracking (userTypedTargetWord) and
+         *     the phrase-selection direction vote. The
          *     slower LLM-backed word/group glossing that drives the hover-to-
          *     translate UI lives separately in /translate/gloss-spans below, fetched
          *     lazily on interaction rather than on every edit.
@@ -247,6 +248,29 @@ export interface paths {
          *     MT fallback.
          */
         post: operations["gloss_spans_translate_gloss_spans_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/translate/readings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Readings
+         * @description How to read each text: romanization for every word, kana over kanji,
+         *     and Mandarin in the learner's characters (see app.translate.readings).
+         *     Deterministic and fast - no LLM. Empty readings for a language written
+         *     in the Latin alphabet.
+         */
+        post: operations["readings_translate_readings_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -419,6 +443,11 @@ export interface components {
             /** Session Id */
             session_id: string;
             /**
+             * Language
+             * @default es
+             */
+            language: string;
+            /**
              * Thread
              * @default []
              */
@@ -455,6 +484,11 @@ export interface components {
             text: string;
             /** Session Id */
             session_id: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
             /** Thread Message Id */
             thread_message_id?: number | null;
             /**
@@ -502,8 +536,8 @@ export interface components {
             surface: string;
             /** Lemma */
             lemma: string;
-            /** Is Spanish */
-            is_spanish: boolean;
+            /** Is Target */
+            is_target: boolean;
             /** Start */
             start: number;
             /** End */
@@ -520,6 +554,11 @@ export interface components {
         GlossSpansRequest: {
             /** Text */
             text: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
         };
         /** GlossSpansResponse */
         GlossSpansResponse: {
@@ -535,6 +574,11 @@ export interface components {
         InterpretInputRequest: {
             /** Text */
             text: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
         };
         /** InterpretInputResponse */
         InterpretInputResponse: {
@@ -585,6 +629,40 @@ export interface components {
              */
             note: string;
         };
+        /** ReadingOut */
+        ReadingOut: {
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
+            /** Roman */
+            roman: string;
+            /**
+             * Kana
+             * @default
+             */
+            kana: string;
+            /**
+             * Cont
+             * @default false
+             */
+            cont: boolean;
+        };
+        /** ReadingsRequest */
+        ReadingsRequest: {
+            /** Texts */
+            texts: string[];
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
+        };
+        /** ReadingsResponse */
+        ReadingsResponse: {
+            /** Items */
+            items: components["schemas"]["TextReadings"][];
+        };
         /** RemoveSavedWordResponse */
         RemoveSavedWordResponse: {
             /** Removed */
@@ -596,6 +674,11 @@ export interface components {
             event_type: string;
             /** Lemma */
             lemma: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
         };
         /** RewardEventResponse */
         RewardEventResponse: {
@@ -708,11 +791,23 @@ export interface components {
         TagInputRequest: {
             /** Text */
             text: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
         };
         /** TagInputResponse */
         TagInputResponse: {
             /** Tokens */
             tokens: components["schemas"]["DraftToken"][];
+        };
+        /** TextReadings */
+        TextReadings: {
+            /** Text */
+            text: string;
+            /** Readings */
+            readings: components["schemas"]["ReadingOut"][];
         };
         /** ThreadEntryIn */
         ThreadEntryIn: {
@@ -1185,6 +1280,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GlossSpansResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readings_translate_readings_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadingsResponse"];
                 };
             };
             /** @description Validation Error */

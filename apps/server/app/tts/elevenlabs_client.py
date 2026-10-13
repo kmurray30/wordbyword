@@ -2,8 +2,9 @@
 the partner's (and every 🔊).
 
 Its multilingual models switch pronunciation inside one request, so the
-coach's English with embedded Spanish ("say: 'Hola, ¿cómo estás?'") needs
-no per-language splicing, and any voice can speak the partner's Spanish.
+coach's English with embedded target-language phrases ("say: 'Hola, ¿cómo
+estás?'") needs no per-language splicing, and any voice can speak the
+partner's language (Spanish, French, Japanese, Korean, Mandarin).
 The coach and the partner get different voices (see coach_voice_id /
 partner_voice_id). Retries only on transport errors and 429s; anything else
 raises TTSUnavailableError.
@@ -69,31 +70,40 @@ _voices_cache: tuple[float, list[dict]] | None = None
 # How many voices the app offers in its picker.
 MAX_PICKER_VOICES = 6
 
-_SPANISH_HINTS = ("spanish", "latin", "mexic", "argentin", "castil", "colombia", "chile", "peru", "es")
+# What a voice's language/accent labels say for each language the app
+# teaches - a voice that sounds native comes first in the picker.
+_LANGUAGE_HINTS = {
+    "es": ("spanish", "latin", "mexic", "argentin", "castil", "colombia", "chile", "peru", "es"),
+    "fr": ("french", "parisian", "quebec", "canadian french", "belgian", "fr"),
+    "ja": ("japanese", "ja"),
+    "ko": ("korean", "ko"),
+    "zh": ("chinese", "mandarin", "taiwan", "beijing", "zh"),
+}
 
 
-def _sounds_spanish(v: dict) -> bool:
+def _sounds_like(v: dict, language: str) -> bool:
     labels = v.get("labels") or {}
     text = " ".join(str(labels.get(k, "")) for k in ("language", "accent")).lower()
-    return any(text == h or text.startswith(h) or f" {h}" in text for h in _SPANISH_HINTS)
+    hints = _LANGUAGE_HINTS.get(language.split("-")[0].lower(), ())
+    return any(text == h or text.startswith(h) or f" {h}" in text for h in hints)
 
 
-def picker_order(voices: list[dict]) -> list[dict]:
+def picker_order(voices: list[dict], language: str = "es") -> list[dict]:
     """The account's voices in the order the app offers them: ones the
-    account added itself (cloned, from the library) first, then
-    Spanish-sounding ones, then the premade rest. Pure, for tests."""
+    account added itself (cloned, from the library) first, then ones that
+    sound native in `language`, then the premade rest. Pure, for tests."""
 
     def rank(v: dict) -> tuple[int, int]:
         own = 0 if v.get("category") not in (None, "premade") else 1
-        return (own, 0 if _sounds_spanish(v) else 1)
+        return (own, 0 if _sounds_like(v, language) else 1)
 
     return sorted((v for v in voices if v.get("voice_id")), key=rank)
 
 
-def pick_partner_voice(voices: list[dict], coach_id: str | None) -> str | None:
+def pick_partner_voice(voices: list[dict], coach_id: str | None, language: str = "es") -> str | None:
     """The partner's default voice: the first one offered that isn't the
     coach's, so the two always sound different. Pure, for tests."""
-    for v in picker_order(voices):
+    for v in picker_order(voices, language):
         if v["voice_id"] != coach_id:
             return v["voice_id"]
     return coach_id
@@ -141,12 +151,14 @@ async def coach_voice_id(client: httpx.AsyncClient | None = None) -> str:
     return voice_id
 
 
-async def partner_voice_id(client: httpx.AsyncClient | None = None) -> str:
-    """ELEVENLABS_PARTNER_VOICE_ID, else a voice that isn't the coach's."""
-    if ELEVENLABS_PARTNER_VOICE_ID:
+async def partner_voice_id(client: httpx.AsyncClient | None = None, language: str = "es") -> str:
+    """ELEVENLABS_PARTNER_VOICE_ID (for Spanish, the language it was set
+    up for), else a voice that isn't the coach's - preferring one that
+    sounds native in `language`."""
+    if ELEVENLABS_PARTNER_VOICE_ID and language.split("-")[0] == "es":
         return ELEVENLABS_PARTNER_VOICE_ID
     coach = await coach_voice_id(client)
-    return pick_partner_voice(await account_voices(client), coach) or coach
+    return pick_partner_voice(await account_voices(client), coach, language) or coach
 
 
 async def synthesize(text: str, voice_id: str | None = None, model_id: str | None = None) -> bytes:
