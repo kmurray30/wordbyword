@@ -21,6 +21,12 @@ const SHEET_RADIUS = 18;
 
 type Rect = { left: number; top: number; width: number; height: number };
 
+const nextFrames = (n: number) =>
+  new Promise<void>((resolve) => {
+    const step = (left: number) => (left <= 0 ? resolve() : requestAnimationFrame(() => step(left - 1)));
+    step(n);
+  });
+
 function relative(r: DOMRect, to: DOMRect): Rect {
   return { left: r.left - to.left, top: r.top - to.top, width: r.width, height: r.height };
 }
@@ -103,11 +109,17 @@ export function ThreadOverlay({
         delay: forward ? DURATION * 0.25 : 0,
       });
     }
+    // Landing: the real one (the quote, or the bubble back in the chat) is
+    // shown first, underneath the flyer, and the flyer only goes a couple
+    // of frames later - a just-unhidden element can take a frame to paint
+    // (iOS especially), and swapping both at once flickers.
     return flight.finished.then(
-      () => {
-        flyer.style.display = "none";
-        quote.style.visibility = "";
-        if (!forward) bubble.style.visibility = "";
+      async () => {
+        if (forward) quote.style.visibility = "";
+        else bubble.style.visibility = "";
+        await nextFrames(2);
+        // Closing: the flyer stays over the bubble until the overlay goes.
+        if (forward) flyer.style.display = "none";
       },
       () => {
         // Cancelled by a newer flight - that one tidies up.

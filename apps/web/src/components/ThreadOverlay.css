@@ -21,7 +21,9 @@
   top: 12%;
   left: 22px;
   right: 22px;
-  bottom: 11%;
+  /* More of the chat below it when the screen is tall enough: ~22%, giving
+     way (down to 8%) so the sheet keeps at least 380px. */
+  bottom: max(8%, min(22%, calc(88% - 380px)));
   display: flex;
   flex-direction: column;
   gap: 8px;
