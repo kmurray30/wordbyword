@@ -126,3 +126,10 @@
   font-size: 0.9rem;
   cursor: pointer;
 }
+
+/* Typing in a message's coach box: the message box and the coach box at
+   the bottom step aside, leaving the keyboard's room to the chat. */
+.app--thread-typing .chat-input,
+.app--thread-typing .next-message {
+  display: none;
+}

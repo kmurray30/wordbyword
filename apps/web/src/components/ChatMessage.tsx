@@ -100,11 +100,14 @@ export function ChatMessage({
   onSaveWord,
   onRemoveWord,
   onAskCoach,
+  onThreadTyping,
   canAskCoach = true,
   sessionId = "",
 }: {
   // Talk to the coach about this message (its 💬 conversation).
   onAskCoach?: (question: string) => void;
+  // The cursor is in (or has left) this message's coach box.
+  onThreadTyping?: (typing: boolean) => void;
   // False while a reply is still coming in, or before a just-sent message
   // has its id.
   canAskCoach?: boolean;
@@ -616,6 +619,7 @@ export function ChatMessage({
             sessionId={sessionId}
             canAsk={canAskCoach}
             onAsk={(question) => onAskCoach?.(question)}
+            onTyping={(typing) => onThreadTyping?.(typing)}
           />
         )}
       </div>

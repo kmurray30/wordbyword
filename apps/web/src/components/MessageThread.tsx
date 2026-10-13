@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ThreadEntry } from "../api/client";
 import { CoachText } from "./CoachText";
 import { useStickToBottom } from "../lib/useStickToBottom";
@@ -67,11 +67,22 @@ function ThreadInput({
   sessionId,
   canAsk,
   onAsk,
+  onTyping,
 }: {
   sessionId: string;
   canAsk: boolean;
   onAsk: (question: string) => void;
+  onTyping?: (typing: boolean) => void;
 }) {
+  // Leaving the box is reported a beat late: tapping Send blurs it first,
+  // and the layout shouldn't jump out from under that tap.
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
+    },
+    [],
+  );
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dictation = useDictation({ sessionId, onText: setValue });
@@ -117,6 +128,15 @@ function ThreadInput({
         autoCorrect="off"
         spellCheck={false}
         enterKeyHint="send"
+        onFocus={() => {
+          if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
+          onTyping?.(true);
+        }}
+        onBlur={() => {
+          blurTimerRef.current = setTimeout(() => {
+            if (document.activeElement !== textareaRef.current) onTyping?.(false);
+          }, 250);
+        }}
         onChange={(e) => {
           if (!dictation.active) setValue(e.target.value);
         }}
@@ -132,6 +152,14 @@ function ThreadInput({
         type="button"
         className="message-thread__send"
         hidden={dictation.active}
+        // Keeps the box focused (and the keyboard up) for the next question:
+        // no focus change on a mouse press, and on touch the send happens
+        // on touchend with the default (blur + synthetic click) cancelled.
+        onMouseDown={(e) => e.preventDefault()}
+        onTouchEnd={(e) => {
+          e.preventDefault();
+          if (value.trim() && canAsk) handleSend();
+        }}
         onClick={handleSend}
         disabled={!value.trim() || !canAsk}
         aria-label="Send to your coach"
@@ -149,7 +177,9 @@ export function MessageThread({
   sessionId,
   canAsk,
   onAsk,
+  onTyping,
 }: {
+  onTyping?: (typing: boolean) => void;
   entries: ThreadEntry[];
   live: LiveCoachReply | null;
   sessionId: string;
@@ -192,7 +222,7 @@ export function MessageThread({
         )}
       </div>
       )}
-      <ThreadInput sessionId={sessionId} canAsk={canAsk} onAsk={onAsk} />
+      <ThreadInput sessionId={sessionId} canAsk={canAsk} onAsk={onAsk} onTyping={onTyping} />
     </div>
   );
 }

@@ -285,6 +285,10 @@ function App() {
     }
   };
 
+  // Scroll position each conversation was opened from: closing it glides
+  // back there, so the message returns to where it was.
+  const openedFromRef = useRef(new Map<number, number>());
+
   const toggleThread = (m: DisplayMessage) => {
     // The bubble stays put and its conversation opens below it (see
     // revealConversation), instead of the chat re-pinning to the bottom.
@@ -292,6 +296,14 @@ function App() {
     const opening = !openThreads.has(m.id);
     // Where the message sits on screen before it opens (see placeOpened).
     const before = opening ? messageBox(m.id) : null;
+    const scroller = chatRef.current;
+    if (opening && scroller) openedFromRef.current.set(m.id, scroller.scrollTop);
+    if (!opening) {
+      const from = openedFromRef.current.get(m.id);
+      openedFromRef.current.delete(m.id);
+      if (typingInThread === m.id) setTypingInThread(null);
+      if (from !== undefined && scroller) requestAnimationFrame(() => scroller.scrollTo({ top: from, behavior: "smooth" }));
+    }
     setOpenThreads((prev) => {
       const next = new Set(prev);
       if (next.has(m.id)) next.delete(m.id);
@@ -348,13 +360,34 @@ function App() {
     if (Math.abs(delta) > 1) scroller.scrollBy({ top: delta, behavior: "smooth" });
   };
 
+  // Typing in a message's coach box: the other two boxes step aside and the
+  // conversation's bottom sits right on top of the keyboard - re-aligned as
+  // the keyboard slides up and the visible area shrinks.
+  const [typingInThread, setTypingInThread] = useState<number | null>(null);
+  useEffect(() => {
+    if (typingInThread === null) return;
+    const align = () => {
+      const scroller = chatRef.current;
+      const el = scroller?.querySelector(`[data-message-id="${typingInThread}"]`);
+      if (!scroller || !el) return;
+      scroller.scrollBy({ top: el.getBoundingClientRect().bottom + 8 - scroller.getBoundingClientRect().bottom });
+    };
+    align();
+    const timers = [150, 400, 700].map((ms) => setTimeout(align, ms));
+    window.visualViewport?.addEventListener("resize", align);
+    return () => {
+      timers.forEach(clearTimeout);
+      window.visualViewport?.removeEventListener("resize", align);
+    };
+  }, [typingInThread]);
+
   const liveDisplayId = liveCoach ? messages.find((m) => serverIdOf(m) === liveCoach.messageId)?.id : undefined;
   useLayoutEffect(() => {
     if (liveDisplayId !== undefined) revealConversation(liveDisplayId, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveCoach, liveDisplayId]);
   return (
-    <div className="app">
+    <div className={`app${typingInThread !== null ? " app--thread-typing" : ""}`}>
       <header className="app__header">
         <h1>wordbyword</h1>
         <div className="app__menu" ref={menuRef}>
@@ -423,6 +456,7 @@ function App() {
                 threadOpen={openThreads.has(m.id) || !!live}
                 onToggleThread={() => toggleThread(m)}
                 onAskCoach={(question) => void askCoachAbout(m, question)}
+                onThreadTyping={(typing) => setTypingInThread(typing ? m.id : null)}
                 canAskCoach={serverIdOf(m) !== null && !liveCoach}
                 sessionId={sessionId}
                 liveCoach={live}
