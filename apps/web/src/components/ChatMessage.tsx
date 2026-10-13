@@ -84,6 +84,16 @@ function WordGlossPopup({ gloss, grammar, pending }: { gloss: string; grammar: s
   );
 }
 
+// A tapped phrase's meaning, and any note on it.
+function PhraseGlossPopup({ gloss, note }: { gloss: string; note: string }) {
+  return (
+    <div className="chat-message__popup chat-message__phrase-popover" role="tooltip">
+      <div className="chat-message__phrase-gloss">{gloss}</div>
+      {note && <div className="chat-message__phrase-note">{note}</div>}
+    </div>
+  );
+}
+
 // How long an agent word can go un-hovered before we count that as passive
 // recognition (a small familiarity boost) rather than "still pending".
 const RESOLUTION_DELAY_MS = 6000;
@@ -91,6 +101,7 @@ const RESOLUTION_DELAY_MS = 6000;
 export function ChatMessage({
   message,
   voice,
+  variant = "chat",
   threadOpen = false,
   onToggleThread,
   liveCoach = null,
@@ -99,6 +110,10 @@ export function ChatMessage({
   onSaveWord,
   onRemoveWord,
 }: {
+  // "sheet": the same bubble at the top of its coach overlay (ThreadOverlay)
+  // - every popup opens underneath it (over the conversation below, word
+  // and phrase side by side), no 💬.
+  variant?: "chat" | "sheet";
   message: DisplayMessage;
   // The newest reply in the chat: its popups open upward, so they don't
   // run off the bottom of the conversation.
@@ -198,8 +213,11 @@ export function ChatMessage({
   const inActivePhrase = (start: number, end: number) =>
     !!activePhrase && start >= activePhrase.start && end <= activePhrase.end;
 
+  const sheet = variant === "sheet";
+
   useEffect(() => {
-    if (message.role !== "assistant" || !message.tokens || message.fromHistory) return;
+    // Counted once, by the bubble in the chat (not again in its overlay).
+    if (sheet || message.role !== "assistant" || !message.tokens || message.fromHistory) return;
     const trackedLemmas = [...new Set(message.tokens.filter((t) => t.gloss).map((t) => t.lemma))];
 
     const timer = setTimeout(() => {
@@ -442,7 +460,7 @@ export function ChatMessage({
   }, [message.role, message.text, userNative, userTarget]);
 
   return (
-    <div className={`chat-message chat-message--${message.role}`}>
+    <div className={`chat-message chat-message--${message.role}${sheet ? " chat-message--sheet" : ""}`}>
       <div className="chat-message__column">
         <div className="chat-message__bubble" ref={bubbleRef}>
           {hasTokens && spaced ? (
@@ -513,43 +531,58 @@ export function ChatMessage({
           </button>
           {globeOpen && (
             <DockedPopover
-              position={message.role === "assistant" ? "right" : "left"}
+              position={sheet ? "under" : message.role === "assistant" ? "right" : "left"}
               overflow={latest ? "over" : "under"}
+              autoScroll={!sheet}
               onDismiss={() => setGlobeOpen(false)}
               keepOpenFor={keepOpenFor}
             >
+              {/* The whole message in English (what your own message meant,
+                  for yours) - the language goes without saying. */}
               <div className="chat-message__popup chat-message__translation-popover" role="tooltip">
                 {message.role === "assistant" ? (
                   <TranslationRow
                     variant="assistant"
-                    label="EN"
                     text={assistantTranslation}
                     loading={assistantTranslating || assistantTranslation === null}
                     language="en"
                   />
                 ) : (
-                  <>
-                    <TranslationRow
-                      variant="user-native"
-                      label="EN"
-                      text={userNative}
-                      loading={userInterpreting || userNative === null}
-                      language="en"
-                    />
-                    <TranslationRow
-                      variant="user-target"
-                      label="ES"
-                      text={userTarget}
-                      loading={userInterpreting || userTarget === null}
-                      language="es"
-                      voice={voice}
-                    />
-                  </>
+                  <TranslationRow
+                    variant="user-native"
+                    text={userNative}
+                    loading={userInterpreting || userNative === null}
+                    language="en"
+                  />
                 )}
               </div>
             </DockedPopover>
           )}
-          {activeOffset !== null && (
+          {sheet && (activeOffset !== null || activePhrase) && (
+            <DockedPopover
+              key={`under-${activeOffset}`}
+              position="under"
+              autoScroll={false}
+              onMouseEnter={cancelHoverClose}
+              onMouseLeave={scheduleHoverClose}
+              onDismiss={closePopups}
+              keepOpenFor={keepOpenFor}
+            >
+              {/* Under the bubble, over whatever's below: the word and its
+                  phrase side by side. */}
+              <div className="chat-message__under-row">
+                {activeOffset !== null && (
+                  <WordGlossPopup
+                    gloss={wordAt(activeOffset)?.gloss ?? fallbackGloss(activeOffset)}
+                    grammar={wordAt(activeOffset)?.grammar ?? ""}
+                    pending={!glosses && !glossesFailed}
+                  />
+                )}
+                {activePhrase && <PhraseGlossPopup gloss={activePhrase.gloss} note={activePhrase.note} />}
+              </div>
+            </DockedPopover>
+          )}
+          {!sheet && activeOffset !== null && (
             <DockedPopover
               key={`word-${activeOffset}`}
               position={message.role === "assistant" ? "right" : "left"}
@@ -567,7 +600,7 @@ export function ChatMessage({
               />
             </DockedPopover>
           )}
-          {activePhrase && (
+          {!sheet && activePhrase && (
             <DockedPopover
               key={`phrase-${activePhrase.start}`}
               position="over"
@@ -577,10 +610,7 @@ export function ChatMessage({
               onDismiss={closePopups}
               keepOpenFor={keepOpenFor}
             >
-              <div className="chat-message__popup chat-message__phrase-popover" role="tooltip">
-                <div className="chat-message__phrase-gloss">{activePhrase.gloss}</div>
-                {activePhrase.note && <div className="chat-message__phrase-note">{activePhrase.note}</div>}
-              </div>
+              <PhraseGlossPopup gloss={activePhrase.gloss} note={activePhrase.note} />
             </DockedPopover>
           )}
         </div>
@@ -588,6 +618,7 @@ export function ChatMessage({
           {message.role === "assistant" && (
             <AudioButton text={message.text} language="es" voice={voice} label="Play pronunciation" />
           )}
+          {!sheet && (
           <button
             type="button"
             className={`chat-message__thread-toggle${threadOpen ? " chat-message__thread-toggle--active" : ""}`}
@@ -598,6 +629,7 @@ export function ChatMessage({
           >
             💬{threadCount + (liveCoach ? 1 : 0) > 0 ? ` ${threadCount + (liveCoach ? 1 : 0)}` : ""}
           </button>
+          )}
         </div>
       </div>
     </div>

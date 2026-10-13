@@ -375,12 +375,12 @@ async function checkVoiceConversation(wavPath) {
       else fail("coach neither approved the message nor suggested one to use");
     }
     await page.waitForSelector(".chat-input__send--ready", { timeout: 10_000 });
-    const bubblesBefore = await page.locator(".chat-message__bubble").count();
+    const bubblesBefore = await page.locator(".app__chat .chat-message__bubble").count();
     await page.click(SEND);
     // Wait for the partner's reply to be a real, saved message (it has an
     // actions row; the bubble shown while it streams doesn't).
-    await page.waitForFunction((n) => document.querySelectorAll(".chat-message--assistant .chat-message__actions").length >= 1 && document.querySelectorAll(".chat-message__bubble").length >= n + 2, bubblesBefore, { timeout: 120_000 });
-    const bubbles = await page.$$eval(".chat-message__bubble", (els) => els.map((e) => e.textContent.trim()).slice(-2));
+    await page.waitForFunction((n) => document.querySelectorAll(".chat-message--assistant .chat-message__actions").length >= 1 && document.querySelectorAll(".app__chat .chat-message__bubble").length >= n + 2, bubblesBefore, { timeout: 120_000 });
+    const bubbles = await page.$$eval(".app__chat .chat-message__bubble", (els) => els.map((e) => e.textContent.trim()).slice(-2));
     console.log(`chat: ${JSON.stringify(bubbles)}`);
     if (await page.locator(".next-message__log").count()) fail("Your next message should be empty after sending");
     if (!(await page.locator(".chat-message--user .chat-message__thread-toggle").count())) fail("the sent message has no thread with its check");
@@ -417,7 +417,7 @@ async function checkVoiceConversation(wavPath) {
     await page.screenshot({ path: "voice-e2e-4-coach.png" });
     if (await page.locator('.message-thread [data-status="error"]').count()) fail("coach answer failed");
     if (/tutor/i.test(thread)) fail("'Tutor' is still shown - it's the coach now");
-    if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("the question was sent to the partner instead of the coach");
+    if ((await page.locator(".app__chat .chat-message__bubble").count()) !== bubblesBefore + 2) fail("the question was sent to the partner instead of the coach");
     if (await page.inputValue(THREAD_BOX)) fail("the message's coach box should clear after asking");
     if (tts.filter((t) => t.role === "coach").length <= coachClipsBefore) fail("the coach's answer was not read aloud");
     await page.click(".thread-overlay__close");
@@ -430,7 +430,7 @@ async function checkVoiceConversation(wavPath) {
     await page.waitForSelector(`${lastCoach}[data-status="done"], ${lastCoach}[data-status="error"]`, { timeout: 120_000 });
     const panel = (await page.textContent(".next-message__log")).trim();
     console.log(`Your next message: ${JSON.stringify(panel.slice(0, 300))}`);
-    if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("working out a reply sent something to the partner");
+    if ((await page.locator(".app__chat .chat-message__bubble").count()) !== bubblesBefore + 2) fail("working out a reply sent something to the partner");
     console.log(`TTS: ${tts.filter((t) => t.role === "coach").length} coach clips, ${tts.filter((t) => t.role === "partner").length} partner clips, statuses ${[...new Set(tts.map((t) => t.status))].join(",")}`);
 
     // While the partner voice is down its failed /tts/speak calls show up as

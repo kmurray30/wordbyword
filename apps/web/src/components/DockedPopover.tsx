@@ -57,6 +57,9 @@ interface DockedPopoverProps {
   // toggles it, the box being typed in).
   onDismiss?: () => void;
   keepOpenFor?: (target: Element) => boolean;
+  // Scroll it into view when it opens below/under its anchor (the chat).
+  // Off where there's nothing to scroll (the coach overlay).
+  autoScroll?: boolean;
 }
 
 // For popovers that should sit flush against a fixed anchor (the chat
@@ -78,6 +81,7 @@ export function DockedPopover({
   onMouseLeave,
   onDismiss,
   keepOpenFor,
+  autoScroll = true,
 }: DockedPopoverProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const dismissRef = useRef({ onDismiss, keepOpenFor });
@@ -115,10 +119,11 @@ export function DockedPopover({
   // they scroll away afterward.
   const side = position === "right" || position === "left";
   useEffect(() => {
+    if (!autoScroll) return;
     if (position === "below" || position === "under" || (side && !growUp)) {
       wrapRef.current?.scrollIntoView({ block: "nearest" });
     }
-  }, [position, side, growUp]);
+  }, [position, side, growUp, autoScroll]);
   // overflow="wrap": the room beside the anchor, as the popup's max width.
   const [room, setRoom] = useState<number | null>(null);
 
@@ -145,8 +150,8 @@ export function DockedPopover({
 
   // Once dropped under the bubble, bring it into view like "below" does.
   useEffect(() => {
-    if (dropped && overflow === "under") wrapRef.current?.scrollIntoView({ block: "nearest" });
-  }, [dropped, overflow]);
+    if (autoScroll && dropped && overflow === "under") wrapRef.current?.scrollIntoView({ block: "nearest" });
+  }, [dropped, overflow, autoScroll]);
 
   // A side popup that doesn't fit drops under/over its anchor, lined up
   // with the anchor's edge on the same side ("right" = its start).

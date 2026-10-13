@@ -152,6 +152,19 @@
   padding: 7px 10px;
 }
 
+/* In the coach overlay both open under the bubble: the word and its phrase
+   side by side, each as tall as it needs. */
+.chat-message__under-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.chat-message__under-row > .chat-message__popup {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 .chat-message__phrase-gloss {
   font-weight: 600;
 }

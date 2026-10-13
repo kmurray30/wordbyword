@@ -411,6 +411,10 @@ function App() {
           canAsk={serverIdOf(threadMessage) !== null && !liveCoach}
           onAsk={(question) => void askCoachAbout(threadMessage, question)}
           onClose={() => setThreadFor(null)}
+          voice={voice ?? undefined}
+          savedWords={savedWords}
+          onSaveWord={saveWord}
+          onRemoveWord={removeWord}
         />
       )}
     </div>
