@@ -457,7 +457,7 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveCoach, liveDisplayId]);
   return (
-    <div className={`app${barsAside ? " app--thread-typing" : ""}`}>
+    <div className={`app${barsAside ? " app--thread-typing" : ""}${keyboardUp ? " app--keyboard" : ""}`}>
       <header className="app__header">
         <h1>wordbyword</h1>
         <div className="app__menu" ref={menuRef}>

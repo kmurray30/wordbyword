@@ -11,6 +11,19 @@
   flex-direction: column;
   max-width: 720px;
   margin: 0 auto;
+  /* Clear of the phone's rounded corners, home bar and notch (all 0 on
+     screens without them). At the bottom the input bars already have some
+     padding of their own, so only the rest of the inset is added. */
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: max(0px, calc(env(safe-area-inset-bottom, 0px) - 10px));
+}
+
+/* Keyboard up: it covers the home bar, so no inset under the bars. */
+.app--keyboard {
+  padding-bottom: 0;
 }
 
 .app__header {
