@@ -9,13 +9,16 @@ const NEAR_BOTTOM_PX = 120;
 
 export function useChatAutoScroll(scrollRef: RefObject<HTMLElement | null>, contentRef: RefObject<HTMLElement | null>) {
   const stickRef = useRef(true);
+  // While something else is placing the view (typing in a message's coach
+  // box), resizes don't pull the chat to the bottom.
+  const pausedRef = useRef(false);
 
   useEffect(() => {
     const scroller = scrollRef.current;
     const content = contentRef.current;
     if (!scroller || !content) return;
     const toBottom = () => {
-      if (stickRef.current) scroller.scrollTop = scroller.scrollHeight;
+      if (stickRef.current && !pausedRef.current) scroller.scrollTop = scroller.scrollHeight;
     };
     const onScroll = () => {
       stickRef.current = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < NEAR_BOTTOM_PX;
@@ -42,6 +45,12 @@ export function useChatAutoScroll(scrollRef: RefObject<HTMLElement | null>, cont
     // message's coach conversation unfolding below it) - until you scroll
     // back to the bottom or send.
     hold: () => {
+      stickRef.current = false;
+    },
+    // Hands off entirely (true) until released (false); released, it stays
+    // where it is, as after hold().
+    pause: (paused: boolean) => {
+      pausedRef.current = paused;
       stickRef.current = false;
     },
   };

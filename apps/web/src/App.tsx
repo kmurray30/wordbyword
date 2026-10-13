@@ -12,6 +12,7 @@ import { SegmentedControl } from "./components/SegmentedControl";
 import { getSessionId } from "./lib/session";
 import { useAppUpdate } from "./lib/useAppUpdate";
 import { useChatAutoScroll } from "./lib/useChatAutoScroll";
+import { syncVisibleViewport, useKeyboardUp } from "./lib/visibleViewport";
 import { CoachSpeaker, isReadAloudOn, setReadAloud, speakPartner, stopSpeech, subscribeReadAloud } from "./voice/speech";
 import "./App.css";
 
@@ -303,6 +304,7 @@ function App() {
       const from = openedFromRef.current.get(m.id);
       openedFromRef.current.delete(m.id);
       if (typingInThread === m.id) setTypingInThread(null);
+      if (placingRef.current?.id === m.id) setPlacing(null);
       if (from !== undefined && scroller) requestAnimationFrame(() => scroller.scrollTo({ top: from, behavior: "smooth" }));
     }
     setOpenThreads((prev) => {
@@ -326,6 +328,8 @@ function App() {
   // screen, the top of the bubble is what gets cut off). Same while the
   // coach's answer streams in.
   const revealConversation = (displayId: number, smooth = true) => {
+    // Typing in its box: the typing placement (below) is in charge.
+    if (placingRef.current?.id === displayId) return;
     const scroller = chatRef.current;
     const el = scroller?.querySelector(`[data-message-id="${displayId}"]`);
     if (!scroller || !el) return;
@@ -361,26 +365,91 @@ function App() {
     if (Math.abs(delta) > 1) scroller.scrollBy({ top: delta, behavior: "smooth" });
   };
 
-  // Typing in a message's coach box: the other two boxes step aside and the
-  // conversation's bottom sits right on top of the keyboard - re-aligned as
-  // the keyboard slides up and the visible area shrinks.
+  // Typing in a message's coach box: the other two boxes step aside, and
+  // the message (bubble + conversation) keeps the same RELATIVE spot on
+  // screen as the keyboard takes its share - the placeOpened rule, applied
+  // to the smaller space above the keyboard. Where it sat when you tapped
+  // into the box (0 = top, 1 = bottom of the free space) is where it stays,
+  // re-placed every frame while the keyboard slides and whenever the
+  // conversation or the screen changes size, so it follows instead of
+  // jumping. Taller than the space: its bottom (your box) sits right above
+  // the keyboard. Leaving the box: the same rule follows the keyboard back
+  // down, then lets go.
   const [typingInThread, setTypingInThread] = useState<number | null>(null);
+  const [placing, setPlacing] = useState<{ id: number; fraction: number } | null>(null);
+  const placingRef = useRef(placing);
+  placingRef.current = placing;
+  const placingStopRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The bars step aside together with the keyboard coming up (and come back
+  // as it goes down), so the conversation moves once, not twice.
+  const keyboardUp = useKeyboardUp();
+  const barsAside = keyboardUp && (typingInThread !== null || placing !== null);
+
+  const handleThreadTyping = (displayId: number, typing: boolean) => {
+    if (placingStopRef.current) clearTimeout(placingStopRef.current);
+    placingStopRef.current = null;
+    if (typing) {
+      // Measured before anything moves (the bars, the keyboard).
+      const box = messageBox(displayId);
+      const free = box ? box.view - box.height : 0;
+      const fraction = box && free > 0 ? Math.min(1, Math.max(0, box.top / free)) : 1;
+      setPlacing((prev) => (prev?.id === displayId ? prev : { id: displayId, fraction }));
+      setTypingInThread(displayId);
+    } else {
+      setTypingInThread(null);
+      placingStopRef.current = setTimeout(() => setPlacing(null), 900);
+    }
+  };
+
   useEffect(() => {
-    if (typingInThread === null) return;
-    const align = () => {
-      const scroller = chatRef.current;
-      const el = scroller?.querySelector(`[data-message-id="${typingInThread}"]`);
-      if (!scroller || !el) return;
-      scroller.scrollBy({ top: el.getBoundingClientRect().bottom + 8 - scroller.getBoundingClientRect().bottom });
+    if (!placing) return;
+    const scroller = chatRef.current;
+    const el = scroller?.querySelector(`[data-message-id="${placing.id}"]`);
+    if (!scroller || !el) return;
+    chatScroll.pause(true);
+    const place = () => {
+      syncVisibleViewport();
+      const box = messageBox(placing.id);
+      if (!box) return;
+      const free = box.view - box.height;
+      const target = free >= 0 ? placing.fraction * free : free;
+      const delta = box.top - target;
+      if (Math.abs(delta) > 1) scroller.scrollTop += delta;
     };
-    align();
-    const timers = [150, 400, 700].map((ms) => setTimeout(align, ms));
-    window.visualViewport?.addEventListener("resize", align);
+    // Follow every frame for a while after anything moves (the keyboard
+    // animates over ~0.3-0.5s, and iOS only reports where it ended up).
+    let frame = 0;
+    let until = 0;
+    const tick = () => {
+      place();
+      frame = performance.now() < until ? requestAnimationFrame(tick) : 0;
+    };
+    const follow = () => {
+      until = performance.now() + 700;
+      if (!frame) frame = requestAnimationFrame(tick);
+    };
+    follow();
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", follow);
+    vv?.addEventListener("scroll", follow);
+    const observer = new ResizeObserver(place);
+    observer.observe(el);
+    observer.observe(scroller);
     return () => {
-      timers.forEach(clearTimeout);
-      window.visualViewport?.removeEventListener("resize", align);
+      cancelAnimationFrame(frame);
+      vv?.removeEventListener("resize", follow);
+      vv?.removeEventListener("scroll", follow);
+      observer.disconnect();
+      chatScroll.pause(false);
     };
-  }, [typingInThread]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placing]);
+  useEffect(
+    () => () => {
+      if (placingStopRef.current) clearTimeout(placingStopRef.current);
+    },
+    [],
+  );
 
   const liveDisplayId = liveCoach ? messages.find((m) => serverIdOf(m) === liveCoach.messageId)?.id : undefined;
   useLayoutEffect(() => {
@@ -388,7 +457,7 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveCoach, liveDisplayId]);
   return (
-    <div className={`app${typingInThread !== null ? " app--thread-typing" : ""}`}>
+    <div className={`app${barsAside ? " app--thread-typing" : ""}`}>
       <header className="app__header">
         <h1>wordbyword</h1>
         <div className="app__menu" ref={menuRef}>
@@ -457,7 +526,7 @@ function App() {
                 threadOpen={openThreads.has(m.id) || !!live}
                 onToggleThread={() => toggleThread(m)}
                 onAskCoach={(question) => void askCoachAbout(m, question)}
-                onThreadTyping={(typing) => setTypingInThread(typing ? m.id : null)}
+                onThreadTyping={(typing) => handleThreadTyping(m.id, typing)}
                 canAskCoach={serverIdOf(m) !== null && !liveCoach}
                 sessionId={sessionId}
                 liveCoach={live}
