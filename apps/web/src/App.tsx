@@ -290,13 +290,18 @@ function App() {
     // revealConversation), instead of the chat re-pinning to the bottom.
     chatScroll.hold();
     const opening = !openThreads.has(m.id);
+    // Where the message sits on screen before it opens (see placeOpened).
+    const before = opening ? messageBox(m.id) : null;
     setOpenThreads((prev) => {
       const next = new Set(prev);
       if (next.has(m.id)) next.delete(m.id);
       else next.add(m.id);
       return next;
     });
-    if (opening) requestAnimationFrame(() => revealConversation(m.id));
+    if (opening && before) {
+      const hasConversation = (m.thread ?? []).length > 0;
+      requestAnimationFrame(() => (hasConversation ? placeOpened(m.id, before) : revealConversation(m.id)));
+    }
   };
 
   // The newest reply's popups open upward (see ChatMessage's `latest`).
@@ -314,6 +319,35 @@ function App() {
     const overflow = el.getBoundingClientRect().bottom + 8 - scroller.getBoundingClientRect().bottom;
     if (overflow > 0) scroller.scrollBy({ top: overflow, behavior: smooth ? "smooth" : "auto" });
   };
+  // A message's top and height relative to the visible part of the chat.
+  const messageBox = (displayId: number) => {
+    const scroller = chatRef.current;
+    const el = scroller?.querySelector(`[data-message-id="${displayId}"]`);
+    if (!scroller || !el) return null;
+    const view = scroller.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    return { top: rect.top - view.top, height: rect.height, view: view.height };
+  };
+
+  // Opening a conversation that has something in it: keep the message (bubble
+  // + conversation) at the same RELATIVE spot on screen. Where it sat in the
+  // free space before - 0 at the top, 1 at the bottom - is where it sits in
+  // the (smaller) free space after. At the top nothing moves; at the bottom
+  // the conversation's bottom lands on the bottom of the screen; in between
+  // it ends up proportionally, roughly centered. Taller than the screen: its
+  // bottom stays visible and the top of the bubble is cut off.
+  const placeOpened = (displayId: number, before: { top: number; height: number; view: number }) => {
+    const scroller = chatRef.current;
+    const after = messageBox(displayId);
+    if (!scroller || !after) return;
+    const freeBefore = before.view - before.height;
+    const fraction = freeBefore > 0 ? Math.min(1, Math.max(0, before.top / freeBefore)) : 1;
+    const freeAfter = after.view - after.height;
+    const targetTop = freeAfter >= 0 ? fraction * freeAfter : freeAfter;
+    const delta = after.top - targetTop;
+    if (Math.abs(delta) > 1) scroller.scrollBy({ top: delta, behavior: "smooth" });
+  };
+
   const liveDisplayId = liveCoach ? messages.find((m) => serverIdOf(m) === liveCoach.messageId)?.id : undefined;
   useLayoutEffect(() => {
     if (liveDisplayId !== undefined) revealConversation(liveDisplayId, false);
