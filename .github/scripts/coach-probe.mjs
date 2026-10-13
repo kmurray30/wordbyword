@@ -1,41 +1,31 @@
-// Diagnostic for "the coach isn't responding" on iPhone: drives the LIVE
-// app in WebKit (Safari's engine) with iPhone emulation, asks the coach in
-// the "Your next message" panel, and prints what the panel shows plus every
-// console message and page error.
-import { webkit, devices } from "playwright";
+// Diagnostic against the deployed backend: one chat turn in a throwaway
+// session, then prints the word/phrase glosses for the partner's reply and
+// for the learner's own message (POST /chat/message/glosses), then clears
+// the session.
+const BASE = process.env.BACKEND_URL;
+const session = `gloss-probe-${Date.now()}`;
+const post = async (path, body) => {
+  const res = await fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  return { status: res.status, json: await res.json().catch(() => null) };
+};
+const show = (label, text, g) => {
+  console.log(`\n=== ${label}: ${text}`);
+  if (!g) return console.log("  (no glosses)");
+  for (const w of g.words) console.log(`  ${text.slice(w.start, w.end)} -> ${w.gloss}${w.grammar ? `   [${w.grammar}]` : ""}`);
+  for (const p of g.phrases) console.log(`  PHRASE "${text.slice(p.start, p.end)}" -> ${p.gloss}${p.note ? `   (${p.note})` : ""}`);
+};
 
-const FRONTEND = process.env.FRONTEND_URL;
-const browser = await webkit.launch();
-const ctx = await browser.newContext({ ...devices["iPhone 13"] });
-const page = await ctx.newPage();
-page.on("console", (m) => console.log(`console.${m.type()}: ${m.text()}`));
-page.on("pageerror", (e) => console.log(`PAGEERROR: ${e}\n${e.stack ?? ""}`));
-page.on("requestfailed", (r) => console.log(`requestfailed: ${r.url()} ${r.failure()?.errorText}`));
-page.on("response", (r) => {
-  if (/translate\/coach|tts\/speak/.test(r.url())) console.log(`response ${r.status()} ${r.url()}`);
-});
-
-const versionRes = await fetch(`${FRONTEND}/version.json`);
-console.log(`version.json: HTTP ${versionRes.status}, cache-control "${versionRes.headers.get("cache-control")}", ${await versionRes.text()}`);
-
-await page.goto(FRONTEND);
-await page.waitForSelector(".next-message__textarea", { timeout: 60000 });
-await page.waitForSelector(".llm-gate", { state: "hidden", timeout: 60000 }).catch(() => {});
-
-async function ask(text) {
-  await page.tap(".next-message__textarea");
-  await page.fill(".next-message__textarea", text);
-  await page.tap(".next-message__ask");
-  await page
-    .waitForSelector('.next-message .talk-line--coach:last-child[data-status="done"], .next-message .talk-line--coach:last-child[data-status="error"]', { timeout: 30000 })
-    .catch(() => console.log("  (no finished coach line within 30s)"));
-  const lines = await page.$$eval(".next-message .talk-line", (els) =>
-    els.map((e) => `${e.classList.contains("talk-line--you") ? "YOU" : "COACH"} [${e.dataset.status ?? ""}] ${e.textContent}`),
-  );
-  console.log(`\n=== ${text}\n${lines.join("\n")}`);
-}
-
-await ask("hola, me gusta running");
-await ask("how do I say I'm tired?");
-await page.screenshot({ path: "coach-webkit.png", fullPage: true });
-await browser.close();
+const t0 = Date.now();
+const turn = await post("/chat/turn", { session_id: session, message: "¡Hola! Ayer fui a la playa con mis amigos y comimos paella. ¿Qué tal tu día?" });
+console.log(`turn HTTP ${turn.status} in ${Date.now() - t0} ms; translation: ${turn.json?.translation}`);
+show("reply", turn.json.text, turn.json.glosses);
+const t1 = Date.now();
+const mine = await post("/chat/message/glosses", { message_id: turn.json.user_message_id });
+console.log(`\nuser glosses HTTP ${mine.status} in ${Date.now() - t1} ms`);
+show("mine", "¡Hola! Ayer fui a la playa con mis amigos y comimos paella. ¿Qué tal tu día?", mine.json);
+const t2 = Date.now();
+const again = await post("/chat/message/glosses", { message_id: turn.json.user_message_id });
+console.log(`\nsecond request (saved) HTTP ${again.status} in ${Date.now() - t2} ms`);
+const hist = await (await fetch(`${BASE}/chat/history?session_id=${session}`)).json();
+console.log(`history carries glosses: ${hist.messages.map((m) => `${m.role}=${!!m.glosses}`).join(", ")}`);
+await post(`/chat/history/clear?session_id=${session}`, {});

@@ -1,7 +1,6 @@
 name: Coach probe (deployed Railway app)
 
-# Drives the live app's coach panel in WebKit (Safari's engine) and prints
-# what it shows. Manual diagnostic; push-triggered for the same reason as
+# Ad-hoc diagnostic against the deployed backend (see the script). Manual diagnostic; push-triggered for the same reason as
 # chat-sample.yml.
 on:
   workflow_dispatch:
@@ -17,19 +16,11 @@ jobs:
     timeout-minutes: 10
     env:
       FRONTEND_URL: https://web-production-63d72.up.railway.app
+      BACKEND_URL: https://server-production-f688.up.railway.app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Install Playwright WebKit
-        run: |
-          npm install playwright@1.48
-          npx playwright install --with-deps webkit
-      - name: Probe the coach in WebKit
+      - name: Probe
         run: node .github/scripts/coach-probe.mjs
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coach-webkit
-          path: coach-webkit.png
