@@ -292,7 +292,7 @@ export function NextMessagePanel({
           <span className="next-message__chevron" aria-hidden="true">
             ▾
           </span>
-          <span className="next-message__title">💬 Your next message</span>
+          <span className="next-message__title">💬 Discuss your next message</span>
           <span className="next-message__count">{count}</span>
           <span className="next-message__toggle-label">{collapsed ? "Show" : "Hide"}</span>
         </button>

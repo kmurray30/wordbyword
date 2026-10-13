@@ -72,7 +72,7 @@ function buildSegments(text: string, ranges: { start: number; end: number; span?
 // The FINAL input: the message the learner will actually send to their
 // partner. Working out what to say happens in the next-message panel above
 // it (NextMessagePanel); this box only holds the result. Send sends as-is;
-// 💡 (or finishing a dictation) asks the coach to check it, and the check
+// "Check with coach" (or finishing a dictation) asks the coach to check it, and the check
 // shows up in that panel.
 export function ChatInput({
   onSend,
@@ -680,16 +680,16 @@ export function ChatInput({
         )}
       </div>
       <TalkButton state={dictation.state} onClick={handleMicClick} finishLabel="Finish - check what you said" />
+      {/* Sits on the line between the message box and the coach section
+          below it (absolutely placed on .chat-input's bottom edge). */}
       <button
         type="button"
         className="chat-input__check"
-        hidden={dictation.active}
         onClick={handleCheck}
-        disabled={!value.trim()}
-        aria-label="Check this message"
-        title="Ask the coach to check this message (shows up in Your next message)"
+        disabled={!value.trim() || dictation.active}
+        title="Ask the coach to check this message (shows up in Discuss your next message)"
       >
-        💡
+        ↓ Check with coach ↓
       </button>
       <button
         type="button"

@@ -131,10 +131,35 @@
   background: #39c468;
 }
 
-/* The coach check button - quiet, so Send stays the primary action. */
+/* A thin pill centered on the line between the message box and the coach
+   section below it. */
+.chat-input {
+  padding-bottom: 18px;
+}
+
 .chat-input > button.chat-input__check {
-  background: #2a2f3b;
-  padding: 10px 12px;
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translate(-50%, 50%);
+  z-index: 2;
+  padding: 2px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(47, 174, 90, 0.5);
+  background: #1d3326;
+  color: #b9e6c6;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.chat-input > button.chat-input__check:disabled {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #23262d;
+  color: #6b7080;
+  opacity: 1;
+  cursor: default;
 }
 
 /* A dictation problem (mic blocked, voice server unreachable), shown over
