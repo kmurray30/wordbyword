@@ -206,6 +206,17 @@ def test_furigana_goes_over_the_kanji_only():
     assert [r.cont for r in found if "東京へ行きます"[r.start : r.end] in ("行", "き")] == [False, True]
 
 
+def test_japanese_kana_runs_are_split_at_known_words():
+    text = "家でゆっくりして、本をしたりする"
+    words = [(0, 1), (1, 2), (2, 6), (6, 8), (9, 10), (10, 11), (11, 14), (14, 16)]
+    _shown, found = readings_for(text, "ja", words)
+    pieces = {text[r.start : r.end]: r.roman for r in found}
+    assert pieces["で"] == "de" and pieces["ゆっくり"] == "yukkuri" and pieces["して"] == "shite"
+    assert pieces["を"] == "o"
+    # Without words, the same text still gets readings.
+    assert readings_for(text, "ja")[1]
+
+
 def test_pinyin_reads_characters_in_context_and_traditional_converts():
     shown, found = readings_for("银行行长", "zh-Hant")
     assert shown == "銀行行長"
@@ -223,6 +234,11 @@ def test_korean_romanization_follows_sound_changes():
 
 def test_latin_languages_have_no_readings():
     assert readings_for("Bonjour", "fr") == ("Bonjour", [])
+
+
+def test_readings_route_passes_words_on():
+    response = readings(ReadingsRequest(texts=["本をよむ"], language="ja", words=[[[0, 1], [1, 2], [2, 4]]]))
+    assert [r.roman for r in response.items[0].readings][-2:] == ["o", "yomu"]
 
 
 def test_readings_route_returns_each_text():

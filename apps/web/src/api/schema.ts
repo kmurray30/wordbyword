@@ -652,6 +652,8 @@ export interface components {
         ReadingsRequest: {
             /** Texts */
             texts: string[];
+            /** Words */
+            words?: (number[][] | null)[] | null;
             /**
              * Language
              * @default es

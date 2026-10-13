@@ -51,6 +51,25 @@ def _romaji(kana: str) -> str:
 _PARTICLE_ROMAJI = {"は": "wa", "へ": "e", "を": "o"}
 
 
+def _split_at_words(text: str, readings: list[Reading], words: list[tuple[int, int]]) -> list[Reading]:
+    """pykakasi sometimes runs kana words together (で + ゆっくり + して read
+    as one "deyukkurishite", を inside a run read "wo"). Where the app knows
+    the words, a kana-only reading is split at them, each part romanized on
+    its own - so particles read as particles."""
+    cuts = sorted({b for start, end in words for b in (start, end)})
+    out: list[Reading] = []
+    for r in readings:
+        inner = [c for c in cuts if r.start < c < r.end]
+        if r.kana or not inner:
+            out.append(r)
+            continue
+        for i, (a, b) in enumerate(zip([r.start, *inner], [*inner, r.end])):
+            piece = text[a:b]
+            roman = _PARTICLE_ROMAJI.get(piece) or _romaji(piece)
+            out.append(Reading(a, b, roman, cont=r.cont if i == 0 else False))
+    return out
+
+
 def _japanese(text: str) -> list[Reading]:
     readings: list[Reading] = []
     cursor = 0
@@ -196,14 +215,16 @@ def romanize_korean(text: str) -> str:
 # --- Entry point ------------------------------------------------------------
 
 
-def readings_for(text: str, language: str) -> tuple[str, list[Reading]]:
+def readings_for(text: str, language: str, words: list[tuple[int, int]] | None = None) -> tuple[str, list[Reading]]:
     """(the text to show, its readings). The shown text differs from `text`
     only for Mandarin in the other script ("zh-Hant" = Traditional);
-    readings refer to it (same offsets either way)."""
+    readings refer to it (same offsets either way). `words`, if known, are
+    the text's word boundaries (see _split_at_words)."""
     lang = get_language(language)
     script = "traditional" if language.lower() == "zh-hant" else "simplified"
     if lang.script == "japanese":
-        return text, _japanese(text)
+        found = _japanese(text)
+        return text, _split_at_words(text, found, words) if words else found
     if lang.script == "chinese":
         # Read from the Simplified form: pypinyin's phrase dictionary (which
         # tells 银行 háng from 行走 xíng) is Simplified.

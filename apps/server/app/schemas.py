@@ -391,6 +391,10 @@ class RemoveSavedWordResponse(BaseModel):
 
 class ReadingsRequest(BaseModel):
     texts: list[str]
+    # Optional, one per text: its words as [start, end] offsets, where the
+    # app knows them (a reply's glossed words) - Japanese readings are then
+    # split at them.
+    words: list[list[list[int]] | None] | None = None
     # As on every request (see ChatTurnRequest.language) - for Mandarin,
     # "zh-Hant" also returns the text in Traditional characters.
     language: str = "es"

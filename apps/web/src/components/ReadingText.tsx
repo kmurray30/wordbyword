@@ -95,7 +95,11 @@ export function ReadingText({
   const lang = useLanguage();
   const config = LANGUAGES[lang];
   const settings = useReadingSettings();
-  const loaded = useReadings(config.readings ? text : null);
+  // Japanese readings split at the words we know (particles on their own).
+  const loaded = useReadings(
+    config.readings ? text : null,
+    lang === "ja" && words.length ? words.map((w): [number, number] => [w.start, w.end]) : null,
+  );
   const shown = loaded && loaded.text.length === text.length ? loaded.text : text;
   const readings = loaded?.readings ?? [];
   // With no words given (a coach suggestion), the browser's segmenter

@@ -267,8 +267,10 @@ def readings(req: ReadingsRequest) -> ReadingsResponse:
     Deterministic and fast - no LLM. Empty readings for a language written
     in the Latin alphabet."""
     items = []
-    for text in req.texts[:100]:
-        shown, found = readings_for(text, req.language) if len(text) <= 4000 else (text, [])
+    for i, text in enumerate(req.texts[:100]):
+        raw_words = (req.words or [])[i] if req.words and i < len(req.words) else None
+        words = [(w[0], w[1]) for w in raw_words or [] if len(w) == 2]
+        shown, found = readings_for(text, req.language, words) if len(text) <= 4000 else (text, [])
         items.append(
             TextReadings(
                 text=shown,
