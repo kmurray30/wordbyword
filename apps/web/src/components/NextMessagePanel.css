@@ -5,12 +5,13 @@
 .next-message {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   padding: 8px 12px 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* Expand/collapse row: reads as a button (chevron, count, Show/Hide). */
+/* Expand/collapse row. Folded, it's the way into the coach: big, blue,
+   with a slow glow so it reads as something to tap. Opened, it shrinks to
+   a slim header over the conversation. */
 .next-message__header {
   all: unset;
   display: flex;
@@ -18,27 +19,46 @@
   gap: 8px;
   padding: 5px 10px;
   border-radius: 8px;
-  background: rgba(47, 174, 90, 0.1);
-  border: 1px solid rgba(47, 174, 90, 0.3);
+  background: rgba(59, 110, 240, 0.12);
+  border: 1px solid rgba(110, 150, 255, 0.35);
   cursor: pointer;
   font-size: 0.78rem;
   font-weight: 600;
-  color: #b9e6c6;
-}
-
-/* Folded, it's the way into the coach - big enough to notice. Opened, it
-   shrinks back to a slim header over the conversation. */
-.next-message__header {
-  transition: padding 0.18s ease, font-size 0.18s ease;
+  color: #c9d7ff;
+  transition: padding 0.25s ease, font-size 0.25s ease, background-color 0.2s ease;
 }
 
 .next-message__header--collapsed {
   padding: 12px 14px;
   font-size: 0.92rem;
+  background: rgba(59, 110, 240, 0.2);
+  border-color: rgba(110, 150, 255, 0.6);
+  color: #e3eaff;
+  animation: next-message-glow 2.6s ease-in-out infinite;
+}
+
+@keyframes next-message-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(90, 140, 255, 0);
+  }
+  50% {
+    box-shadow: 0 0 14px 2px rgba(90, 140, 255, 0.45);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .next-message__header--collapsed {
+    animation: none;
+  }
 }
 
 .next-message__header:hover {
-  background: rgba(47, 174, 90, 0.18);
+  background: rgba(59, 110, 240, 0.28);
+}
+
+.next-message__header:active {
+  background: rgba(59, 110, 240, 0.36);
 }
 
 .next-message__chevron {
@@ -54,7 +74,7 @@
   min-width: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  background: rgba(47, 174, 90, 0.35);
+  background: rgba(59, 110, 240, 0.55);
   color: white;
   font-size: 0.7rem;
   text-align: center;
@@ -63,6 +83,31 @@
 .next-message__toggle-label {
   font-size: 0.72rem;
   opacity: 0.75;
+}
+
+/* The conversation and its box, sliding open and closed under the header
+   (rows 0fr <-> 1fr animates to the content's own height). */
+.next-message__body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.next-message__body--open {
+  grid-template-rows: 1fr;
+}
+
+.next-message__body-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The space under the header lives inside, so it folds away too. */
+.next-message__body-inner > :first-child {
+  margin-top: 6px;
 }
 
 .next-message__log {

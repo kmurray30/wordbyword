@@ -303,7 +303,11 @@ export function NextMessagePanel({
         {count > 0 && <span className="next-message__count">{count}</span>}
         <span className="next-message__toggle-label">{collapsed ? "Show" : "Hide"}</span>
       </button>
-      {!collapsed && turns.length > 0 && (
+      {/* Always there, sliding open/closed (see the CSS); inert while
+          folded so nothing inside can be tapped or focused. */}
+      <div className={`next-message__body${collapsed ? "" : " next-message__body--open"}`} inert={collapsed}>
+        <div className="next-message__body-inner">
+      {turns.length > 0 && (
         <div className="next-message__log" ref={logRef}>
           {turns.map((t) =>
             t.role === "you" ? (
@@ -324,7 +328,6 @@ export function NextMessagePanel({
           )}
         </div>
       )}
-      {!collapsed && (
         <div className="next-message__input">
           <textarea
             ref={textareaRef}
@@ -358,8 +361,9 @@ export function NextMessagePanel({
             ↑
           </button>
         </div>
-      )}
-      {!collapsed && dictation.error && !dictation.active && <div className="talk-line__error">{dictation.error}</div>}
+      {dictation.error && !dictation.active && <div className="talk-line__error">{dictation.error}</div>}
+        </div>
+      </div>
     </section>
   );
 }
