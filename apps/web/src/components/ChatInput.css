@@ -3,7 +3,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
   padding: 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
@@ -101,7 +101,7 @@
    matches this rule) - that leak was giving word-hover's buttons this same
    blue/bold Send-button look instead of their own minimal styling. */
 .chat-input > button {
-  padding: 10px 16px;
+  padding: 10px 12px;
   border-radius: 10px;
   border: none;
   background: #3b6ef0;
@@ -131,35 +131,19 @@
   background: #39c468;
 }
 
-/* "Check ↓": a tab hanging flush off the message box's bottom-left edge. */
-.chat-input {
-  padding-bottom: 26px;
+/* Check - quiet, so Send stays the primary action. */
+.chat-input > button.chat-input__check {
+  background: #2a2f3b;
 }
 
-.chat-input__check {
-  position: absolute;
-  top: 100%;
-  left: 12px;
-  z-index: 2;
-  padding: 1px 12px 3px;
-  border: 1px solid rgba(47, 174, 90, 0.5);
-  border-top: none;
-  border-radius: 0 0 8px 8px;
-  background: #1d3326;
-  color: #b9e6c6;
-  font: inherit;
-  font-size: 0.72rem;
-  font-weight: 600;
-  line-height: 1.4;
-  white-space: nowrap;
-  cursor: pointer;
+/* The mic here is narrower than the other buttons - it's an icon. */
+.chat-input > button.talk-button {
+  padding: 10px 6px;
+  font-size: 0.9rem;
 }
 
-.chat-input__check:disabled {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: #23262d;
-  color: #6b7080;
-  cursor: default;
+.chat-input > button.talk-button--talking {
+  padding: 8px 6px;
 }
 
 /* A dictation problem (mic blocked, voice server unreachable), shown over

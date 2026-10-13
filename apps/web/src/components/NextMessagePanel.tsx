@@ -9,8 +9,9 @@ import { useDictation } from "../voice/useDictation";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import "./NextMessagePanel.css";
 
-// "Your next message": a conversation with the coach about what you're
-// about to say. You talk it through in its own box (type or 🎤); the coach
+// "Discuss your next message": a conversation with the coach about what
+// you're about to say, folded into a dropdown under the message box (opens
+// on a Check). You talk it through in its own box (type or 🎤); the coach
 // answers, explains, or suggests (suggestions come with "Use this"). When
 // you send, the conversation becomes the thread of the message you sent.
 // (Talking about a message already in the chat happens under that message,
@@ -113,7 +114,8 @@ export function NextMessagePanel({
 }) {
   const [turns, setTurns] = useState<DraftTurn[]>(() => loadTurns(sessionId));
   const turnsRef = useRef(turns);
-  const [collapsed, setCollapsed] = useState(false);
+  // Folded away until opened (or until a Check / reply needs showing).
+  const [collapsed, setCollapsed] = useState(true);
   const [value, setValue] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
@@ -160,7 +162,9 @@ export function NextMessagePanel({
       .filter((t) => t.role === "you" || t.status === "done")
       .map((t) => ({ role: t.role === "you" ? "learner" : "coach", text: t.text }));
     const youId = nextId++;
-    update((prev) => [...prev, { id: youId, role: "you", text: clean, source }]);
+    // A check from the message box reads as one in the log.
+    const shown = source === "box" ? `Check: ${clean}` : clean;
+    update((prev) => [...prev, { id: youId, role: "you", text: shown, source }]);
 
     let replyId: number | null = null;
     let reply = "";
@@ -281,23 +285,25 @@ export function NextMessagePanel({
   const count = turns.filter((t) => t.role === "you").length;
 
   return (
-    <section className="next-message" aria-label="Your next message">
-      {turns.length > 0 && (
-        <button
-          type="button"
-          className={`next-message__header${collapsed ? " next-message__header--collapsed" : ""}`}
-          onClick={() => setCollapsed((c) => !c)}
-          aria-expanded={!collapsed}
-        >
-          <span className="next-message__chevron" aria-hidden="true">
-            ▾
-          </span>
-          <span className="next-message__title">💬 Discuss your next message</span>
-          <span className="next-message__count">{count}</span>
-          <span className="next-message__toggle-label">{collapsed ? "Show" : "Hide"}</span>
-        </button>
-      )}
-      {turns.length > 0 && !collapsed && (
+    <section className="next-message" aria-label="Discuss your next message">
+      <button
+        type="button"
+        className={`next-message__header${collapsed ? " next-message__header--collapsed" : ""}`}
+        onClick={() => {
+          // Folding it away mid-dictation stops the mic (its button goes too).
+          if (!collapsed && dictation.active) dictation.cancel();
+          setCollapsed((c) => !c);
+        }}
+        aria-expanded={!collapsed}
+      >
+        <span className="next-message__chevron" aria-hidden="true">
+          {collapsed ? "▸" : "▾"}
+        </span>
+        <span className="next-message__title">💬 Discuss your next message</span>
+        {count > 0 && <span className="next-message__count">{count}</span>}
+        <span className="next-message__toggle-label">{collapsed ? "Show" : "Hide"}</span>
+      </button>
+      {!collapsed && turns.length > 0 && (
         <div className="next-message__log" ref={logRef}>
           {turns.map((t) =>
             t.role === "you" ? (
@@ -318,40 +324,42 @@ export function NextMessagePanel({
           )}
         </div>
       )}
-      <div className="next-message__input">
-        <textarea
-          ref={textareaRef}
-          className="next-message__textarea"
-          rows={1}
-          value={value}
-          placeholder={dictation.active ? "Listening - tap the bubble when you're done" : "Talk it through with your coach"}
-          autoCorrect="off"
-          spellCheck={false}
-          enterKeyHint="send"
-          onChange={(e) => {
-            if (!dictation.active) setValue(e.target.value);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleAsk();
-            }
-          }}
-        />
-        <TalkButton state={dictation.state} onClick={handleTalk} finishLabel="Finish - send to your coach" />
-        <button
-          type="button"
-          className="next-message__ask"
-          hidden={dictation.active}
-          onClick={handleAsk}
-          disabled={!value.trim()}
-          aria-label="Send to your coach"
-          title="Send to your coach"
-        >
-          ↑
-        </button>
-      </div>
-      {dictation.error && !dictation.active && <div className="talk-line__error">{dictation.error}</div>}
+      {!collapsed && (
+        <div className="next-message__input">
+          <textarea
+            ref={textareaRef}
+            className="next-message__textarea"
+            rows={1}
+            value={value}
+            placeholder={dictation.active ? "Listening - tap the bubble when you're done" : "Talk it through with your coach"}
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="send"
+            onChange={(e) => {
+              if (!dictation.active) setValue(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleAsk();
+              }
+            }}
+          />
+          <TalkButton state={dictation.state} onClick={handleTalk} finishLabel="Finish - send to your coach" />
+          <button
+            type="button"
+            className="next-message__ask"
+            hidden={dictation.active}
+            onClick={handleAsk}
+            disabled={!value.trim()}
+            aria-label="Send to your coach"
+            title="Send to your coach"
+          >
+            ↑
+          </button>
+        </div>
+      )}
+      {!collapsed && dictation.error && !dictation.active && <div className="talk-line__error">{dictation.error}</div>}
     </section>
   );
 }

@@ -421,6 +421,8 @@ async function checkVoiceConversation(wavPath) {
     if (tts.filter((t) => t.role === "coach").length <= coachClipsBefore) fail("the coach's answer was not read aloud");
 
     // 4. Working out the NEXT reply happens in the panel.
+    // The coach box lives inside the "Discuss your next message" dropdown.
+    if (!(await page.locator(BRAIN).isVisible().catch(() => false))) await page.click(".next-message__header");
     await page.fill(BRAIN, "I want to say I like swimming too");
     await page.press(BRAIN, "Enter");
     await page.waitForSelector(`${lastCoach}[data-status="done"], ${lastCoach}[data-status="error"]`, { timeout: 120_000 });

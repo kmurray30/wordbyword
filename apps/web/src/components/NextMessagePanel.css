@@ -16,7 +16,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-radius: 8px;
   background: rgba(47, 174, 90, 0.1);
   border: 1px solid rgba(47, 174, 90, 0.3);
@@ -32,11 +32,7 @@
 
 .next-message__chevron {
   display: inline-block;
-  transition: transform 0.15s ease;
-}
-
-.next-message__header--collapsed .next-message__chevron {
-  transform: rotate(-90deg);
+  width: 10px;
 }
 
 .next-message__title {
@@ -124,4 +120,9 @@
 .next-message__ask:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.next-message .talk-button {
+  padding: 9px 6px;
+  font-size: 0.9rem;
 }
