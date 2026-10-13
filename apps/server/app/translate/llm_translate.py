@@ -156,7 +156,10 @@ def gloss_message(
                 f'can connect them): in "seguir la broma" ("to play along"), seguir is "to follow", '
                 f'not "to play along"; in "echar de menos", echar is "to throw". As short as a '
                 f'dictionary entry - one to three words, e.g. "good", "to eat", "the", "you '
-                f'(informal)". No explanations in `gloss`. `grammar`: '
+                f'(informal)". A conjugated verb is glossed as conjugated, with the subject it has '
+                f'here: "puede" in "puede ser" is "it can", "echo" is "I throw", "fueron" is "they '
+                f'went" - never just the infinitive (that goes in `grammar`). No explanations in '
+                f"`gloss`. `grammar`: "
                 f"optional, in {native_name}, about the word's form - for a conjugated verb give the "
                 f'infinitive and its meaning, then person and tense, e.g. "comer (to eat): I, present" '
                 f'or "ir (to go): they, preterite"; for a plural, feminine, contracted (del, al) or '

@@ -58,6 +58,7 @@ export function ThreadOverlay({
   savedWords,
   onSaveWord,
   onRemoveWord,
+  onExplain,
 }: {
   // The message's display id (finds its bubble in the chat).
   messageId: number;
@@ -71,6 +72,8 @@ export function ThreadOverlay({
   savedWords?: Set<string>;
   onSaveWord?: Parameters<typeof ChatMessage>[0]["onSaveWord"];
   onRemoveWord?: (word: string) => void;
+  // A word's/phrase's "?" in the bubble: ask the coach here.
+  onExplain?: (text: string) => void;
 }) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const backdropRef = useRef<HTMLDivElement | null>(null);
@@ -207,6 +210,7 @@ export function ThreadOverlay({
             savedWords={savedWords}
             onSaveWord={onSaveWord}
             onRemoveWord={onRemoveWord}
+            onExplain={onExplain}
           />
         </div>
         <MessageThread

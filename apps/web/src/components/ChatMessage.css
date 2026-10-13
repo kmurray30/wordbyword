@@ -134,6 +134,58 @@
   font-weight: 700;
 }
 
+/* The short version is itself a button: tap for the details. */
+.chat-message__popup.chat-message__word-popover--short {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-message__more {
+  color: #8f97ab;
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+/* The meaning with its "?" at the end of the line. */
+.chat-message__popup-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.chat-message__popup-head > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+/* "?": ask the coach to explain this. */
+.chat-message__explain {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(110, 150, 255, 0.6);
+  border-radius: 50%;
+  background: rgba(59, 110, 240, 0.2);
+  color: #c9d7ff;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.chat-message__explain:hover {
+  background: rgba(59, 110, 240, 0.35);
+}
+
 .chat-message__word-grammar,
 .chat-message__phrase-note {
   margin-top: 3px;

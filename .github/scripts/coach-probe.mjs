@@ -5,7 +5,7 @@
 // Clears the session afterwards.
 const BASE = process.env.BACKEND_URL;
 const session = `gloss-probe-${Date.now()}`;
-const text = "Me encanta seguir la broma con mis amigos, pero echo de menos a mi familia.";
+const text = "Puede ser que llueva mañana, pero me encanta seguir la broma y fueron a la playa.";
 const post = async (path, body) => (await fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
 
 const turn = await post("/chat/turn", { session_id: session, message: text });

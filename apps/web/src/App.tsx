@@ -285,6 +285,14 @@ function App() {
     }
   };
 
+  // A word's/phrase's "?": open that message's coach and ask it to explain
+  // the text there (one coach answer at a time - while one is still coming,
+  // it just opens).
+  const explainIn = (m: DisplayMessage, text: string) => {
+    setThreadFor(m.id);
+    if (!liveCoach && serverIdOf(m) !== null) void askCoachAbout(m, `Explain "${text}" here`);
+  };
+
   // The newest reply's popups open upward (see ChatMessage's `latest`).
   const latestAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
   // Keyboard up: the bottom bars sit on it, not on the screen's rounded
@@ -359,6 +367,7 @@ function App() {
                 message={m}
                 voice={voice ?? undefined}
                 threadOpen={threadFor === m.id}
+                onExplain={(text) => explainIn(m, text)}
                 onToggleThread={() => setThreadFor(m.id)}
                 liveCoach={live}
                 latest={latest}
@@ -408,6 +417,7 @@ function App() {
           canAsk={serverIdOf(threadMessage) !== null && !liveCoach}
           onAsk={(question) => void askCoachAbout(threadMessage, question)}
           onClose={() => setThreadFor(null)}
+          onExplain={(text) => explainIn(threadMessage, text)}
           voice={voice ?? undefined}
           savedWords={savedWords}
           onSaveWord={saveWord}

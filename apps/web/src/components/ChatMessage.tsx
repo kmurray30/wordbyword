@@ -73,22 +73,76 @@ function tokenOffsets(text: string, tokens: TokenAnnotation[]): { start: number;
   });
 }
 
-// The tapped word's own meaning, beside the bubble - and, under it, any
-// note on its form (a verb's infinitive, person and tense).
-function WordGlossPopup({ gloss, grammar, pending }: { gloss: string; grammar: string; pending: boolean }) {
+// The tapped word's meaning, beside the bubble: first just the short
+// meaning ("it can"); tapping the popup opens the details - any note on its
+// form (a verb's infinitive, person and tense) - with a "?" that asks the
+// coach about it.
+function WordGlossPopup({
+  gloss,
+  grammar,
+  pending,
+  expanded,
+  onExpand,
+  onExplain,
+}: {
+  gloss: string;
+  grammar: string;
+  pending: boolean;
+  expanded: boolean;
+  onExpand: () => void;
+  onExplain?: () => void;
+}) {
+  const text = gloss || (pending ? "…" : "(no translation)");
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        className="chat-message__popup chat-message__word-popover chat-message__word-popover--short"
+        lang="en"
+        onClick={onExpand}
+        title="More about this word"
+      >
+        <span className="chat-message__word-gloss">{text}</span>
+        <span className="chat-message__more" aria-hidden="true">
+          ›
+        </span>
+      </button>
+    );
+  }
   return (
     <div className="chat-message__popup chat-message__word-popover" role="tooltip" lang="en">
-      <div className="chat-message__word-gloss">{gloss || (pending ? "…" : "(no translation)")}</div>
+      <div className="chat-message__popup-head">
+        <div className="chat-message__word-gloss">{text}</div>
+        {onExplain && <ExplainButton onClick={onExplain} />}
+      </div>
       {grammar && <div className="chat-message__word-grammar">{grammar}</div>}
     </div>
   );
 }
 
+// "?": asks this message's coach to explain the word/phrase here.
+function ExplainButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="chat-message__explain"
+      onClick={onClick}
+      aria-label="Ask the coach to explain this"
+      title="Ask the coach to explain this"
+    >
+      ?
+    </button>
+  );
+}
+
 // A tapped phrase's meaning, and any note on it.
-function PhraseGlossPopup({ gloss, note }: { gloss: string; note: string }) {
+function PhraseGlossPopup({ gloss, note, onExplain }: { gloss: string; note: string; onExplain?: () => void }) {
   return (
     <div className="chat-message__popup chat-message__phrase-popover" role="tooltip">
-      <div className="chat-message__phrase-gloss">{gloss}</div>
+      <div className="chat-message__popup-head">
+        <div className="chat-message__phrase-gloss">{gloss}</div>
+        {onExplain && <ExplainButton onClick={onExplain} />}
+      </div>
       {note && <div className="chat-message__phrase-note">{note}</div>}
     </div>
   );
@@ -102,6 +156,7 @@ export function ChatMessage({
   message,
   voice,
   variant = "chat",
+  onExplain,
   threadOpen = false,
   onToggleThread,
   liveCoach = null,
@@ -114,6 +169,9 @@ export function ChatMessage({
   // - every popup opens underneath it (over the conversation below, word
   // and phrase side by side), no 💬.
   variant?: "chat" | "sheet";
+  // The "?" on a word's/phrase's details: ask this message's coach to
+  // explain that text here.
+  onExplain?: (text: string) => void;
   message: DisplayMessage;
   // The newest reply in the chat: its popups open upward, so they don't
   // run off the bottom of the conversation.
@@ -145,6 +203,8 @@ export function ChatMessage({
   // The pinned word is showing "add word?"/"remove?"; then, briefly, what
   // just happened.
   const [askOffset, setAskOffset] = useState<number | null>(null);
+  // The word whose popup is showing its details (tapped open).
+  const [detailOffset, setDetailOffset] = useState<number | null>(null);
   const [flash, setFlash] = useState<{ offset: number; text: string; removed: boolean } | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
@@ -315,7 +375,16 @@ export function ChatMessage({
     setHoverOffset(null);
     setPinnedOffset(null);
     setAskOffset(null);
+    setDetailOffset(null);
     setGlobeOpen(false);
+  };
+
+  // "?": the word/phrase goes to the coach, and the popups get out of the
+  // way of the answer.
+  const explain = (text: string) => {
+    if (!onExplain || !text.trim()) return;
+    closePopups();
+    onExplain(text.trim());
   };
 
   const handleGlobe = () => {
@@ -330,9 +399,11 @@ export function ChatMessage({
   };
 
   // A click anywhere closes this message's popup (see DockedPopover),
-  // except on its own words and 🌐, which open/close/switch it themselves.
+  // except on its own words and 🌐, which open/close/switch it themselves,
+  // and inside its other popups (the word popup's "more" and "?" while the
+  // phrase popup is open beside it).
   const keepOpenFor = (target: Element) =>
-    !!bubbleRef.current?.contains(target) && !!target.closest(".word-token, .chat-message__globe");
+    !!bubbleRef.current?.contains(target) && !!target.closest(".word-token, .chat-message__globe, .docked-popover");
 
   // Only assistant replies get per-token annotations from the backend -
   // history rows for a user message come back with tokens: [] (truthy as
@@ -360,6 +431,7 @@ export function ChatMessage({
     if (pinnedOffset !== offset) {
       setGlobeOpen(false);
       setAskOffset(null);
+      setDetailOffset(null);
       setPinnedOffset(offset);
       return;
     }
@@ -576,9 +648,18 @@ export function ChatMessage({
                     gloss={wordAt(activeOffset)?.gloss ?? fallbackGloss(activeOffset)}
                     grammar={wordAt(activeOffset)?.grammar ?? ""}
                     pending={!glosses && !glossesFailed}
+                    expanded={detailOffset === activeOffset}
+                    onExpand={() => setDetailOffset(activeOffset)}
+                    onExplain={onExplain ? () => explain(wordText(activeOffset)) : undefined}
                   />
                 )}
-                {activePhrase && <PhraseGlossPopup gloss={activePhrase.gloss} note={activePhrase.note} />}
+                {activePhrase && (
+                  <PhraseGlossPopup
+                    gloss={activePhrase.gloss}
+                    note={activePhrase.note}
+                    onExplain={onExplain ? () => explain(message.text.slice(activePhrase.start, activePhrase.end)) : undefined}
+                  />
+                )}
               </div>
             </DockedPopover>
           )}
@@ -597,6 +678,13 @@ export function ChatMessage({
                 gloss={wordAt(activeOffset)?.gloss ?? fallbackGloss(activeOffset)}
                 grammar={wordAt(activeOffset)?.grammar ?? ""}
                 pending={!glosses && !glossesFailed}
+                expanded={detailOffset === activeOffset}
+                onExpand={() => {
+                  // Tapping it pins it, so it stays open on desktop too.
+                  setPinnedOffset(activeOffset);
+                  setDetailOffset(activeOffset);
+                }}
+                onExplain={onExplain ? () => explain(wordText(activeOffset)) : undefined}
               />
             </DockedPopover>
           )}
@@ -610,7 +698,11 @@ export function ChatMessage({
               onDismiss={closePopups}
               keepOpenFor={keepOpenFor}
             >
-              <PhraseGlossPopup gloss={activePhrase.gloss} note={activePhrase.note} />
+              <PhraseGlossPopup
+                gloss={activePhrase.gloss}
+                note={activePhrase.note}
+                onExplain={onExplain ? () => explain(message.text.slice(activePhrase.start, activePhrase.end)) : undefined}
+              />
             </DockedPopover>
           )}
         </div>
