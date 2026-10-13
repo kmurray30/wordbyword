@@ -26,6 +26,17 @@
   color: #b9e6c6;
 }
 
+/* Folded, it's the way into the coach - big enough to notice. Opened, it
+   shrinks back to a slim header over the conversation. */
+.next-message__header {
+  transition: padding 0.18s ease, font-size 0.18s ease;
+}
+
+.next-message__header--collapsed {
+  padding: 12px 14px;
+  font-size: 0.92rem;
+}
+
 .next-message__header:hover {
   background: rgba(47, 174, 90, 0.18);
 }
