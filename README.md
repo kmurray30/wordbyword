@@ -54,7 +54,11 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
 | `DEEPGRAM_API_KEY` | *(none)* | Deepgram API key for voice mode's streaming speech-to-text (`WS /voice/listen`); the mic button reports an error if unset |
 | `DEEPGRAM_STT_MODEL` | `nova-3` | Deepgram model for transcription - must support `language=multi` (Spanish/English code-switching) |
-| `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key - every voice in the app (coach, partner, every 🔊); `/tts/speak` and `/tts/voices` return 503 if unset |
+| `TTS_PROVIDER` | `elevenlabs` | which text-to-speech provider every voice uses unless a request names one (`provider` on `/tts/speak` and `/tts/voices`): `elevenlabs` or `kokoro` |
+| `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for the `kokoro` provider; requests for it return 503 if unset |
+| `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used by the `kokoro` provider |
+| `DEEPINFRA_TTS_VOICE` | *(none)* | force one Kokoro voice regardless of language - normally left unset so the voice is picked per-request from `app/tts/kokoro_voices.py`'s language map |
+| `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key for the `elevenlabs` provider (the default: coach, partner, every 🔊); its requests return 503 if unset |
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | ElevenLabs model - must be multilingual (the coach mixes English and Spanish in one sentence); `eleven_flash_v2_5` is the faster/cheaper option |
 | `ELEVENLABS_COACH_VOICE_ID` | *(none - auto-picked)* | which ElevenLabs voice the coach speaks with; unset, the server picks one of the account's own premade (English) voices at first use - the free plan rejects "library" voice ids via the API, so a well-known id like Rachel's does NOT work there |
 | `ELEVENLABS_PARTNER_VOICE_ID` | *(none - auto-picked)* | the partner's default voice (the learner can pick another in ☰); unset, the first of the account's voices that isn't the coach's (own/added voices first, then Spanish-accented ones) |
@@ -181,9 +185,17 @@ misplaced.
 
 ## Text-to-speech
 
-Every voice in the app is ElevenLabs (`app/tts/elevenlabs_client.py`,
-`POST /tts/speak`, mp3 back): the 🔊 on a message, the partner's replies
-read aloud, and the coach. Its multilingual model (`ELEVENLABS_TTS_MODEL`)
+Two providers sit behind `POST /tts/speak` (mp3 back) and
+`GET /tts/voices`: ElevenLabs (`app/tts/elevenlabs_client.py`, the
+default) and Kokoro-82M on DeepInfra (`app/tts/deepinfra_client.py`).
+`TTS_PROVIDER` picks the default; any request can name one with
+`provider`, which is what a per-user choice will use. With Kokoro, each
+voice speaks one language (`app/tts/kokoro_voices.py` maps the request's
+`language` to a voice; the coach gets that language's default voice), so
+the coach's mixed English/Spanish sounds best on ElevenLabs.
+
+By default every voice in the app is ElevenLabs: the 🔊 on a message, the
+partner's replies read aloud, and the coach. Its multilingual model (`ELEVENLABS_TTS_MODEL`)
 reads any language with any voice, so the coach's English-with-Spanish
 needs no splicing and every voice can speak the partner's Spanish.
 

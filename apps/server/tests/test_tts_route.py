@@ -84,3 +84,49 @@ def test_picker_order_puts_own_then_spanish_voices_first():
 def test_partner_voice_is_never_the_coach_voice():
     assert pick_partner_voice(VOICES, coach_id="mine") == "sofia"
     assert pick_partner_voice([VOICES[0]], coach_id="rachel") == "rachel"  # only one voice: share it
+
+
+def test_kokoro_provider_speaks_with_its_language_voice():
+    with patch("app.routes.tts.deepinfra_client.synthesize", AsyncMock(return_value=b"kokoro")) as kokoro:
+        response = asyncio.run(speak(TTSRequest(text="Hola", language="es", voice="ef_dora", provider="kokoro")))
+    assert response.body == b"kokoro"
+    kokoro.assert_awaited_once_with("Hola", language="es", voice="ef_dora")
+
+
+def test_kokoro_rejects_a_voice_of_another_language():
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(speak(TTSRequest(text="Hola", language="es", voice="af_heart", provider="kokoro")))
+    assert excinfo.value.status_code == 400
+
+
+def test_kokoro_coach_uses_the_language_default_voice():
+    with patch("app.routes.tts.deepinfra_client.synthesize", AsyncMock(return_value=b"k")) as kokoro:
+        asyncio.run(speak(TTSRequest(text="Say this", language="en", voice="mine", role="coach", provider="kokoro")))
+    kokoro.assert_awaited_once_with("Say this", language="en", voice=None)
+
+
+def test_kokoro_voices_are_that_languages_voices():
+    res = asyncio.run(list_voices(language="es", provider="kokoro"))
+    assert res.provider == "kokoro"
+    assert "ef_dora" in [v.id for v in res.voices]
+    assert next(v.name for v in res.voices if v.id == "ef_dora") == "Dora"
+    assert res.default == "ef_dora"
+
+
+def test_default_provider_is_elevenlabs():
+    c, p = _patch_voices()
+    with (
+        c,
+        p,
+        patch("app.routes.tts.elevenlabs_client.synthesize", AsyncMock(return_value=b"e")) as eleven,
+        patch("app.routes.tts.deepinfra_client.synthesize", AsyncMock(return_value=b"k")) as kokoro,
+    ):
+        asyncio.run(speak(TTSRequest(text="Hola")))
+    eleven.assert_awaited_once()
+    kokoro.assert_not_awaited()
+
+
+def test_unknown_provider_is_a_400():
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(speak(TTSRequest(text="hola", provider="espeak")))
+    assert excinfo.value.status_code == 400

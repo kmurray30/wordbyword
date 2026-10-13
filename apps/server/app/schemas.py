@@ -301,15 +301,18 @@ class RewardEventResponse(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
-    # Kept for older clients; ElevenLabs' multilingual voices read any
-    # language, so it no longer picks anything.
+    # The text's language. ElevenLabs' multilingual voices read anything;
+    # Kokoro's are one language each, so it picks the Kokoro voice.
     language: str = "es"
-    # An ElevenLabs voice id (from /tts/voices). None: the role's voice.
+    # A voice id from /tts/voices (for the same provider). None: the role's
+    # voice.
     voice: str | None = None
     # "partner" (default): the conversation partner's voice (`voice`, else
-    # the default partner voice). "coach": the coach's own voice; `voice`
-    # is ignored for it.
+    # the partner default). "coach": the coach's own voice; `voice` is
+    # ignored for it.
     role: str = "partner"
+    # "elevenlabs" | "kokoro"; None: the server's TTS_PROVIDER.
+    provider: str | None = None
 
 
 class TTSVoice(BaseModel):
@@ -318,6 +321,7 @@ class TTSVoice(BaseModel):
 
 
 class TTSVoicesResponse(BaseModel):
+    provider: str
     voices: list[TTSVoice]
     default: str
 

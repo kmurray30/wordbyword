@@ -279,9 +279,9 @@ export interface paths {
         };
         /**
          * List Voices
-         * @description The partner voices the app offers (the account's ElevenLabs voices,
-         *     see picker_order), and which one it uses by default. `language` is
-         *     accepted for older clients and ignored - every voice is multilingual.
+         * @description The partner voices a provider offers, and its default. ElevenLabs:
+         *     the account's voices (see picker_order) - multilingual, so `language`
+         *     doesn't narrow them. Kokoro: that language's voices.
          */
         get: operations["list_voices_tts_voices_get"];
         put?: never;
@@ -685,6 +685,8 @@ export interface components {
              * @default partner
              */
             role: string;
+            /** Provider */
+            provider?: string | null;
         };
         /** TTSVoice */
         TTSVoice: {
@@ -695,6 +697,8 @@ export interface components {
         };
         /** TTSVoicesResponse */
         TTSVoicesResponse: {
+            /** Provider */
+            provider: string;
             /** Voices */
             voices: components["schemas"]["TTSVoice"][];
             /** Default */
@@ -1231,6 +1235,7 @@ export interface operations {
         parameters: {
             query?: {
                 language?: string;
+                provider?: string | null;
             };
             header?: never;
             path?: never;

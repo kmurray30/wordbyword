@@ -265,8 +265,10 @@ async function removeSavedWord(sessionId: string, word: string): Promise<void> {
   if (!response.ok) throw new Error(`/words delete failed (${response.status})`);
 }
 
-async function listVoices(language: string): Promise<TTSVoicesResponse> {
-  const response = await fetchWithColdStartRetry(`${BASE_URL}/tts/voices?language=${encodeURIComponent(language)}`);
+// `provider`: "elevenlabs" | "kokoro"; omitted, the server's default.
+async function listVoices(language: string, provider?: string): Promise<TTSVoicesResponse> {
+  const query = `language=${encodeURIComponent(language)}${provider ? `&provider=${encodeURIComponent(provider)}` : ""}`;
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/tts/voices?${query}`);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`/tts/voices failed (${response.status}): ${detail}`);

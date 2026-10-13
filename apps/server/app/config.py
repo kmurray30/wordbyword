@@ -49,6 +49,22 @@ MAX_REPLY_TOKENS = int(os.environ.get("MAX_REPLY_TOKENS", "1200"))
 TARGET_LANGUAGE = "es"
 NATIVE_LANGUAGE = "en"
 
+# Text-to-speech providers. Every voice in the app (the coach's, the
+# partner's, every 🔊) goes through TTS_PROVIDER unless a request names
+# another (TTSRequest.provider) - "elevenlabs" (default; see ELEVENLABS_*
+# below) or "kokoro" (DeepInfra-hosted Kokoro-82M, see DEEPINFRA_* here).
+TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "elevenlabs")
+TTS_PROVIDERS = ("elevenlabs", "kokoro")
+
+# Kokoro on DeepInfra. Empty token means that provider is unavailable;
+# app/tts/deepinfra_client.py raises a clear error rather than silently
+# failing. Each Kokoro voice speaks ONE language, so the voice is picked per
+# request from app/tts/kokoro_voices.py's language map - DEEPINFRA_TTS_VOICE
+# is only an escape hatch to force one voice regardless of language.
+DEEPINFRA_API_TOKEN = os.environ.get("DEEPINFRA_API_TOKEN", "")
+DEEPINFRA_TTS_MODEL = os.environ.get("DEEPINFRA_TTS_MODEL", "hexgrad/Kokoro-82M")
+DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "")
+
 # Speech-to-text for voice mode (Deepgram, streaming over a WebSocket - see
 # app/stt/deepgram_client.py). Chosen for its code-switching mode
 # (`language=multi`): the learner's speech is genuinely mixed Spanish/
@@ -58,7 +74,7 @@ NATIVE_LANGUAGE = "en"
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 DEEPGRAM_STT_MODEL = os.environ.get("DEEPGRAM_STT_MODEL", "nova-3")
 
-# Text-to-speech, for every voice in the app (ElevenLabs - see
+# ElevenLabs text-to-speech (the default provider - see
 # app/tts/elevenlabs_client.py): the coach speaks English with Spanish
 # phrases embedded in it, and the multilingual models switch pronunciation
 # inside a single text; the partner speaks Spanish in a different voice.
