@@ -99,7 +99,17 @@ export function ChatMessage({
   savedWords,
   onSaveWord,
   onRemoveWord,
+  onAskCoach,
+  canAskCoach = true,
+  sessionId = "",
 }: {
+  // Talk to the coach about this message (its 💬 conversation).
+  onAskCoach?: (question: string) => void;
+  // False while a reply is still coming in, or before a just-sent message
+  // has its id.
+  canAskCoach?: boolean;
+  // For dictating into this message's coach box.
+  sessionId?: string;
   message: DisplayMessage;
   // The newest reply in the chat: its popups open upward, so they don't
   // run off the bottom of the conversation.
@@ -130,7 +140,7 @@ export function ChatMessage({
   // The pinned word is showing "add word?"/"remove?"; then, briefly, what
   // just happened.
   const [askOffset, setAskOffset] = useState<number | null>(null);
-  const [flash, setFlash] = useState<{ offset: number; text: string } | null>(null);
+  const [flash, setFlash] = useState<{ offset: number; text: string; removed: boolean } | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
@@ -362,13 +372,18 @@ export function ChatMessage({
         sentence: message.text,
         messageId: glossServerId,
       });
-    setFlash({ offset, text: saved ? "Removed" : "Added ✓" });
+    setFlash({ offset, text: saved ? "Removed" : "Added ✓", removed: saved });
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
     flashTimerRef.current = setTimeout(() => setFlash(null), 1300);
   };
   // What floats above a word: the question, or what just happened.
   const badgeFor = (offset: number) => {
-    if (flash?.offset === offset) return <span className="word-ask word-ask--done" role="status">{flash.text}</span>;
+    if (flash?.offset === offset)
+      return (
+        <span className={`word-ask word-ask--done${flash.removed ? " word-ask--removed" : ""}`} role="status">
+          {flash.text}
+        </span>
+      );
     if (askOffset === offset && pinnedOffset === offset)
       return (
         <span className="word-ask" role="status">
@@ -378,6 +393,9 @@ export function ChatMessage({
       );
     return null;
   };
+  // The word being asked about turns green (add) or red (remove).
+  const toneFor = (offset: number): "add" | "remove" | null =>
+    askOffset === offset && pinnedOffset === offset ? (isSaved(offset) ? "remove" : "add") : null;
 
   // A reply saved before word glosses existed still has its per-token
   // gloss - shown until the new ones arrive.
@@ -452,6 +470,7 @@ export function ChatMessage({
                     open={activeOffset !== null && start <= activeOffset && activeOffset < end}
                     inPhrase={inActivePhrase(start, end)}
                     badge={badgeFor(start)}
+                    tone={toneFor(start)}
                     onOpen={() => {
                       cancelHoverClose();
                       setGlobeOpen(false);
@@ -474,7 +493,9 @@ export function ChatMessage({
                   key={i}
                   className={`word-token${
                     activeOffset !== null && seg.start <= activeOffset && activeOffset < seg.end ? " word-token--active" : ""
-                  }${inActivePhrase(seg.start, seg.end) ? " word-token--phrase" : ""}${seg.flagged ? " chat-message__typo" : ""}`}
+                  }${inActivePhrase(seg.start, seg.end) ? " word-token--phrase" : ""}${seg.flagged ? " chat-message__typo" : ""}${
+                    toneFor(seg.start) ? ` word-token--${toneFor(seg.start)}` : ""
+                  }`}
                   title={seg.flagged ? "Looks different from the corrected version" : undefined}
                   onClick={() => togglePinned(seg.start)}
                 >
@@ -573,26 +594,29 @@ export function ChatMessage({
             </DockedPopover>
           )}
         </div>
-        {(message.role === "assistant" || threadCount > 0 || liveCoach) && (
-          <div className="chat-message__actions">
-            {message.role === "assistant" && (
-              <AudioButton text={message.text} language="es" voice={voice} label="Play pronunciation" />
-            )}
-            {(threadCount > 0 || liveCoach) && (
-              <button
-                type="button"
-                className={`chat-message__thread-toggle${threadOpen ? " chat-message__thread-toggle--active" : ""}`}
-                onClick={onToggleThread}
-                aria-expanded={threadOpen}
-                title={threadOpen ? "Hide the side conversation" : "Show the side conversation about this message"}
-              >
-                💬 {threadCount + (liveCoach ? 1 : 0)}
-              </button>
-            )}
-          </div>
-        )}
-        {threadOpen && (threadCount > 0 || liveCoach) && (
-          <MessageThread entries={message.thread ?? []} live={liveCoach} />
+        <div className="chat-message__actions">
+          {message.role === "assistant" && (
+            <AudioButton text={message.text} language="es" voice={voice} label="Play pronunciation" />
+          )}
+          <button
+            type="button"
+            className={`chat-message__thread-toggle${threadOpen ? " chat-message__thread-toggle--active" : ""}`}
+            onClick={onToggleThread}
+            aria-expanded={threadOpen}
+            aria-label="Talk to the coach about this message"
+            title="Talk to the coach about this message"
+          >
+            💬{threadCount + (liveCoach ? 1 : 0) > 0 ? ` ${threadCount + (liveCoach ? 1 : 0)}` : ""}
+          </button>
+        </div>
+        {threadOpen && (
+          <MessageThread
+            entries={message.thread ?? []}
+            live={liveCoach}
+            sessionId={sessionId}
+            canAsk={canAskCoach}
+            onAsk={(question) => onAskCoach?.(question)}
+          />
         )}
       </div>
     </div>

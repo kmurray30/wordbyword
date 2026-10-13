@@ -74,3 +74,18 @@
     opacity: 0;
   }
 }
+
+/* Asking "add word?" / "remove?" about this word. */
+.word-token.word-token--add {
+  background-color: rgba(90, 210, 130, 0.38);
+  background-image: none;
+}
+
+.word-token.word-token--remove {
+  background-color: rgba(255, 110, 110, 0.38);
+  background-image: none;
+}
+
+.word-ask--removed {
+  background: #b23b3b;
+}

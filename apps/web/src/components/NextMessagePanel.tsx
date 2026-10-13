@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { api } from "../api/client";
-import type { ThreadEntry, ThreadEntryIn } from "../api/client";
+import type { ThreadEntryIn } from "../api/client";
 import { CoachText } from "./CoachText";
 import { TalkButton } from "./TalkButton";
 import { CoachSpeaker, stopSpeech, unlockSpeech } from "../voice/speech";
@@ -13,21 +13,14 @@ import "./NextMessagePanel.css";
 // about to say. You talk it through in its own box (type or 🎤); the coach
 // answers, explains, or suggests (suggestions come with "Use this"). When
 // you send, the conversation becomes the thread of the message you sent.
-// A question that's really about their message is answered under that
-// message instead.
+// (Talking about a message already in the chat happens under that message,
+// from its 💬 - see MessageThread.)
 
 type Status = "streaming" | "done" | "error";
 
 export type DraftTurn =
   | { id: number; role: "you"; text: string; source: "panel" | "box" }
   | { id: number; role: "coach"; text: string; status: Status };
-
-// A coach reply that belongs under one of THEIR messages (App renders it).
-export type CoachEvent =
-  | { type: "start"; messageId: number; question: string }
-  | { type: "chunk"; delta: string }
-  | { type: "done"; reply: string; entries: ThreadEntry[] }
-  | { type: "error"; message: string };
 
 export interface NextMessageControl {
   // The exact message in the message box: the coach looks it over.
@@ -104,20 +97,15 @@ function loadTurns(sessionId: string): DraftTurn[] {
 
 export function NextMessagePanel({
   sessionId,
-  activeThreadId,
   messageText,
-  onCoachEvent,
   onUse,
   onReady,
   controlRef,
 }: {
   sessionId: string;
-  // The thread open under one of their messages, if any.
-  activeThreadId: number | null;
   // What's in the message box right now ("✓ In message" only while it
   // still holds the suggestion that was used).
   messageText: string;
-  onCoachEvent: (event: CoachEvent) => void;
   onUse: (text: string) => void;
   // This exact text is fine to send (Send turns green).
   onReady: (text: string) => void;
@@ -130,9 +118,9 @@ export function NextMessagePanel({
   const abortRef = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const propsRef = useRef({ activeThreadId, onCoachEvent, onUse, onReady });
+  const propsRef = useRef({ onUse, onReady });
   useEffect(() => {
-    propsRef.current = { activeThreadId, onCoachEvent, onUse, onReady };
+    propsRef.current = { onUse, onReady };
   });
 
   const update = (fn: (prev: DraftTurn[]) => DraftTurn[]) => {
@@ -175,14 +163,12 @@ export function NextMessagePanel({
     update((prev) => [...prev, { id: youId, role: "you", text: clean, source }]);
 
     let replyId: number | null = null;
-    let external = false;
     let reply = "";
     let ready = false;
     const speaker = new CoachSpeaker();
 
     const fail = (message: string) => {
-      if (external) propsRef.current.onCoachEvent({ type: "error", message });
-      else if (replyId !== null) patch(replyId, { status: "error", text: reply || message });
+      if (replyId !== null) patch(replyId, { status: "error", text: reply || message });
       else update((prev) => [...prev, { id: nextId++, role: "coach", text: message, status: "error" }]);
     };
 
@@ -192,7 +178,7 @@ export function NextMessagePanel({
           {
             text: clean,
             session_id: sessionId,
-            thread_message_id: source === "box" ? null : propsRef.current.activeThreadId,
+            thread_message_id: null,
             draft_thread: history,
             check: source === "box",
           },
@@ -200,32 +186,24 @@ export function NextMessagePanel({
         )) {
           if (controller.signal.aborted) return;
           switch (event.type) {
-            case "about":
-              if (event.data.message_id !== null) {
-                // About their message: the exchange moves under it.
-                external = true;
-                update((prev) => prev.filter((t) => t.id !== youId));
-                propsRef.current.onCoachEvent({ type: "start", messageId: event.data.message_id, question: clean });
-              } else {
-                replyId = nextId++;
-                const id = replyId;
-                update((prev) => [...prev, { id, role: "coach", text: "", status: "streaming" }]);
-              }
+            case "about": {
+              replyId = nextId++;
+              const id = replyId;
+              update((prev) => [...prev, { id, role: "coach", text: "", status: "streaming" }]);
               break;
+            }
             case "ready":
               ready = event.data.ready;
               break;
             case "reply_chunk":
               reply += event.data.delta;
               speaker.push(event.data.delta);
-              if (external) propsRef.current.onCoachEvent({ type: "chunk", delta: event.data.delta });
-              else if (replyId !== null) patch(replyId, { text: reply });
+              if (replyId !== null) patch(replyId, { text: reply });
               break;
             case "reply_complete":
               reply = event.data.reply;
               speaker.flush();
-              if (external) propsRef.current.onCoachEvent({ type: "done", reply, entries: event.data.entries });
-              else if (replyId !== null) patch(replyId, { text: reply, status: "done" });
+              if (replyId !== null) patch(replyId, { text: reply, status: "done" });
               // The message box's text is already fine as written.
               if (ready && source === "box") propsRef.current.onReady(clean);
               break;

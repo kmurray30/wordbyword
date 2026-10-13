@@ -1,12 +1,16 @@
-import { useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ThreadEntry } from "../api/client";
 import { CoachText } from "./CoachText";
 import { useStickToBottom } from "../lib/useStickToBottom";
+import { TalkButton } from "./TalkButton";
+import { useDictation } from "../voice/useDictation";
+import { unlockSpeech } from "../voice/speech";
 import "./MessageThread.css";
 
-// The side conversation under a chat message: talk with the coach about
-// their message, or - under your own message - how you worked it out. The
-// main chat stays just the phrases actually exchanged.
+// The side conversation under a chat message, opened from its 💬: talk
+// with the coach about that message - what it says, its words, how to
+// answer it (or, under your own, how you worked it out) - in its own box
+// with a mic. The main chat stays just the phrases actually exchanged.
 
 export interface LiveCoachReply {
   question: string;
@@ -58,11 +62,106 @@ function OldCheck({ entry }: { entry: ThreadEntry }) {
   );
 }
 
-export function MessageThread({ entries, live }: { entries: ThreadEntry[]; live: LiveCoachReply | null }) {
+// This conversation's own box: type or talk, then send.
+function ThreadInput({
+  sessionId,
+  canAsk,
+  onAsk,
+}: {
+  sessionId: string;
+  canAsk: boolean;
+  onAsk: (question: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const dictation = useDictation({ sessionId, onText: setValue });
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + 2}px`;
+  }, [value]);
+
+  const submit = (text: string) => {
+    const question = text.trim();
+    if (!question || !canAsk) return;
+    setValue("");
+    onAsk(question);
+  };
+  const handleSend = () => {
+    unlockSpeech();
+    if (dictation.active) {
+      void dictation.done().then(submit);
+      return;
+    }
+    submit(value);
+  };
+  const handleTalk = () => {
+    unlockSpeech();
+    if (dictation.active) {
+      void dictation.done().then(submit);
+      return;
+    }
+    textareaRef.current?.blur();
+    void dictation.start(value);
+  };
+
+  return (
+    <div className="message-thread__input">
+      <textarea
+        ref={textareaRef}
+        className="message-thread__textarea"
+        rows={1}
+        value={value}
+        placeholder={dictation.active ? "Listening - tap the bubble when you're done" : "Ask the coach…"}
+        autoCorrect="off"
+        spellCheck={false}
+        enterKeyHint="send"
+        onChange={(e) => {
+          if (!dictation.active) setValue(e.target.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleSend();
+          }
+        }}
+      />
+      <TalkButton state={dictation.state} onClick={handleTalk} finishLabel="Finish - send to your coach" />
+      <button
+        type="button"
+        className="message-thread__send"
+        hidden={dictation.active}
+        onClick={handleSend}
+        disabled={!value.trim() || !canAsk}
+        aria-label="Send to your coach"
+        title="Send to your coach"
+      >
+        ↑
+      </button>
+    </div>
+  );
+}
+
+export function MessageThread({
+  entries,
+  live,
+  sessionId,
+  canAsk,
+  onAsk,
+}: {
+  entries: ThreadEntry[];
+  live: LiveCoachReply | null;
+  sessionId: string;
+  canAsk: boolean;
+  onAsk: (question: string) => void;
+}) {
   const logRef = useRef<HTMLDivElement | null>(null);
   useStickToBottom(logRef, [entries.length, live?.reply, live?.error]);
+  const empty = entries.length === 0 && !live;
   return (
     <div className="message-thread">
+      {!empty && (
       <div className="message-thread__log" ref={logRef}>
         {entries.map((entry) =>
           entry.kind === "check" ? (
@@ -92,6 +191,8 @@ export function MessageThread({ entries, live }: { entries: ThreadEntry[]; live:
           </>
         )}
       </div>
+      )}
+      <ThreadInput sessionId={sessionId} canAsk={canAsk} onAsk={onAsk} />
     </div>
   );
 }

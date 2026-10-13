@@ -440,7 +440,7 @@ def _reply(chunks, **kwargs):
     args = dict(
         text=kwargs.pop("text", "x"),
         messages=kwargs.pop("messages", _MESSAGES),
-        default_number=kwargs.pop("default_number", None),
+        about_number=kwargs.pop("about_number", None),
         thread_turns=kwargs.pop("thread_turns", []),
         draft_turns=kwargs.pop("draft_turns", []),
         native_lang="en",
@@ -458,13 +458,12 @@ def test_coach_reply_stream_empty_input_short_circuits():
     mock_stream.assert_not_called()
 
 
-def test_coach_reply_stream_yields_about_ready_then_the_streamed_reply():
+def test_coach_reply_stream_yields_ready_then_the_streamed_reply():
     events, mock_stream = _reply(
-        ["0<<<AB", "OUT>>>no<<<READY>>>Nice. Try ", "[[Me gusta nadar. | I like swimming.]]"],
+        ["no<<<REA", "DY>>>Nice. Try ", "[[Me gusta nadar. | I like swimming.]]"],
         text="me gusta swimming",
     )
-    assert events[0] == ("about", None)
-    assert events[1] == ("ready", False)
+    assert events[0] == ("ready", False)
     reply = "".join(e[1] for e in events if e[0] == "reply_chunk")
     assert reply == "Nice. Try [[Me gusta nadar. | I like swimming.]]"
     assert events[-1] == ("reply_complete", reply)
@@ -472,53 +471,55 @@ def test_coach_reply_stream_yields_about_ready_then_the_streamed_reply():
     assert "[2] Partner: ¿Cómo te llamas?" in system
     assert "llamas = you call yourself" in system
     assert "[[Spanish sentence | English meaning]]" in system
+    assert "about what they'll say next" in system
+    assert "ABOUT" not in system
     assert mock_stream.call_args.kwargs["model"]
 
 
-def test_coach_reply_stream_ready_yes_and_about_a_message():
-    events, _ = _reply(["2<<<ABOUT>>>Yes.<<<READY>>>That's right!"])
-    assert events[:2] == [("about", 2), ("ready", True)]
-
-
-def test_coach_reply_stream_unknown_number_falls_back_to_the_open_thread():
-    events, _ = _reply(["7<<<ABOUT>>>no<<<READY>>>Sure."], default_number=2)
-    assert events[0] == ("about", 2)
-    events, _ = _reply(["0<<<ABOUT>>>no<<<READY>>>Sure."], default_number=2)
-    assert events[0] == ("about", None)
+def test_coach_reply_stream_ready_yes():
+    events, _ = _reply(["Yes.<<<READY>>>That's right!"])
+    assert events[0] == ("ready", True)
+    assert events[-1] == ("reply_complete", "That's right!")
 
 
 def test_coach_reply_stream_strips_echoed_field_labels():
-    events, _ = _reply(["ABOUT: 0<<<ABOUT>>>READY: yes<<<READY>>>REPLY: ", "Perfect, send it."])
-    assert events[1] == ("ready", True)
+    events, _ = _reply(["READY: yes<<<READY>>>REPLY: ", "Perfect, send it."])
+    assert events[0] == ("ready", True)
     assert events[-1] == ("reply_complete", "Perfect, send it.")
     assert all(not e[1].startswith("REPLY") for e in events if e[0] == "reply_chunk")
 
 
-def test_coach_reply_stream_without_markers_still_returns_the_reply():
-    events, _ = _reply(["Just a plain answer."], default_number=2)
-    assert events[0] == ("about", 2)
-    assert events[1] == ("ready", False)
+def test_coach_reply_stream_without_the_marker_still_returns_the_reply():
+    events, _ = _reply(["Just a plain answer."])
+    assert events[0] == ("ready", False)
     assert events[-1] == ("reply_complete", "Just a plain answer.")
 
 
-def test_coach_reply_stream_context_reaches_the_prompt():
+def test_coach_reply_stream_about_a_message_puts_that_message_and_its_thread_in_the_prompt():
     _, mock_stream = _reply(
-        ["0<<<ABOUT>>>no<<<READY>>>ok"],
-        default_number=2,
+        ["no<<<READY>>>ok"],
+        about_number=2,
         thread_turns=[("learner", "what does it mean?"), ("coach", "What's your name?")],
+    )
+    system = mock_stream.call_args.args[0][0]["content"]
+    assert "about message [2] (their partner's message)" in system
+    assert "Coach: What's your name?" in system
+
+
+def test_coach_reply_stream_next_message_context_and_check_reach_the_prompt():
+    _, mock_stream = _reply(
+        ["no<<<READY>>>ok"],
         draft_turns=[("learner", "I want to say I'm Kyle"), ("coach", "Try [[Me llamo Kyle. | My name is Kyle.]]")],
         check=True,
     )
     system = mock_stream.call_args.args[0][0]["content"]
-    assert "about message [2] so far" in system
-    assert "Coach: What's your name?" in system
     assert "Learner: I want to say I'm Kyle" in system
     assert "exact message they're about to send" in system
 
 
 def test_coach_reply_stream_raises_on_empty_or_unreachable_model():
     with pytest.raises(TranslationUnavailableError):
-        _reply(["0<<<ABOUT>>>no<<<READY>>>"])
+        _reply(["no<<<READY>>>"])
     with patch("app.translate.llm_translate.model_chat_stream", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError):
             list(coach_reply_stream("q", _MESSAGES, None, [], [], "en", "es"))

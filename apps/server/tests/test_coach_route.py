@@ -62,7 +62,6 @@ def test_reply_about_the_next_message_streams_and_is_not_stored():
             draft_thread=[{"role": "learner", "text": "I want to say I like swimming"}],
         ),
         [
-            ("about", None),
             ("ready", False),
             ("reply_chunk", "Try "),
             ("reply_chunk", "[[Me gusta nadar. | I like swimming.]]"),
@@ -77,28 +76,12 @@ def test_reply_about_the_next_message_streams_and_is_not_stored():
     assert session.get(ChatMessage, partner.id).thread == []
     args = stream.call_args
     assert [m["text"] for m in args.args[1]] == ["Hola", "¿Cómo te llamas?"]
+    assert args.args[2] is None
     assert args.args[4] == [("learner", "I want to say I like swimming")]
     assert args.kwargs["check"] is False
 
 
-def test_reply_about_a_partner_message_is_stored_in_its_thread():
-    session = _session()
-    _, partner, _ = _seed(session)
-    _, parsed, _ = _run(
-        session,
-        CoachDraftRequest(text="what does llamas mean?", session_id="s1"),
-        [("about", 2), ("ready", False), ("reply_complete", "It means you call yourself.")],
-    )
-    assert parsed[0][1] == {"message_id": partner.id}
-    assert [e["kind"] for e in parsed[-1][1]["entries"]] == ["question", "answer"]
-    thread = next(m for m in get_history("s1", session=session).messages if m.id == partner.id).thread
-    assert [(e.role, e.kind, e.text) for e in thread] == [
-        ("learner", "question", "what does llamas mean?"),
-        ("coach", "answer", "It means you call yourself."),
-    ]
-
-
-def test_open_thread_is_the_default_and_its_turns_are_context():
+def test_a_message_conversation_is_about_that_message_and_stored_in_its_thread():
     session = _session()
     _, partner, _ = _seed(session)
     session.add(ThreadEntry(message_id=partner.id, position=0, role="learner", kind="question", text="q1"))
@@ -107,21 +90,41 @@ def test_open_thread_is_the_default_and_its_turns_are_context():
     _, parsed, stream = _run(
         session,
         CoachDraftRequest(text="llamas?", session_id="s1", thread_message_id=partner.id),
-        [("about", 2), ("ready", False), ("reply_complete", "Yes, llamas.")],
+        [("ready", False), ("reply_complete", "Yes, llamas.")],
     )
+    assert parsed[0][1] == {"message_id": partner.id}
     assert stream.call_args.args[2] == 2
     assert stream.call_args.args[3] == [("learner", "q1"), ("coach", "a1")]
-    assert [e.position for e in session.get(ChatMessage, partner.id).thread] == [0, 1, 2, 3]
+    assert [e["kind"] for e in parsed[-1][1]["entries"]] == ["question", "answer"]
+    thread = next(m for m in get_history("s1", session=session).messages if m.id == partner.id).thread
+    assert [(e.role, e.kind, e.text) for e in thread][2:] == [
+        ("learner", "question", "llamas?"),
+        ("coach", "answer", "Yes, llamas."),
+    ]
+
+
+def test_your_own_message_can_have_a_conversation_too():
+    session = _session()
+    mine, _, _ = _seed(session)
+    _, parsed, stream = _run(
+        session,
+        CoachDraftRequest(text="was that right?", session_id="s1", thread_message_id=mine.id),
+        [("ready", False), ("reply_complete", "Yes!")],
+    )
+    assert parsed[0][1] == {"message_id": mine.id}
+    assert stream.call_args.args[2] == 1
+    assert len(session.get(ChatMessage, mine.id).thread) == 2
 
 
 def test_a_thread_id_from_another_session_is_ignored():
     session = _session()
     _, _, other = _seed(session)
-    _, _, stream = _run(
+    _, parsed, stream = _run(
         session,
         CoachDraftRequest(text="hola", session_id="s1", thread_message_id=other.id),
-        [("about", None), ("ready", True), ("reply_complete", "Good.")],
+        [("ready", True), ("reply_complete", "Good.")],
     )
+    assert parsed[0][1] == {"message_id": None}
     assert stream.call_args.args[2] is None
     assert all(m["text"] != "not mine" for m in stream.call_args.args[1])
 
@@ -131,8 +134,8 @@ def test_a_check_is_always_about_the_next_message():
     _, partner, _ = _seed(session)
     _, parsed, stream = _run(
         session,
-        CoachDraftRequest(text="Me llamo Kyle.", session_id="s1", check=True),
-        [("about", 2), ("ready", True), ("reply_complete", "Perfect.")],
+        CoachDraftRequest(text="Me llamo Kyle.", session_id="s1", check=True, thread_message_id=partner.id),
+        [("ready", True), ("reply_complete", "Perfect.")],
     )
     assert stream.call_args.kwargs["check"] is True
     assert parsed[0][1] == {"message_id": None}
@@ -145,11 +148,13 @@ def test_coach_failure_is_an_error_event_and_nothing_is_stored():
     _, partner, _ = _seed(session)
 
     def failing():
-        yield ("about", 2)
+        yield ("ready", False)
         raise TranslationUnavailableError("down")
 
     with patch("app.routes.translate.llm_translate.coach_reply_stream", return_value=failing()):
-        response = coach_draft(CoachDraftRequest(text="why?", session_id="s1"), session=session)
+        response = coach_draft(
+            CoachDraftRequest(text="why?", session_id="s1", thread_message_id=partner.id), session=session
+        )
         raw = "".join(asyncio.run(_collect(response.body_iterator)))
     assert "event: error" in raw
     assert "reply_complete" not in raw

@@ -106,14 +106,14 @@ def interpret_input(req: InterpretInputRequest) -> InterpretInputResponse:
 
 @router.post("/coach")
 def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session)) -> StreamingResponse:
-    """The coach's reply to whatever the learner wrote in the coach panel
-    (or the message they're about to send, with `check`), streamed as SSE:
-    "about" (the partner message it's about, or null for the learner's
-    next message), "ready" (their own Spanish is fine to send as written),
-    then "reply_chunk"s and "reply_complete". A reply about a partner
-    message is saved in that message's thread; one about the next message
-    lives in the coach panel until it's sent. "error" if nothing came back.
-    See app.translate.llm_translate.coach_reply_stream."""
+    """The coach's reply, streamed as SSE. With `thread_message_id` it's
+    the side conversation about that message (opened from its 💬) and is
+    saved in its thread; without it, it's about the learner's next message
+    (the coach box at the bottom; with `check`, the exact message they're
+    about to send) and lives in the coach panel until it's sent. Events:
+    "about" (that message's id, or null), "ready" (their own Spanish is
+    fine to send as written), "reply_chunk"s and "reply_complete"; "error"
+    if nothing came back. See app.translate.llm_translate.coach_reply_stream."""
     history_rows = list(
         reversed(
             session.scalars(
@@ -125,10 +125,10 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
         )
     )
 
-    # The thread open on screen, if it's really one of this session's
-    # messages.
+    # The message this conversation is about, if it's really one of this
+    # session's (a check is always about the next message).
     anchor = None
-    if req.thread_message_id is not None:
+    if req.thread_message_id is not None and not req.check:
         candidate = session.get(ChatMessage, req.thread_message_id)
         if candidate is not None and candidate.session_id == req.session_id:
             anchor = candidate
@@ -145,7 +145,7 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
         for i, row in enumerate(history_rows)
     ]
     number_to_row = {i + 1: row for i, row in enumerate(history_rows)}
-    default_number = next((n for n, row in number_to_row.items() if anchor is not None and row.id == anchor.id), None)
+    about_number = next((n for n, row in number_to_row.items() if anchor is not None and row.id == anchor.id), None)
     thread_turns = (
         [
             ("learner" if e.kind == "question" else "coach", e.text)
@@ -158,14 +158,15 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
     draft_turns = [(t.role, t.text) for t in req.draft_thread if t.text.strip()]
 
     def events():
-        about_row = None
+        about_row = anchor
         reply = ""
+        yield _sse("about", CoachAboutEvent(message_id=anchor.id if anchor else None).model_dump_json())
         try:
             for item in iter_with_keepalive(
                 llm_translate.coach_reply_stream(
                     req.text,
                     numbered,
-                    default_number,
+                    about_number,
                     thread_turns,
                     draft_turns,
                     NATIVE_LANGUAGE,
@@ -177,14 +178,7 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
                     yield KEEPALIVE_LINE
                     continue
                 kind, *rest = item
-                if kind == "about":
-                    # A check of the message box is always about the
-                    # learner's own next message.
-                    about_row = None if req.check or rest[0] is None else number_to_row.get(rest[0])
-                    yield _sse(
-                        "about", CoachAboutEvent(message_id=about_row.id if about_row else None).model_dump_json()
-                    )
-                elif kind == "ready":
+                if kind == "ready":
                     yield _sse("ready", CoachReadyEvent(ready=rest[0]).model_dump_json())
                 elif kind == "reply_chunk":
                     yield _sse("reply_chunk", CoachReplyChunkEvent(delta=rest[0]).model_dump_json())

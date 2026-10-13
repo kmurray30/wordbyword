@@ -578,13 +578,12 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
 # renders as a card with "Use this". Read aloud as well as shown.
 _COACH_MAX_TOKENS = 1800
 _COACH_HISTORY_MESSAGES = 8
-_COACH_ABOUT_MARKER = "<<<ABOUT>>>"
 _COACH_READY_MARKER = "<<<READY>>>"
 
 # The model sometimes echoes a field's name into the field ("READY: yes",
 # "REPLY: ..."), which would break parsing or get read aloud. Stripped from
 # the start of each field; the prompt also tells it not to.
-_FIELD_LABEL_RE = re.compile(r"^\s*(?:ABOUT|READY|REPLY|ANSWER)\b\s*[:\-–—]?\s*", re.IGNORECASE)
+_FIELD_LABEL_RE = re.compile(r"^\s*(?:READY|REPLY|ANSWER)\b\s*[:\-–—]?\s*", re.IGNORECASE)
 # How much of the reply to hold back before deciding whether it starts
 # with an echoed label - "ANSWER" plus a separator is 8 chars at most.
 _REPLY_HOLDBACK = 8
@@ -616,7 +615,7 @@ def _run_sequential_fields(chunks, fields, initial_buffer: str = ""):
 def coach_reply_stream(
     text: str,
     messages: list[dict],
-    default_number: int | None,
+    about_number: int | None,
     thread_turns: list[tuple[str, str]],
     draft_turns: list[tuple[str, str]],
     native_lang: str,
@@ -627,16 +626,14 @@ def coach_reply_stream(
 
     `messages` is the recent conversation with the partner, oldest first,
     each {"number", "role" ("user"|"assistant"), "text", optional
-    "glosses"}. `default_number` is the message a question is most likely
-    about (the thread open on screen), or None. `thread_turns` is the side
-    conversation already under that message; `draft_turns` the learner's
-    discussion with the coach about what to say next, both as (role, text)
-    with role "learner" | "coach". `check` = `text` is the message the
-    learner is about to send, as written in the message box.
+    "glosses"}. `about_number` is the message this side conversation is
+    about (the learner opened it from that message), or None for the
+    learner's next message. `thread_turns` is the side conversation already
+    under that message; `draft_turns` the conversation about the next
+    message, both as (role, text) with role "learner" | "coach". `check` =
+    `text` is the message the learner is about to send, as written.
 
     Yields, in order:
-      ("about", number_or_None) - which partner message this is about;
-        None = the learner's own next message / nothing in particular.
       ("ready", bool) - the learner's own Spanish in `text` is already
         correct and natural to send as written.
       ("reply_chunk", delta) ... then ("reply_complete", full_text).
@@ -648,7 +645,6 @@ def coach_reply_stream(
     native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
     target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
     recent = messages[-_COACH_HISTORY_MESSAGES:]
-    numbers = {m["number"] for m in recent}
     listing = "\n".join(
         f"[{m['number']}] {'Learner' if m['role'] == 'user' else 'Partner'}: {m['text']}"
         + (f"\n    (word glosses: {m['glosses']})" if m.get("glosses") else "")
@@ -661,17 +657,17 @@ def coach_reply_stream(
     thread_lines = lines(thread_turns)
     draft_lines = lines(draft_turns)
     context = f"The conversation with their partner, numbered:\n{listing or '(nothing yet)'}\n\n"
-    if default_number is not None and thread_lines:
-        context += f"Your side conversation about message [{default_number}] so far:\n{thread_lines}\n\n"
-    elif default_number is not None:
-        context += f"They have message [{default_number}] open to talk about it.\n\n"
-    if draft_lines:
-        context += f"Your conversation about what they'll say next, so far:\n{draft_lines}\n\n"
-    about_hint = (
-        f"If they don't clearly mean something else, it's about message [{default_number}]."
-        if default_number is not None
-        else "Most of the time it's 0."
-    )
+    if about_number is not None:
+        whose = next((m for m in recent if m["number"] == about_number), None)
+        who = "their partner's" if whose is None or whose["role"] == "assistant" else "their own"
+        context += (
+            f"This side conversation is about message [{about_number}] ({who} message) - what it says, "
+            f"its words and grammar, how to answer it, or anything else about it.\n"
+        )
+        context += f"So far:\n{thread_lines}\n\n" if thread_lines else "\n"
+    else:
+        context += "This side conversation is about what they'll say next.\n"
+        context += f"So far:\n{draft_lines}\n\n" if draft_lines else "\n"
     check_note = (
         "\nThe learner's message below is the exact message they're about to send to their partner "
         "(typed or dictated in their message box) - treat it as what they want to say.\n"
@@ -706,14 +702,11 @@ def coach_reply_stream(
                 f"Style: {native_name}, with {target_name} words in quotes outside the blocks. "
                 f"Short, natural sentences - it's read aloud. No markdown, lists, headings or "
                 f"emoji. Don't open with \"Did you mean\" by default; talk normally.\n\n"
-                f"Write exactly three fields, in order, and never write a field's name:\n"
-                f"1. The number of the partner message this is about (digits only), or 0 if it's "
-                f"about what they'll say next or nothing in particular. {about_hint} Then this "
-                f"marker: {_COACH_ABOUT_MARKER}\n"
-                f"2. yes if the learner's own {target_name} in their latest message is already "
+                f"Write exactly two fields, in order, and never write a field's name:\n"
+                f"1. yes if the learner's own {target_name} in their latest message is already "
                 f"correct and natural to send as written, otherwise no (no for questions and for "
                 f"{native_name}). Then this marker: {_COACH_READY_MARKER}\n"
-                f"3. Your reply, and nothing after it."
+                f"2. Your reply, and nothing after it."
                 f"{check_note}"
             ),
         },
@@ -722,28 +715,16 @@ def coach_reply_stream(
 
     try:
         chunks = model_chat_stream(prompt, max_tokens=_COACH_MAX_TOKENS, model=OPENAI_COACH_MODEL)
-        head_iter, head_leftover = _run_sequential_fields(
-            chunks, [Field("about", _COACH_ABOUT_MARKER), Field("ready", _COACH_READY_MARKER)]
-        )
-        about_raw: str | None = None
+        head_iter, head_leftover = _run_sequential_fields(chunks, [Field("ready", _COACH_READY_MARKER)])
         ready_raw: str | None = None
         for kind, value in head_iter:
-            if kind == "about_complete":
-                about_raw = value
-            elif kind == "ready_complete":
+            if kind == "ready_complete":
                 ready_raw = value
 
-        about: int | None = default_number
-        if about_raw is not None:
-            digits = re.search(r"\d+", about_raw)
-            if digits:
-                number = int(digits.group())
-                about = number if number in numbers else (None if number == 0 else default_number)
-        yield ("about", about)
         ready = bool(ready_raw and re.search(r"\byes\b", _strip_field_label(ready_raw), re.IGNORECASE))
         yield ("ready", ready)
 
-        # Everything after the last marker is the reply. If a marker never
+        # Everything after the marker is the reply. If the marker never
         # came, the leftover holds the rest of the text - keep it as the
         # reply rather than losing it.
         pending = head_leftover[0] if head_leftover else ""

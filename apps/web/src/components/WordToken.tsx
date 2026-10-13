@@ -9,6 +9,8 @@ interface WordTokenProps {
   inPhrase?: boolean;
   // A little floating note right above the word ("add word?").
   badge?: ReactNode;
+  // Asking "add word?" (green) or "remove?" (red).
+  tone?: "add" | "remove" | null;
   onOpen: () => void;
   onClose: () => void;
   onTogglePin: () => void;
@@ -18,7 +20,7 @@ interface WordTokenProps {
 // the whole message bubble (see ChatMessage), not floated next to this
 // specific word, so ChatMessage owns which word (if any) is open across
 // the whole message and just tells this one whether it's the one.
-export function WordToken({ surface, gloss, open, inPhrase = false, badge, onOpen, onClose, onTogglePin }: WordTokenProps) {
+export function WordToken({ surface, gloss, open, inPhrase = false, badge, tone = null, onOpen, onClose, onTogglePin }: WordTokenProps) {
   if (!gloss) {
     // Punctuation or a token we don't track in the word bank - render plain.
     return <span>{surface}</span>;
@@ -26,7 +28,9 @@ export function WordToken({ surface, gloss, open, inPhrase = false, badge, onOpe
 
   return (
     <span
-      className={`word-token${open ? " word-token--active" : ""}${inPhrase ? " word-token--phrase" : ""}`}
+      className={`word-token${open ? " word-token--active" : ""}${inPhrase ? " word-token--phrase" : ""}${
+        tone ? ` word-token--${tone}` : ""
+      }`}
       // Hover previews only for a real mouse: a tap on iOS also fires an
       // emulated "hover" right before its click, which opened the popover
       // and then the click toggled it shut again (the first-tap flicker).

@@ -6,13 +6,13 @@ import { ChatMessage } from "./components/ChatMessage";
 import { ChatInput } from "./components/ChatInput";
 import type { ChatInputControl } from "./components/ChatInput";
 import { NextMessagePanel } from "./components/NextMessagePanel";
-import type { CoachEvent, NextMessageControl } from "./components/NextMessagePanel";
+import type { NextMessageControl } from "./components/NextMessagePanel";
 import type { LiveCoachReply } from "./components/MessageThread";
 import { SegmentedControl } from "./components/SegmentedControl";
 import { getSessionId } from "./lib/session";
 import { useAppUpdate } from "./lib/useAppUpdate";
 import { useChatAutoScroll } from "./lib/useChatAutoScroll";
-import { isReadAloudOn, setReadAloud, speakPartner, subscribeReadAloud } from "./voice/speech";
+import { CoachSpeaker, isReadAloudOn, setReadAloud, speakPartner, stopSpeech, subscribeReadAloud } from "./voice/speech";
 import "./App.css";
 
 let nextLocalId = -1;
@@ -55,11 +55,7 @@ function App() {
   const readAloud = useSyncExternalStore(subscribeReadAloud, isReadAloudOn);
   // Which messages have their side conversation expanded (by display id).
   const [openThreads, setOpenThreads] = useState<Set<number>>(new Set());
-  // The thread the learner is currently in: follow-up questions continue
-  // it. Cleared when they say something to the partner.
-  const [activeThreadId, setActiveThreadId] = useState<number | null>(null);
-  // The coach's reply while it streams, and which message it's about
-  // (null = no message to anchor to yet, shown at the end of the chat).
+  // The coach's reply while it streams, and which message it's about.
   const [liveCoach, setLiveCoach] = useState<(LiveCoachReply & { messageId: number }) | null>(null);
   const inputControlRef = useRef<ChatInputControl | null>(null);
   const nextMessageRef = useRef<NextMessageControl | null>(null);
@@ -178,7 +174,6 @@ function App() {
       .then(() => {
         setMessages([]);
         nextMessageRef.current?.clear();
-        setActiveThreadId(null);
         setOpenThreads(new Set());
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
@@ -199,7 +194,6 @@ function App() {
   // failed. `thread` = the coach checks behind this message.
   const handleSend = async (text: string): Promise<{ text: string } | null> => {
     setError(null);
-    setActiveThreadId(null);
     setReadyText(null);
     // Everything worked out in "Your next message" becomes this message's
     // thread.
@@ -246,52 +240,58 @@ function App() {
     return reply;
   };
 
-  const openThreadFor = (messageId: number | null) => {
+  // A conversation with the coach about one message (opened from its 💬):
+  // the reply streams into that message's thread, is read aloud, and is
+  // saved there by the server.
+  const askCoachAbout = async (m: DisplayMessage, question: string) => {
+    const messageId = serverIdOf(m);
     if (messageId === null) return;
-    const target = messages.find((m) => serverIdOf(m) === messageId);
-    if (target) setOpenThreads((prev) => new Set(prev).add(target.id));
-  };
-
-  // Mirrors liveCoach synchronously: events arrive faster than renders, and
-  // "done" needs the question/anchor that "start" set.
-  const liveCoachRef = useRef<(LiveCoachReply & { messageId: number }) | null>(null);
-  const handleCoachEvent = (event: CoachEvent) => {
-    if (event.type === "start") {
-      liveCoachRef.current = { messageId: event.messageId, question: event.question, reply: "", error: null };
-      setLiveCoach(liveCoachRef.current);
-      setActiveThreadId(event.messageId);
-      openThreadFor(event.messageId);
-    } else if (event.type === "chunk") {
-      setLiveCoach((prev) => (prev ? { ...prev, reply: prev.reply + event.delta } : prev));
-    } else if (event.type === "done") {
-      const live = liveCoachRef.current;
-      liveCoachRef.current = null;
-      setLiveCoach(null);
-      if (!live) return;
-      const entries: ThreadEntry[] = event.entries.length
-        ? event.entries
-        : [
-            { id: nextLocalId--, role: "learner", kind: "question", text: live.question, data: "" },
-            { id: nextLocalId--, role: "coach", kind: "answer", text: event.reply, data: "" },
-          ];
-      setMessages((prev) =>
-        prev.map((m) => (serverIdOf(m) === live.messageId ? { ...m, thread: [...(m.thread ?? []), ...entries] } : m)),
-      );
-    } else if (event.type === "error") {
-      setLiveCoach((prev) => (prev ? { ...prev, error: event.message } : prev));
+    stopSpeech();
+    const speaker = new CoachSpeaker();
+    setLiveCoach({ messageId, question, reply: "", error: null });
+    let reply = "";
+    try {
+      for await (const event of api.coachDraftStream({
+        text: question,
+        session_id: sessionId,
+        thread_message_id: messageId,
+        draft_thread: [],
+        check: false,
+      })) {
+        if (event.type === "reply_chunk") {
+          reply += event.data.delta;
+          speaker.push(event.data.delta);
+          setLiveCoach((prev) => (prev ? { ...prev, reply: prev.reply + event.data.delta } : prev));
+        } else if (event.type === "reply_complete") {
+          speaker.flush();
+          reply = event.data.reply;
+          const entries: ThreadEntry[] = event.data.entries.length
+            ? event.data.entries
+            : [
+                { id: nextLocalId--, role: "learner", kind: "question", text: question, data: "" },
+                { id: nextLocalId--, role: "coach", kind: "answer", text: reply, data: "" },
+              ];
+          setLiveCoach(null);
+          setMessages((prev) =>
+            prev.map((x) => (serverIdOf(x) === messageId ? { ...x, thread: [...(x.thread ?? []), ...entries] } : x)),
+          );
+        } else if (event.type === "error") {
+          throw new Error(event.data.message);
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setLiveCoach((prev) => (prev ? { ...prev, error: message } : prev));
     }
   };
 
   const toggleThread = (m: DisplayMessage) => {
-    const open = !openThreads.has(m.id);
     setOpenThreads((prev) => {
       const next = new Set(prev);
-      if (open) next.add(m.id);
-      else next.delete(m.id);
+      if (next.has(m.id)) next.delete(m.id);
+      else next.add(m.id);
       return next;
     });
-    // An open thread is the one follow-up questions continue.
-    setActiveThreadId(open ? serverIdOf(m) : null);
   };
 
   // The newest reply's popups open upward (see ChatMessage's `latest`).
@@ -370,6 +370,9 @@ function App() {
                 voice={voice ?? undefined}
                 threadOpen={openThreads.has(m.id) || !!live}
                 onToggleThread={() => toggleThread(m)}
+                onAskCoach={(question) => void askCoachAbout(m, question)}
+                canAskCoach={serverIdOf(m) !== null && !liveCoach}
+                sessionId={sessionId}
                 liveCoach={live}
                 latest={latest}
                 savedWords={savedWords}
@@ -387,27 +390,23 @@ function App() {
           </div>
         )}
         {error && <p className="app__error">{error}. Is the backend running and configured correctly?</p>}
-        {/* Your next message, typed right where it'll appear in the chat. */}
-        <ChatInput
-          bubble
-          onSend={(text) => {
-            scrollChatToBottom();
-            void handleSend(text);
-          }}
-          onCheck={(text) => nextMessageRef.current?.check(text)}
-          sessionId={sessionId}
-          readyText={readyText}
-          onValueChange={setMessageText}
-          controlRef={inputControlRef}
-        />
         </div>
       </main>
 
+      <ChatInput
+        onSend={(text) => {
+          scrollChatToBottom();
+          void handleSend(text);
+        }}
+        onCheck={(text) => nextMessageRef.current?.check(text)}
+        sessionId={sessionId}
+        readyText={readyText}
+        onValueChange={setMessageText}
+        controlRef={inputControlRef}
+      />
       <NextMessagePanel
         sessionId={sessionId}
-        activeThreadId={activeThreadId}
         messageText={messageText}
-        onCoachEvent={handleCoachEvent}
         onUse={(text) => inputControlRef.current?.setText(text)}
         onReady={setReadyText}
         controlRef={nextMessageRef}
