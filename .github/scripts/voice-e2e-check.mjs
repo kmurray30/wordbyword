@@ -20,9 +20,9 @@
 //     Dictate into the message box (words stream in, a pause submits
 //     nothing), finish -> the coach checks it in "Your next message" and
 //     reads its one suggestion aloud (ElevenLabs) -> Use it / Send -> the
-//     partner's reply (read aloud, Kokoro). Then, in "Your next message",
-//     a question about their message is answered under it, and working
-//     out the next reply stays in the panel. Screenshots at each step.
+//     partner's reply (read aloud, Kokoro). Then a question asked in their
+//     message's own 💬 conversation is answered there, and working out the
+//     next reply stays in the panel. Screenshots at each step.
 import { chromium } from "playwright";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -392,12 +392,15 @@ async function checkVoiceConversation(wavPath) {
       else fail("the partner's reply was not read aloud");
     }
 
-    // 3. A question about THEIR message, asked in Your next message, is
-    //    answered under their message.
+    // 3. A question asked in THEIR message's own 💬 conversation is
+    //    answered there.
     const coachClipsBefore = tts.filter((t) => t.role === "coach").length;
-    await page.fill(BRAIN, "what does 'correr' mean?");
-    await page.press(BRAIN, "Enter");
-    await page.waitForSelector(".chat-message--assistant .message-thread", { timeout: 120_000 });
+    await page.locator(".chat-message--assistant .chat-message__thread-toggle").last().click();
+    const THREAD_BOX = ".chat-message--assistant .message-thread__textarea";
+    await page.waitForSelector(THREAD_BOX);
+    await page.fill(THREAD_BOX, "what does 'correr' mean?");
+    await page.press(THREAD_BOX, "Enter");
+    await page.waitForSelector(".chat-message--assistant .message-thread .talk-line--coach", { timeout: 120_000 });
     await page.waitForFunction(
       () => {
         const t = document.querySelector(".chat-message--assistant .message-thread");
@@ -414,11 +417,10 @@ async function checkVoiceConversation(wavPath) {
     if (await page.locator('.message-thread [data-status="error"]').count()) fail("coach answer failed");
     if (/tutor/i.test(thread)) fail("'Tutor' is still shown - it's the coach now");
     if ((await page.locator(".chat-message__bubble").count()) !== bubblesBefore + 2) fail("the question was sent to the partner instead of the coach");
-    if (await page.inputValue(BRAIN)) fail("the talk-it-through box should clear after asking");
+    if (await page.inputValue(THREAD_BOX)) fail("the message's coach box should clear after asking");
     if (tts.filter((t) => t.role === "coach").length <= coachClipsBefore) fail("the coach's answer was not read aloud");
 
-    // 4. Working out the NEXT reply stays in the panel.
-    await page.locator(".chat-message--assistant .chat-message__thread-toggle").last().click();
+    // 4. Working out the NEXT reply happens in the panel.
     await page.fill(BRAIN, "I want to say I like swimming too");
     await page.press(BRAIN, "Enter");
     await page.waitForSelector(`${lastCoach}[data-status="done"], ${lastCoach}[data-status="error"]`, { timeout: 120_000 });
