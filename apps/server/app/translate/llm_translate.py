@@ -156,7 +156,9 @@ def gloss_message(
                 f"optional, in {native_name}, about the word's form - for a conjugated verb give the "
                 f'infinitive and its meaning, then person and tense, e.g. "comer (to eat): I, present" '
                 f'or "ir (to go): they, preterite"; for a plural, feminine, contracted (del, al) or '
-                f"object-pronoun form, say so briefly. Empty for a plain word that needs nothing more.\n\n"
+                f"object-pronoun form, say so briefly. Leave it EMPTY for a word already in its basic "
+                f'dictionary form - never write "masculine singular" or the like for one - and for any '
+                f"word that needs nothing more; most words get none.\n\n"
                 f"`phrases`: ONLY groups of two or more words whose meaning isn't simply the words "
                 f'added up - idioms and fixed expressions like "qué bueno" ("how wonderful"), "tener '
                 f'que" ("to have to"), "me gusta" ("I like"), "a veces" ("sometimes"). Most messages '
