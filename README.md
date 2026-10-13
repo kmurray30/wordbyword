@@ -157,13 +157,22 @@ rows, plus the agent's) gets its own 🔊 button, reusing the same TTS
 pipeline as the agent's raw-message audio; the raw user input itself doesn't,
 since its grammar or spelling might be exactly what's in question.
 
+**Tapping a word in a chat message** (theirs or yours) shows just that
+word's meaning beside the bubble ("good", "to eat"), with a note on its form
+underneath when it helps (a verb's infinitive, person and tense). If the word
+is part of an expression ("qué bueno" = "how wonderful"), the expression's
+meaning shows above the bubble and the whole expression is highlighted. All
+of it comes from one call per message (`llm_translate.gloss_message`), made
+when the partner replies and saved with the message (`ChatMessage.glosses`);
+your own messages, and replies from before this existed, get theirs once via
+`POST /chat/message/glosses`, which saves them too.
+
 **Hovering a word (or short group of words) in the input box** gives its
 in-context translation via `POST /translate/tag-input`, and clicking a
 clickable one replaces that span in place. Fired after every word boundary
 while typing (debounced), this asks the LLM to gloss the whole draft in one
-call (`llm_translate.tag_draft`) - the same `{translation, spans}` shape
-`gloss_reply` already uses for the agent's own replies, just run on the
-learner's still-being-typed, possibly mixed-language text instead. The
+call (`llm_translate.tag_draft`), run on the learner's still-being-typed,
+possibly mixed-language text. The
 model decides span boundaries itself (usually one word, occasionally a few
 words grouped together for an idiom or phrasal verb) and, since it has real
 sentence context, picks the one sense that applies rather than needing a

@@ -40,9 +40,33 @@ export interface paths {
          *     persists that already-fetched result against the message it belongs to,
          *     so GET /chat/history can hydrate it directly on a later reload instead
          *     of leaving the learner looking at "Translating…" forever for an old
-         *     message if that on-demand fetch is ever slow or fails.
+         *     message if that on-demand fetch is ever slow or fails. Also used for an
+         *     assistant reply whose translation wasn't saved with it (`native` only).
          */
         post: operations["save_user_interpretation_chat_message_interpretation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/message/glosses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Message Glosses
+         * @description The word/phrase glosses for a message, made and saved the first time
+         *     they're asked for (the learner's own messages, and replies from before
+         *     glosses were saved) - after that, GET /chat/history carries them.
+         *     503 if they can't be made right now.
+         */
+        post: operations["message_glosses_chat_message_glosses_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -354,6 +378,7 @@ export interface components {
              * @default []
              */
             thread: components["schemas"]["ThreadEntryOut"][];
+            glosses?: components["schemas"]["MessageGlosses"] | null;
         };
         /** ChatHistoryResponse */
         ChatHistoryResponse: {
@@ -390,6 +415,7 @@ export interface components {
              * @default 0
              */
             user_message_id: number;
+            glosses?: components["schemas"]["MessageGlosses"] | null;
         };
         /** ClearHistoryResponse */
         ClearHistoryResponse: {
@@ -489,6 +515,43 @@ export interface components {
         LlmHealthResponse: {
             /** Ready */
             ready: boolean;
+        };
+        /**
+         * MessageGlosses
+         * @description What a tapped word in a chat message shows: its own meaning (to the
+         *     side) and, if it's part of an expression, the expression's (below).
+         *     See app.translate.llm_translate.gloss_message.
+         */
+        MessageGlosses: {
+            /**
+             * Words
+             * @default []
+             */
+            words: components["schemas"]["WordGloss"][];
+            /**
+             * Phrases
+             * @default []
+             */
+            phrases: components["schemas"]["PhraseGloss"][];
+        };
+        /** MessageGlossesRequest */
+        MessageGlossesRequest: {
+            /** Message Id */
+            message_id: number;
+        };
+        /** PhraseGloss */
+        PhraseGloss: {
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
+            /** Gloss */
+            gloss: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /** RewardEventRequest */
         RewardEventRequest: {
@@ -656,6 +719,20 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** WordGloss */
+        WordGloss: {
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
+            /** Gloss */
+            gloss: string;
+            /**
+             * Grammar
+             * @default
+             */
+            grammar: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -716,6 +793,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SaveUserInterpretationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    message_glosses_chat_message_glosses_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MessageGlossesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageGlosses"];
                 };
             };
             /** @description Validation Error */

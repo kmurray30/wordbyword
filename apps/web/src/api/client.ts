@@ -33,6 +33,10 @@ type InterpretInputResponse =
 
 type SaveUserInterpretationRequest =
   paths["/chat/message/interpretation"]["post"]["requestBody"]["content"]["application/json"];
+type MessageGlossesRequest =
+  paths["/chat/message/glosses"]["post"]["requestBody"]["content"]["application/json"];
+export type MessageGlosses = components["schemas"]["MessageGlosses"];
+
 type SaveUserInterpretationResponse =
   paths["/chat/message/interpretation"]["post"]["responses"][200]["content"]["application/json"];
 
@@ -305,6 +309,9 @@ export const api = {
     post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", body),
   saveUserInterpretation: (body: SaveUserInterpretationRequest) =>
     post<SaveUserInterpretationRequest, SaveUserInterpretationResponse>("/chat/message/interpretation", body),
+  // A message's word/phrase glosses, made and saved on first request.
+  messageGlosses: (body: MessageGlossesRequest) =>
+    post<MessageGlossesRequest, MessageGlosses>("/chat/message/glosses", body),
   coachDraftStream,
   chatTurnStream,
   rewardEvent: (body: RewardEventRequest) =>

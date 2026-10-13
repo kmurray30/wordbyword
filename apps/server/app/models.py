@@ -56,6 +56,9 @@ class ChatMessage(Base):
     # POST /chat/message/interpretation.
     native_text: Mapped[str] = mapped_column(String(1024), default="")
     target_text: Mapped[str] = mapped_column(String(1024), default="")
+    # The message's word/phrase glosses as JSON (schemas.MessageGlosses),
+    # for either role - see app/chat/glosses.py. Empty until made.
+    glosses: Mapped[str] = mapped_column(Text, default="")
 
     tokens: Mapped[list["MessageToken"]] = relationship(
         back_populates="message", cascade="all, delete-orphan", order_by="MessageToken.position"

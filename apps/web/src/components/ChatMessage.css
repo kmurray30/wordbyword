@@ -15,7 +15,8 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  max-width: 70%;
+  /* Leaves room beside the bubble for a tapped word's meaning. */
+  max-width: 64%;
 }
 
 .chat-message--user .chat-message__column {
@@ -112,4 +113,45 @@
    (that's where they came from); threads under theirs stay blue. */
 .chat-message--user .message-thread {
   border-left-color: rgba(47, 174, 90, 0.6);
+}
+
+/* The box every popup on a message uses (word, phrase, 🌐). */
+.chat-message__popup {
+  background: #262c3a;
+  color: #f2f2f2;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  font-size: 0.85rem;
+  line-height: 1.3;
+  text-align: left;
+}
+
+/* A tapped word's own meaning (beside the bubble), with any note on its
+   form underneath. Narrow on purpose: it wraps, and a long word breaks
+   with a hyphen. */
+.chat-message__word-popover {
+  padding: 6px 9px;
+  hyphens: auto;
+  overflow-wrap: break-word;
+}
+
+.chat-message__word-gloss {
+  font-weight: 700;
+}
+
+.chat-message__word-grammar,
+.chat-message__phrase-note {
+  margin-top: 3px;
+  color: #a9adba;
+  font-size: 0.78rem;
+}
+
+/* What the phrase the tapped word belongs to means (above the bubble). */
+.chat-message__phrase-popover {
+  padding: 7px 10px;
+}
+
+.chat-message__phrase-gloss {
+  font-weight: 600;
 }

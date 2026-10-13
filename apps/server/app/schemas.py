@@ -44,12 +44,43 @@ class ChatTurnRequest(BaseModel):
     thread: list[ThreadEntryIn] = []
 
 
+class WordGloss(BaseModel):
+    # Character offsets into the message text.
+    start: int
+    end: int
+    # Just that one word's meaning ("good", "to eat").
+    gloss: str
+    # Optional detail about its form - a verb's infinitive, person, tense.
+    grammar: str = ""
+
+
+class PhraseGloss(BaseModel):
+    start: int
+    end: int
+    # What the whole expression means ("how wonderful").
+    gloss: str
+    note: str = ""
+
+
+class MessageGlosses(BaseModel):
+    """What a tapped word in a chat message shows: its own meaning (to the
+    side) and, if it's part of an expression, the expression's (below).
+    See app.translate.llm_translate.gloss_message."""
+
+    words: list[WordGloss] = []
+    phrases: list[PhraseGloss] = []
+
+
+class MessageGlossesRequest(BaseModel):
+    message_id: int
+
+
 class ChatTurnResponse(BaseModel):
     message_id: int
     text: str
     tokens: list[TokenAnnotation]
     # From the same LLM call that produced `tokens`' per-word glosses (see
-    # app.translate.llm_translate.gloss_reply) - guaranteed to agree with
+    # app.translate.llm_translate.gloss_message) - guaranteed to agree with
     # them on word sense, unlike a translation fetched separately. Empty
     # string if that call failed (rare; the per-word glosses are then also
     # empty - no dictionary/MT fallback).
@@ -63,6 +94,7 @@ class ChatTurnResponse(BaseModel):
     # serial LLM call to every turn's latency for no benefit, since the
     # frontend already has its own copy on the way.
     user_message_id: int = 0
+    glosses: MessageGlosses | None = None
 
 
 class SaveUserInterpretationRequest(BaseModel):
@@ -78,7 +110,7 @@ class SaveUserInterpretationResponse(BaseModel):
 # POST /chat/turn/stream sends these as SSE events rather than a single JSON
 # response (see app/routes/chat.py's take_turn_stream) - "chunk" events
 # stream the reply's own text as the model generates it, for a live
-# typing-style display; once generation finishes, gloss_reply (which needs
+# typing-style display; once generation finishes, gloss_message (which needs
 # the complete text) runs and the full, final payload - the exact same
 # shape the non-streaming POST /chat/turn returns - is sent as one "done"
 # event.
@@ -101,6 +133,9 @@ class ChatHistoryMessage(BaseModel):
     native: str = ""
     target: str = ""
     thread: list[ThreadEntryOut] = []
+    # Saved word/phrase glosses; null if not made yet (POST
+    # /chat/message/glosses makes and saves them).
+    glosses: MessageGlosses | None = None
 
 
 class ChatHistoryResponse(BaseModel):

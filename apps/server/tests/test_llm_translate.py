@@ -7,7 +7,7 @@ from app.config import OPENAI_TRANSLATE_MODEL
 from app.translate.llm_translate import (
     TranslationUnavailableError,
     coach_reply_stream,
-    gloss_reply,
+    gloss_message,
     interpret_user_input,
     tag_draft,
     translate_text,
@@ -174,98 +174,90 @@ def test_interpret_user_input_prompt_warns_against_answering():
     assert "not having a" in prompt.lower() or "not have a" in prompt.lower()
 
 
-def test_gloss_reply_empty_input_short_circuits():
+def test_gloss_message_empty_input_short_circuits():
     with patch("app.translate.llm_translate.model_chat") as mock_chat:
-        assert gloss_reply("   ", "es", "en") == ("", [])
+        assert gloss_message("   ", "en", "es") == ("", [], [])
     mock_chat.assert_not_called()
 
 
-def test_gloss_reply_parses_translation_and_ordered_spans():
+def test_gloss_message_parses_words_grammar_and_phrases():
     reply = (
-        '{"translation": "The bank is closed.", "spans": ['
-        '{"surface": "El", "gloss": "the", "note": ""}, '
-        '{"surface": "banco", "gloss": "bank", "note": "financial institution, not a bench"}, '
-        '{"surface": "está", "gloss": "is", "note": ""}, '
-        '{"surface": "cerrado", "gloss": "closed", "note": ""}]}'
+        '{"translation": "How wonderful, I ate.", "words": ['
+        '{"surface": "Qué", "gloss": "what", "grammar": ""}, '
+        '{"surface": "bueno", "gloss": "good", "grammar": ""}, '
+        '{"surface": "comí", "gloss": "ate", "grammar": "comer (to eat): I, preterite"}], '
+        '"phrases": [{"surface": "Qué bueno", "gloss": "how wonderful", "note": ""}]}'
     )
     with patch("app.translate.llm_translate.model_chat", return_value=reply) as mock_chat:
-        translation, spans = gloss_reply("El banco está cerrado.", "es", "en")
+        translation, words, phrases = gloss_message("Qué bueno, comí.", "en", "es")
 
-    assert translation == "The bank is closed."
-    assert spans == [
-        {"surface": "El", "gloss": "the", "note": "", "translation": "", "alternate_gloss": "", "literal": ""},
-        {
-            "surface": "banco",
-            "gloss": "bank",
-            "note": "financial institution, not a bench",
-            "translation": "",
-            "alternate_gloss": "",
-            "literal": "",
-        },
-        {"surface": "está", "gloss": "is", "note": "", "translation": "", "alternate_gloss": "", "literal": ""},
-        {"surface": "cerrado", "gloss": "closed", "note": "", "translation": "", "alternate_gloss": "", "literal": ""},
+    assert translation == "How wonderful, I ate."
+    assert words == [
+        {"surface": "Qué", "gloss": "what", "grammar": ""},
+        {"surface": "bueno", "gloss": "good", "grammar": ""},
+        {"surface": "comí", "gloss": "ate", "grammar": "comer (to eat): I, preterite"},
     ]
+    assert phrases == [{"surface": "Qué bueno", "gloss": "how wonderful", "note": ""}]
     (messages,), kwargs = mock_chat.call_args
-    assert kwargs["max_tokens"] > 300  # bigger budget than a plain translation
-    assert messages[-1] == {"role": "user", "content": "El banco está cerrado."}
+    assert kwargs["max_tokens"] > 300
+    assert messages[-1] == {"role": "user", "content": "Qué bueno, comí."}
+    assert '"translation"' in messages[0]["content"]
 
 
-def test_gloss_reply_groups_a_multi_word_span():
-    # "el tuyo" ("yours") must come back as ONE span covering both words,
-    # not "el" and "tuyo" glossed (or left ungloss) separately.
-    reply = '{"translation": "yours", "spans": [{"surface": "el tuyo", "gloss": "yours", "note": ""}]}'
+def test_gloss_message_drops_single_word_phrases_and_missing_phrases_key():
+    reply = '{"words": [{"surface": "hola", "gloss": "hello"}], "phrases": [{"surface": "hola", "gloss": "hi"}]}'
     with patch("app.translate.llm_translate.model_chat", return_value=reply):
-        _translation, spans = gloss_reply("el tuyo", "es", "en")
-
-    assert spans == [
-        {"surface": "el tuyo", "gloss": "yours", "note": "", "translation": "", "alternate_gloss": "", "literal": ""}
-    ]
+        assert gloss_message("Hola", "en", "es") == ("", [{"surface": "hola", "gloss": "hello", "grammar": ""}], [])
+    with patch("app.translate.llm_translate.model_chat", return_value='{"words": []}'):
+        assert gloss_message("Hola", "en", "es") == ("", [], [])
 
 
-def test_gloss_reply_strips_surrounding_prose_and_code_fences():
-    reply = (
-        'Sure, here you go:\n```json\n{"translation": "Hello", '
-        '"spans": [{"surface": "hola", "gloss": "hello", "note": ""}]}\n```'
-    )
+def test_gloss_message_for_the_learner_asks_for_no_translation():
+    reply = '{"words": [{"surface": "swimming", "gloss": "nadar"}], "phrases": []}'
+    with patch("app.translate.llm_translate.model_chat", return_value=reply) as mock_chat:
+        _translation, words, _phrases = gloss_message("me gusta swimming", "en", "es", learner=True)
+
+    assert words[0]["gloss"] == "nadar"
+    prompt = mock_chat.call_args.args[0][0]["content"]
+    assert "learner wrote" in prompt
+    assert '"translation"' not in prompt
+
+
+def test_gloss_message_strips_surrounding_prose_and_code_fences():
+    reply = 'Sure:\n```json\n{"translation": "Hello", "words": [{"surface": "hola", "gloss": "hello"}], "phrases": []}\n```'
     with patch("app.translate.llm_translate.model_chat", return_value=reply):
-        translation, spans = gloss_reply("Hola", "es", "en")
-
+        translation, words, _ = gloss_message("Hola", "en", "es")
     assert translation == "Hello"
-    assert spans == [
-        {"surface": "hola", "gloss": "hello", "note": "", "translation": "", "alternate_gloss": "", "literal": ""}
-    ]
+    assert words == [{"surface": "hola", "gloss": "hello", "grammar": ""}]
 
 
-def test_gloss_reply_retries_once_on_unparseable_reply():
+def test_gloss_message_retries_on_unparseable_reply():
     with patch(
         "app.translate.llm_translate.model_chat",
-        side_effect=["not json at all", '{"translation": "Hi", "spans": [{"surface": "hola", "gloss": "hi"}]}'],
+        side_effect=["not json at all", '{"translation": "Hi", "words": [{"surface": "hola", "gloss": "hi"}]}'],
     ) as mock_chat:
-        translation, spans = gloss_reply("Hola", "es", "en")
-
+        translation, words, _ = gloss_message("Hola", "en", "es")
     assert translation == "Hi"
-    assert spans == [
-        {"surface": "hola", "gloss": "hi", "note": "", "translation": "", "alternate_gloss": "", "literal": ""}
-    ]
+    assert words == [{"surface": "hola", "gloss": "hi", "grammar": ""}]
     assert mock_chat.call_count == 2
 
 
-def test_gloss_reply_raises_after_exhausting_retries():
+def test_gloss_message_raises_after_exhausting_retries():
     with patch("app.translate.llm_translate.model_chat", return_value="not json at all"):
         with pytest.raises(TranslationUnavailableError):
-            gloss_reply("Hola", "es", "en")
+            gloss_message("Hola", "en", "es")
 
 
-def test_gloss_reply_raises_on_garbled_reply():
+def test_gloss_message_raises_on_garbled_reply():
     with patch("app.translate.llm_translate.model_chat", return_value="你好世界"):
         with pytest.raises(TranslationUnavailableError):
-            gloss_reply("Hola", "es", "en")
+            gloss_message("Hola", "en", "es")
 
 
-def test_gloss_reply_wraps_model_server_error():
+def test_gloss_message_wraps_model_server_error():
     with patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError, match="down"):
-            gloss_reply("Hola", "es", "en")
+            gloss_message("Hola", "en", "es")
 
 
 def test_tag_draft_empty_input_short_circuits():

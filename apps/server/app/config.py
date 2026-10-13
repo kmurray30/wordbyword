@@ -14,7 +14,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-6-luna")
 
 # Model used for the pure translation/glossing calls (translate_text,
-# gloss_reply, interpret_user_input, tag_draft - everything in
+# gloss_message, interpret_user_input, tag_draft - everything in
 # llm_translate.py except coach_draft_stream, which mixes conversational
 # feedback with translation and so stays on the main chat model). Defaults
 # to OPENAI_CHAT_MODEL (no behavior change out of the box) - override with
@@ -30,7 +30,7 @@ OPENAI_TRANSLATE_MODEL = os.environ.get("OPENAI_TRANSLATE_MODEL", OPENAI_CHAT_MO
 # style model (confirmed by openai_client.py's own comment on requiring
 # max_completion_tokens over the classic max_tokens field) whose internal
 # reasoning tokens count against this SAME budget before any visible output
-# - see llm_translate.py's _TAG_DRAFT_MAX_TOKENS/_GLOSS_REPLY_MAX_TOKENS/
+# - see llm_translate.py's _TAG_DRAFT_MAX_TOKENS/_GLOSS_MESSAGE_MAX_TOKENS/
 # _COACH_STREAM_MAX_TOKENS comments for the first time this bit:
 # those calls' heavier structured-JSON prompts needed a much bigger budget
 # (1600-3000) for the exact same reason. 300 mostly worked for a plain

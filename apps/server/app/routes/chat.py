@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.chat.prompt_builder import build_messages
+from app.chat.glosses import build_glosses, load_glosses, save_glosses, token_glosses
 from app.chat.threads import append_entries, entry_out
 from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
@@ -17,6 +18,8 @@ from app.schemas import (
     ChatTurnRequest,
     ChatTurnResponse,
     ClearHistoryResponse,
+    MessageGlosses,
+    MessageGlossesRequest,
     SaveUserInterpretationRequest,
     SaveUserInterpretationResponse,
     ThreadEntryIn,
@@ -24,8 +27,7 @@ from app.schemas import (
 )
 from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
-from app.translate.lemmatizer import Token, analyze
-from app.translate.span_matching import MatchedSpan, match_spans
+from app.translate.lemmatizer import analyze
 from app.wordbank import store
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -48,28 +50,6 @@ def _sse(event: str, data: str) -> str:
 _SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
 
 HISTORY_TURNS = 10
-
-
-def _match_token_glosses(tokens: list[Token], matched_spans: list[MatchedSpan]) -> list[tuple[str, str, str]]:
-    """Both `tokens` (spaCy, left-to-right) and `matched_spans` (left-to-
-    right, non-overlapping - see span_matching.match_spans) are ordered by
-    position, so a single left-to-right walk finds each token's covering
-    span, if any, without re-scanning from the start each time. A
-    multi-word span (e.g. "el tuyo") covers more than one token - every
-    token inside it gets that same span's gloss/note/literal, rather than
-    only the first one or splitting the group across two separate
-    glosses."""
-    result: list[tuple[str, str, str]] = []
-    span_idx = 0
-    for tok in tokens:
-        while span_idx < len(matched_spans) and matched_spans[span_idx].end <= tok.start:
-            span_idx += 1
-        if span_idx < len(matched_spans) and matched_spans[span_idx].start <= tok.start < matched_spans[span_idx].end:
-            span = matched_spans[span_idx]
-            result.append((span.gloss, span.note, span.literal))
-        else:
-            result.append(("", "", ""))
-    return result
 
 
 def _recent_history(session: Session, session_id: str) -> list[tuple[str, str]]:
@@ -108,6 +88,7 @@ def get_history(session_id: str, session: Session = Depends(get_session)) -> Cha
             native=row.native_text,
             target=row.target_text,
             thread=[entry_out(e) for e in row.thread],
+            glosses=load_glosses(row),
         )
         for row in rows
     ]
@@ -136,6 +117,33 @@ def save_user_interpretation(
     message.target_text = req.target if message.role == "user" else ""
     session.commit()
     return SaveUserInterpretationResponse(ok=True)
+
+
+@router.post("/message/glosses", response_model=MessageGlosses)
+def message_glosses(req: MessageGlossesRequest, session: Session = Depends(get_session)) -> MessageGlosses:
+    """The word/phrase glosses for a message, made and saved the first time
+    they're asked for (the learner's own messages, and replies from before
+    glosses were saved) - after that, GET /chat/history carries them.
+    503 if they can't be made right now."""
+    message = session.get(ChatMessage, req.message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    saved = load_glosses(message)
+    if saved is not None:
+        return saved
+    text = message.text
+    learner = message.role == "user"
+    session.rollback()  # no transaction open while the model runs (see _gloss_and_persist_reply)
+    try:
+        _translation, words, phrases = llm_translate.gloss_message(text, NATIVE_LANGUAGE, TARGET_LANGUAGE, learner=learner)
+    except llm_translate.TranslationUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    glosses = build_glosses(text, words, phrases)
+    message = session.get(ChatMessage, req.message_id)
+    if message is not None and glosses.words:
+        save_glosses(message, glosses)
+        session.commit()
+    return glosses
 
 
 @router.post("/history/clear", response_model=ClearHistoryResponse)
@@ -174,9 +182,10 @@ def _gloss_and_persist_reply(
     lock is held only for the few milliseconds between this flush and the
     commit at the end."""
     try:
-        translation, raw_spans = llm_translate.gloss_reply(reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE)
+        translation, words, phrases = llm_translate.gloss_message(reply_text, NATIVE_LANGUAGE, TARGET_LANGUAGE)
     except llm_translate.TranslationUnavailableError:
-        translation, raw_spans = "", []
+        translation, words, phrases = "", [], []
+    glosses = build_glosses(reply_text, words, phrases)
 
     session.add(user_message)
     session.flush()  # assigns user_message.id without committing yet - needed below
@@ -185,12 +194,11 @@ def _gloss_and_persist_reply(
         append_entries(session, user_message.id, user_thread)
 
     tokens = analyze(reply_text)
-    matched_spans = match_spans(reply_text, raw_spans)
-    token_glosses = _match_token_glosses(tokens, matched_spans)
+    per_token = token_glosses(tokens, glosses)
     annotations: list[TokenAnnotation] = []
     token_rows: list[MessageToken] = []
 
-    for position, (tok, (word_gloss, word_note, word_literal)) in enumerate(zip(tokens, token_glosses)):
+    for position, (tok, (word_gloss, word_note)) in enumerate(zip(tokens, per_token)):
         # tok.is_spanish is a heuristic built for the learner's own possibly-
         # English-mixed input (see lemmatizer.py); it's gated on a small
         # ~300-word frequency list, so applying it here to the agent's own
@@ -211,7 +219,6 @@ def _gloss_and_persist_reply(
             continue
 
         word_note = word_note if word_gloss else ""
-        word_literal = word_literal if word_gloss else ""
         entry = store.record_exposure(session, tok.lemma, pos=tok.pos, translation=word_gloss)
         is_new = entry.exposure_count == 1
 
@@ -223,7 +230,6 @@ def _gloss_and_persist_reply(
                 gloss=word_gloss,
                 is_new=is_new,
                 note=word_note,
-                literal=word_literal,
             )
         )
         token_rows.append(
@@ -235,13 +241,14 @@ def _gloss_and_persist_reply(
                 gloss=word_gloss,
                 is_new=is_new,
                 note=word_note,
-                literal=word_literal,
             )
         )
 
     assistant_message = ChatMessage(
         session_id=session_id, role="assistant", text=reply_text, tokens=token_rows, native_text=translation
     )
+    if glosses.words:
+        save_glosses(assistant_message, glosses)
     session.add(assistant_message)
     session.commit()
     session.refresh(assistant_message)
@@ -252,6 +259,7 @@ def _gloss_and_persist_reply(
         tokens=annotations,
         translation=translation,
         user_message_id=user_message.id,
+        glosses=glosses if glosses.words else None,
     )
 
 

@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { DraftSpan, ThreadEntry, TokenAnnotation } from "../api/client";
+import type { MessageGlosses, ThreadEntry, TokenAnnotation } from "../api/client";
 import { joinTokens } from "../lib/spacing";
 import { diffRawWords, pickDiffReference, tokenizeSegments } from "../lib/wordDiff";
 import { DockedPopover } from "./DockedPopover";
-import { TranslatePopover } from "./TranslatePopover";
-import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
@@ -57,6 +55,34 @@ export interface DisplayMessage {
   // The side conversation about this message (see MessageThread): coach
   // checks behind a sent message, questions and the coach's replies.
   thread?: ThreadEntry[];
+  // What each word (and multi-word phrase) means - see MessageGlosses.
+  // Saved with the message; null/absent until made (fetched below).
+  glosses?: MessageGlosses | null;
+}
+
+// Where each token sits in the message text (tokens are its words and
+// punctuation in order, so a forward scan finds them).
+function tokenOffsets(text: string, tokens: TokenAnnotation[]): { start: number; end: number }[] {
+  const lower = text.toLowerCase();
+  let cursor = 0;
+  return tokens.map((tok) => {
+    const at = lower.indexOf(tok.surface.toLowerCase(), cursor);
+    const start = at === -1 ? cursor : at;
+    const end = at === -1 ? cursor : at + tok.surface.length;
+    cursor = end;
+    return { start, end };
+  });
+}
+
+// The tapped word's own meaning, beside the bubble - and, under it, any
+// note on its form (a verb's infinitive, person and tense).
+function WordGlossPopup({ gloss, grammar, pending }: { gloss: string; grammar: string; pending: boolean }) {
+  return (
+    <div className="chat-message__popup chat-message__word-popover" role="tooltip" lang="en">
+      <div className="chat-message__word-gloss">{gloss || (pending ? "…" : "(no translation)")}</div>
+      {grammar && <div className="chat-message__word-grammar">{grammar}</div>}
+    </div>
+  );
 }
 
 // How long an agent word can go un-hovered before we count that as passive
@@ -69,8 +95,12 @@ export function ChatMessage({
   threadOpen = false,
   onToggleThread,
   liveCoach = null,
+  latest = false,
 }: {
   message: DisplayMessage;
+  // The newest reply in the chat: its popups open upward, so they don't
+  // run off the bottom of the conversation.
+  latest?: boolean;
   voice?: string;
   threadOpen?: boolean;
   onToggleThread?: () => void;
@@ -82,15 +112,12 @@ export function ChatMessage({
   // Checks count once each; a question and its answer count as one.
   const threadCount = (message.thread ?? []).filter((e) => e.kind !== "answer").length;
 
-  // Which word's translation popover is open, if any - at most one per
-  // message, docked flush to the bottom of this message's own bubble
-  // (see the DockedPopover render below) rather than each word rendering
-  // its own floating popover. Hover takes precedence for display (so
-  // momentarily hovering a different word while one is pinned previews
-  // that word instead), falling back to whatever's pinned.
-  const [hoveredWordIndex, setHoveredWordIndex] = useState<number | null>(null);
-  const [pinnedWordIndex, setPinnedWordIndex] = useState<number | null>(null);
-  const openWordIndex = hoveredWordIndex ?? pinnedWordIndex;
+  // The tapped (pinned) or hovered word, by its character offset in the
+  // message. Its meaning shows beside the bubble; if it's part of a phrase,
+  // the phrase's meaning shows above the bubble.
+  const [hoverOffset, setHoverOffset] = useState<number | null>(null);
+  const [pinnedOffset, setPinnedOffset] = useState<number | null>(null);
+  const activeOffset = hoverOffset ?? pinnedOffset;
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelHoverClose = () => {
@@ -103,7 +130,7 @@ export function ChatMessage({
     cancelHoverClose();
     hoverCloseTimerRef.current = setTimeout(() => {
       hoverCloseTimerRef.current = null;
-      setHoveredWordIndex(null);
+      setHoverOffset(null);
     }, HOVER_CLOSE_DELAY_MS);
   };
   useEffect(() => {
@@ -129,32 +156,30 @@ export function ChatMessage({
   const [userTarget, setUserTarget] = useState<string | null>(null);
   const [userInterpreting, setUserInterpreting] = useState(false);
 
-  // Per-word/group glossing for the learner's OWN sent message - same
-  // backend call (tag_draft via /translate/gloss-spans) the chat input's
-  // own hover-translate uses on a still-being-typed draft, reused here
-  // read-only on the final, already-sent text. Lazy (fetched once on the
-  // first word click, not eagerly for every message) since it's a real
-  // LLM call, same convention as the input's own ensureGlossSpans.
-  const [userSpans, setUserSpans] = useState<DraftSpan[] | null>(null);
-  const [userSpansLoading, setUserSpansLoading] = useState(false);
-  // The raw character offset of the clicked word, re-resolved against
-  // userSpans on every render - mirrors ChatInput's openOffset: a word
-  // clicked before userSpans has loaded can still resolve to a wider
-  // multi-word group once it does, without re-clicking.
-  const [openUserOffset, setOpenUserOffset] = useState<number | null>(null);
-
-  const ensureUserSpans = () => {
-    if (userSpans !== null || userSpansLoading) return;
-    setUserSpansLoading(true);
+  // Word/phrase glosses: saved with the message. One that doesn't have
+  // them yet (your own messages, older replies) gets them once, in the
+  // background, and the server saves them for next time.
+  const [fetchedGlosses, setFetchedGlosses] = useState<MessageGlosses | null>(null);
+  const [glossesFailed, setGlossesFailed] = useState(false);
+  const glosses = message.glosses ?? fetchedGlosses;
+  const glossesRequestedRef = useRef(false);
+  const glossServerId = message.serverId ?? (message.id > 0 ? message.id : undefined);
+  useEffect(() => {
+    if (message.glosses || glossServerId === undefined || glossesRequestedRef.current) return;
+    glossesRequestedRef.current = true;
     api
-      .glossSpans({ text: message.text })
-      .then((res) => setUserSpans(res.spans))
-      .catch(() => setUserSpans([]))
-      .finally(() => setUserSpansLoading(false));
-  };
+      .messageGlosses({ message_id: glossServerId })
+      .then((g) => setFetchedGlosses({ words: g.words ?? [], phrases: g.phrases ?? [] }))
+      .catch(() => setGlossesFailed(true));
+  }, [message.glosses, glossServerId]);
 
-  const openUserSpan =
-    openUserOffset !== null ? userSpans?.find((s) => openUserOffset >= s.start && openUserOffset < s.end) : undefined;
+  const wordAt = (offset: number | null) =>
+    offset === null ? undefined : glosses?.words.find((w) => w.start <= offset && offset < w.end);
+  const phraseAt = (offset: number | null) =>
+    offset === null ? undefined : glosses?.phrases.find((p) => p.start <= offset && offset < p.end);
+  const activePhrase = phraseAt(activeOffset);
+  const inActivePhrase = (start: number, end: number) =>
+    !!activePhrase && start >= activePhrase.start && end <= activePhrase.end;
 
   useEffect(() => {
     if (message.role !== "assistant" || !message.tokens || message.fromHistory) return;
@@ -252,9 +277,8 @@ export function ChatMessage({
 
   const closePopups = () => {
     cancelHoverClose();
-    setHoveredWordIndex(null);
-    setPinnedWordIndex(null);
-    setOpenUserOffset(null);
+    setHoverOffset(null);
+    setPinnedOffset(null);
     setGlobeOpen(false);
   };
 
@@ -280,6 +304,27 @@ export function ChatMessage({
   // fall through to plain/diffed text below.
   const hasTokens = !!message.tokens && message.tokens.length > 0;
   const spaced = hasTokens ? joinTokens(message.tokens!.map((t) => t.surface)) : null;
+  const offsets = useMemo(
+    () => (hasTokens ? tokenOffsets(message.text, message.tokens!) : []),
+    [hasTokens, message.text, message.tokens],
+  );
+
+  // A tap pins the word; tapping the pinned word again closes it.
+  const togglePinned = (offset: number) => {
+    if (pinnedOffset === offset) {
+      closePopups();
+      return;
+    }
+    setGlobeOpen(false);
+    setPinnedOffset(offset);
+  };
+
+  // A reply saved before word glosses existed still has its per-token
+  // gloss - shown until the new ones arrive.
+  const fallbackGloss = (offset: number) => {
+    const i = offsets.findIndex((o) => o.start <= offset && offset < o.end);
+    return i === -1 ? "" : (message.tokens?.[i]?.gloss ?? "");
+  };
 
   // One segment per word/non-word run of the raw typed message, each
   // carrying its own character offsets (for matching against userSpans
@@ -333,52 +378,51 @@ export function ChatMessage({
       <div className="chat-message__column">
         <div className="chat-message__bubble" ref={bubbleRef}>
           {hasTokens && spaced ? (
-            message.tokens!.map((tok, i) => (
-              <span key={i}>
-                {spaced[i].spaceBefore && " "}
-                <WordToken
-                  surface={tok.surface}
-                  gloss={tok.gloss}
-                  open={openWordIndex === i}
-                  onOpen={() => {
-                    cancelHoverClose();
-                    setGlobeOpen(false);
-                    setHoveredWordIndex(i);
-                    handleHover(tok.lemma);
-                  }}
-                  onClose={scheduleHoverClose}
-                  onTogglePin={() => {
-                    // Clicking the pinned word again closes it.
-                    if (pinnedWordIndex === i) {
-                      closePopups();
-                      return;
-                    }
-                    setGlobeOpen(false);
-                    setPinnedWordIndex(i);
-                    handleHover(tok.lemma);
-                  }}
-                />
-              </span>
-            ))
+            message.tokens!.map((tok, i) => {
+              const { start, end } = offsets[i];
+              // The space before a word inside the open phrase is part of
+              // the phrase's highlight too.
+              const spaceInPhrase = i > 0 && inActivePhrase(offsets[i - 1].start, end);
+              return (
+                <span key={i}>
+                  {spaced[i].spaceBefore && (spaceInPhrase ? <span className="word-token--phrase"> </span> : " ")}
+                  <WordToken
+                    surface={tok.surface}
+                    gloss={tok.gloss || wordAt(start)?.gloss || ""}
+                    open={activeOffset !== null && start <= activeOffset && activeOffset < end}
+                    inPhrase={inActivePhrase(start, end)}
+                    onOpen={() => {
+                      cancelHoverClose();
+                      setGlobeOpen(false);
+                      setHoverOffset(start);
+                      handleHover(tok.lemma);
+                    }}
+                    onClose={scheduleHoverClose}
+                    onTogglePin={() => {
+                      togglePinned(start);
+                      handleHover(tok.lemma);
+                    }}
+                  />
+                </span>
+              );
+            })
           ) : userWordSegments ? (
             userWordSegments.map((seg, i) =>
               seg.isWord ? (
                 <span
                   key={i}
-                  className={`word-token${openUserOffset === seg.start ? " word-token--active" : ""}${
-                    seg.flagged ? " chat-message__typo" : ""
-                  }`}
+                  className={`word-token${
+                    activeOffset !== null && seg.start <= activeOffset && activeOffset < seg.end ? " word-token--active" : ""
+                  }${inActivePhrase(seg.start, seg.end) ? " word-token--phrase" : ""}${seg.flagged ? " chat-message__typo" : ""}`}
                   title={seg.flagged ? "Looks different from the corrected version" : undefined}
-                  onClick={() => {
-                    ensureUserSpans();
-                    setGlobeOpen(false);
-                    setOpenUserOffset((cur) => (cur === seg.start ? null : seg.start));
-                  }}
+                  onClick={() => togglePinned(seg.start)}
                 >
                   {seg.text}
                 </span>
               ) : (
-                <span key={i}>{seg.text}</span>
+                <span key={i} className={inActivePhrase(seg.start, seg.end) ? "word-token--phrase" : undefined}>
+                  {seg.text}
+                </span>
               ),
             )
           ) : (
@@ -397,10 +441,11 @@ export function ChatMessage({
           {globeOpen && (
             <DockedPopover
               position={message.role === "assistant" ? "right" : "left"}
+              overflow={latest ? "over" : "under"}
               onDismiss={() => setGlobeOpen(false)}
               keepOpenFor={keepOpenFor}
             >
-              <div className="translate-popover chat-message__translation-popover" role="tooltip">
+              <div className="chat-message__popup chat-message__translation-popover" role="tooltip">
                 {message.role === "assistant" ? (
                   <TranslationRow
                     variant="assistant"
@@ -431,43 +476,38 @@ export function ChatMessage({
               </div>
             </DockedPopover>
           )}
-          {openWordIndex !== null && message.tokens?.[openWordIndex] && (
+          {activeOffset !== null && (
             <DockedPopover
-              key={openWordIndex}
-              position="right"
+              key={`word-${activeOffset}`}
+              position={message.role === "assistant" ? "right" : "left"}
+              overflow="wrap"
+              growUp={latest}
               onMouseEnter={cancelHoverClose}
               onMouseLeave={scheduleHoverClose}
               onDismiss={closePopups}
               keepOpenFor={keepOpenFor}
             >
-              <TranslatePopover
-                candidates={[
-                  {
-                    translation: message.tokens[openWordIndex].gloss,
-                    description: message.tokens[openWordIndex].note || undefined,
-                  },
-                ]}
-                literal={message.tokens[openWordIndex].literal || undefined}
+              <WordGlossPopup
+                gloss={wordAt(activeOffset)?.gloss ?? fallbackGloss(activeOffset)}
+                grammar={wordAt(activeOffset)?.grammar ?? ""}
+                pending={!glosses && !glossesFailed}
               />
             </DockedPopover>
           )}
-          {openUserOffset !== null && (
-            // Mirrors the assistant popover right above: nested directly in
-            // the bubble, docked sideways rather than "below" - growing
-            // vertically here would overlap the actions/translations rows
-            // beneath it (absolutely-positioned content reserves no layout
-            // space of its own - see Fix 1's history on this component).
-            // "left" rather than "right" since a user bubble sits flush
-            // against the right edge of the viewport - "right" would run
-            // off-screen there.
-            <DockedPopover key={openUserOffset} position="left" onDismiss={closePopups} keepOpenFor={keepOpenFor}>
-              <WordCandidatesPopover
-                candidates={openUserSpan?.candidates ?? []}
-                clickable={false}
-                onSelect={() => {}}
-                loading={userSpansLoading}
-                literal={openUserSpan?.literal}
-              />
+          {activePhrase && (
+            <DockedPopover
+              key={`phrase-${activePhrase.start}`}
+              position="over"
+              align={message.role === "assistant" ? "start" : "end"}
+              onMouseEnter={cancelHoverClose}
+              onMouseLeave={scheduleHoverClose}
+              onDismiss={closePopups}
+              keepOpenFor={keepOpenFor}
+            >
+              <div className="chat-message__popup chat-message__phrase-popover" role="tooltip">
+                <div className="chat-message__phrase-gloss">{activePhrase.gloss}</div>
+                {activePhrase.note && <div className="chat-message__phrase-note">{activePhrase.note}</div>}
+              </div>
             </DockedPopover>
           )}
         </div>

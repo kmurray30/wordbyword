@@ -54,27 +54,43 @@
   padding-right: 8px;
 }
 
-/* Too wide to fit beside the bubble: just under it instead, flush and as
-   wide as the bubble (never narrower than a side popup), growing past a
-   short bubble away from the screen edge it sits against. */
-.docked-popover-wrap--right.docked-popover-wrap--dropped,
-.docked-popover-wrap--left.docked-popover-wrap--dropped {
-  top: 100%;
+/* Flush under/over the anchor, as wide as it (never narrower than a side
+   popup), growing past a short anchor away from the edge it's lined up
+   with. A side popup that doesn't fit drops into one of these too. */
+.docked-popover-wrap--under,
+.docked-popover-wrap--over {
   left: 0;
   right: 0;
   display: flex;
-  padding: 4px 0 0;
 }
 
-.docked-popover-wrap--left.docked-popover-wrap--dropped {
+.docked-popover-wrap--under {
+  top: 100%;
+  padding-top: 4px;
+}
+
+.docked-popover-wrap--over {
+  bottom: 100%;
+  padding-bottom: 4px;
+}
+
+.docked-popover-wrap--align-end {
   justify-content: flex-end;
 }
 
-.docked-popover-wrap.docked-popover-wrap--dropped .docked-popover {
+.docked-popover-wrap.docked-popover-wrap--under .docked-popover,
+.docked-popover-wrap.docked-popover-wrap--over .docked-popover {
   flex: none;
   width: 100%;
   min-width: min(240px, 60vw);
   max-width: none;
+}
+
+/* A side popup lined up with the anchor's bottom, growing upward. */
+.docked-popover-wrap--right.docked-popover-wrap--grow-up,
+.docked-popover-wrap--left.docked-popover-wrap--grow-up {
+  top: auto;
+  bottom: 0;
 }
 
 .docked-popover {

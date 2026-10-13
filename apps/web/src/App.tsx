@@ -109,6 +109,7 @@ function App() {
           native: m.native,
           target: m.target,
           thread: m.thread,
+          glosses: m.glosses,
         }));
         // This fetch can resolve after the user has already sent a message
         // (a cold-started backend makes it slow enough for that to happen) -
@@ -192,7 +193,14 @@ function App() {
             // swapping it for the server's id here would remount that
             // bubble instead of just updating a prop.
             ...prev.map((m) => (m.id === userLocalId ? { ...m, serverId: res.user_message_id } : m)),
-            { id: res.message_id, role: "assistant", text: res.text, tokens: res.tokens, translation: res.translation },
+            {
+              id: res.message_id,
+              role: "assistant",
+              text: res.text,
+              tokens: res.tokens,
+              translation: res.translation,
+              glosses: res.glosses,
+            },
           ]);
         }
       }
@@ -251,6 +259,9 @@ function App() {
     // An open thread is the one follow-up questions continue.
     setActiveThreadId(open ? serverIdOf(m) : null);
   };
+
+  // The newest reply's popups open upward (see ChatMessage's `latest`).
+  const latestAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
 
   // Keep the streaming answer in view.
   useEffect(() => {
@@ -316,6 +327,7 @@ function App() {
         )}
         {messages.map((m) => {
           const live = liveCoach && liveCoach.messageId === serverIdOf(m) ? liveCoach : null;
+          const latest = m.role === "assistant" && m.id === latestAssistantId && streamingText === null;
           return (
             <div key={m.id} ref={live ? threadAnchorRef : undefined}>
               <ChatMessage
@@ -324,6 +336,7 @@ function App() {
                 threadOpen={openThreads.has(m.id) || !!live}
                 onToggleThread={() => toggleThread(m)}
                 liveCoach={live}
+                latest={latest}
               />
             </div>
           );

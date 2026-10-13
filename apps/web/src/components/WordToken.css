@@ -15,3 +15,18 @@
 .word-token--active {
   background: rgba(255, 255, 255, 0.18);
 }
+
+/* The phrase the open word belongs to: one color across all its words (and
+   the spaces between), with the open word's grey stacked on top. */
+.word-token--phrase {
+  background-color: rgba(255, 196, 70, 0.33);
+  border-radius: 0;
+  /* Edge to edge with the next piece of the phrase - an overlap would show
+     as a darker seam. */
+  padding: 3px 0;
+  margin: -3px 0;
+}
+
+.word-token--phrase.word-token--active {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.22));
+}

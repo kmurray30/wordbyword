@@ -46,7 +46,7 @@ _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 # the same model and the same new `literal` field, so the same generous
 # headroom applies here too, before it gets caught by the exact same
 # failure mode on some longer/idiom-heavy reply.
-_GLOSS_REPLY_MAX_TOKENS = 2800
+_GLOSS_MESSAGE_MAX_TOKENS = 3200
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -96,69 +96,76 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     raise TranslationUnavailableError(f"Model returned a garbled reply: {last_result!r}")
 
 
-def gloss_reply(text: str, source_lang: str, target_lang: str) -> tuple[str, list[dict[str, str]]]:
-    """Translates `text` (the assistant's own reply) and, in the same call,
-    glosses it word-by-word using each word's/group's meaning IN THIS
-    SENTENCE - one consistent source for both, instead of a separately-
-    fetched whole-sentence translation and per-word glosses that could each
-    land on a different sense of an ambiguous word. Returns
-    (translation, raw_spans), the exact same ordered-span-list shape
-    tag_draft returns (ready for app.translate.span_matching.match_spans) -
-    deliberately NOT a dict keyed by surface text like this function used
-    to return: a dict can't represent a multi-word group (e.g. "el tuyo")
-    without one of its words winning and the other vanishing, and also
-    silently collapses a repeated surface form's second occurrence onto
-    the first. Spans must cover EVERY word, including short function words
-    (y, mi, el, la, de, que, ...) - skipping those was the original bug
-    this shape change fixes. Raises TranslationUnavailableError if the
-    model's reply isn't parseable JSON even after a retry - callers get no
-    gloss for that turn rather than a dictionary/MT fallback."""
-    if not text.strip():
-        return "", []
+def gloss_message(
+    text: str, native_lang: str, target_lang: str, learner: bool = False
+) -> tuple[str, list[dict[str, str]], list[dict[str, str]]]:
+    """Everything the app shows when a word in a chat message is tapped, in
+    one call so it all agrees on the sense each word has in THIS sentence.
+    Returns (translation, words, phrases), lists ordered left to right:
 
-    source_name = _LANGUAGE_NAMES.get(source_lang, source_lang)
+    - words: EVERY word, one at a time - {"surface", "gloss", "grammar"}.
+      `gloss` is just what that one word means here, as short as a
+      dictionary headword ("good", "to eat", "the"). `grammar` is optional
+      detail about the word's form: for a conjugated verb its infinitive
+      and the tense/person ("comer (to eat): I, present"), likewise a
+      plural/feminine/contracted form worth knowing - otherwise empty.
+    - phrases: ONLY multi-word expressions whose meaning isn't just the
+      words added up (idioms, fixed expressions like "qué bueno" = "how
+      wonderful", "tener que" = "to have to") - {"surface", "gloss",
+      "note"}, `note` an optional bit of usage/context, usually empty.
+
+    `text` is the partner's reply by default (target_lang, translated into
+    native_lang). With `learner`, it's the learner's own message, which may
+    mix both languages and have mistakes: a target_lang word is glossed in
+    native_lang, a native_lang word gets its target_lang translation, and
+    no whole-message translation is asked for ("" - the learner's message
+    has its own interpretation, see interpret_user_input).
+
+    Raises TranslationUnavailableError if no usable JSON comes back after
+    retries - callers then just have no glosses for that message."""
+    if not text.strip():
+        return "", [], []
+
+    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
     target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    if learner:
+        intro = (
+            f"This is a message a {native_name}-speaking learner wrote to their {target_name} "
+            f"conversation partner. It may mix {target_name} and {native_name} and have mistakes. "
+            f"For a {target_name} word, `gloss` is its {native_name} meaning; for a {native_name} "
+            f"word, `gloss` is how to say it in {target_name}. Use the meaning the learner "
+            f"clearly intended."
+        )
+        translation_field = ""
+    else:
+        intro = (
+            f"This is a {target_name} chat message. Translate it to {native_name}, and gloss it "
+            f"for a {native_name}-speaking learner."
+        )
+        translation_field = f'"translation": "<the whole message in {native_name}>", '
     messages = [
         {
             "role": "system",
             "content": (
-                f"Translate the following {source_name} text to {target_name}, "
-                f"and also break it into a list of words or short word-groups, "
-                f"IN THE SAME ORDER THEY APPEAR IN THE TEXT (left to right, "
-                f"earliest first), that together cover EVERY word in it - "
-                f"including short function words like y, mi, el, la, de, que, "
-                f"and the like. Do not skip any word. Skip only pure "
-                f"punctuation. Group a few words together ONLY when they form "
-                f"a fixed expression that doesn't translate word-by-word (for "
-                f'example "el tuyo" meaning "yours" should be ONE span, not '
-                f'"el" and "tuyo" separately) - most spans should be a single '
-                f"word. Copy each span's `surface` EXACTLY as it appears in "
-                f"the text - same spelling, same case, same accents. For each "
-                f"span, give a short {target_name} gloss of what it means "
-                f"IN THIS SENTENCE - not a generic dictionary definition, "
-                f"since the same word/group can mean different things in "
-                f"different sentences. For a MULTI-WORD span only, also give "
-                f"a short `literal` word-by-word breakdown in {target_name}, "
-                f"showing what each individual word in the group means on "
-                f"its own and, if the group's overall sense isn't a literal/"
-                f'word-for-word match for `gloss`, making that plain too - '
-                f'e.g. for a {source_name} idiom span like "tener en cuenta" '
-                f'meaning "take into account", `literal` could be "tener (to '
-                f'have) + en (in) + cuenta (account)" - so the learner can '
-                f"see how the phrase is built, not just what it means "
-                f"overall. Leave `literal` an empty string for a single-word "
-                f"span - it would just repeat `gloss`. Reply with ONLY a "
-                f"single JSON object and nothing else - no markdown code "
-                f"fences, no explanation - in exactly this shape: "
-                f'{{"translation": "<the full {target_name} translation>", '
-                f'"spans": [{{"surface": "<exact text from the source, one '
-                f'word or a short fixed-expression group>", "gloss": "<its '
-                f'{target_name} meaning in this sentence>", "note": "<in '
-                f"{target_name}: if this word could easily be confused with "
-                f"a different sense or word, one short phrase explaining why "
-                f'this sense applies here - otherwise an empty string>", '
-                f'"literal": "<word-by-word breakdown for a multi-word span '
-                f'only - else empty>"}}, ...]}}'
+                f"{intro}\n\n"
+                f"`words`: EVERY word in the message, one word per entry, in order (left to right), "
+                f"including short words like el, la, de, que, y, mi - skip only punctuation. Copy "
+                f"`surface` exactly as written (same spelling, case and accents). `gloss`: what that "
+                f"single word means here, as short as a dictionary entry - one to three words, e.g. "
+                f'"good", "to eat", "the", "you (informal)". No explanations in `gloss`. `grammar`: '
+                f"optional, in {native_name}, about the word's form - for a conjugated verb give the "
+                f'infinitive and its meaning, then person and tense, e.g. "comer (to eat): I, present" '
+                f'or "ir (to go): they, preterite"; for a plural, feminine, contracted (del, al) or '
+                f"object-pronoun form, say so briefly. Empty for a plain word that needs nothing more.\n\n"
+                f"`phrases`: ONLY groups of two or more words whose meaning isn't simply the words "
+                f'added up - idioms and fixed expressions like "qué bueno" ("how wonderful"), "tener '
+                f'que" ("to have to"), "me gusta" ("I like"), "a veces" ("sometimes"). Most messages '
+                f"have none or one. `gloss`: the phrase's {native_name} meaning here. `note`: optional, "
+                f"in {native_name}, a short bit of usage or context only if it really helps - usually "
+                f"empty. Do not break a phrase down word by word.\n\n"
+                f"Reply with ONLY one JSON object, no markdown fences, no explanation, exactly:\n"
+                f'{{{translation_field}"words": [{{"surface": "...", "gloss": "...", "grammar": ""}}, ...], '
+                f'"phrases": [{{"surface": "...", "gloss": "...", "note": ""}}, ...]}}'
             ),
         },
         {"role": "user", "content": text},
@@ -166,27 +173,49 @@ def gloss_reply(text: str, source_lang: str, target_lang: str) -> tuple[str, lis
 
     last_reply = ""
     last_error: Exception | None = None
-    # 3 attempts, not 2 - same reasoning as tag_draft's own retry count:
-    # this is the other call in this file with a large, multi-field-per-
-    # span JSON payload, so it's worth the same extra insurance against an
-    # occasional truncated/empty completion.
+    # Three tries: a big JSON payload like this occasionally comes back
+    # empty or cut off (see _TAG_DRAFT_MAX_TOKENS on reasoning budgets).
     for attempt in range(3):
         try:
-            last_reply = model_chat(messages, max_tokens=_GLOSS_REPLY_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
+            last_reply = model_chat(messages, max_tokens=_GLOSS_MESSAGE_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
         if not last_reply.strip() or _looks_garbled(last_reply):
             last_error = ValueError("empty or garbled reply")
-            logger.warning("gloss_reply attempt %d/3 for %r: empty or garbled reply (len=%d)", attempt + 1, text, len(last_reply))
+            logger.warning("gloss_message attempt %d/3 for %r: empty or garbled reply (len=%d)", attempt + 1, text, len(last_reply))
             continue
         try:
-            return _extract_span_list_json(last_reply)
+            return _extract_gloss_json(last_reply)
         except (ValueError, json.JSONDecodeError, KeyError) as exc:
             last_error = exc
             logger.warning(
-                "gloss_reply attempt %d/3 for %r: unparseable reply (len=%d): %s", attempt + 1, text, len(last_reply), exc
+                "gloss_message attempt %d/3 for %r: unparseable reply (len=%d): %s", attempt + 1, text, len(last_reply), exc
             )
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
+
+
+def _extract_gloss_json(reply: str) -> tuple[str, list[dict[str, str]], list[dict[str, str]]]:
+    match = _JSON_OBJECT_RE.search(reply)
+    if not match:
+        raise ValueError(f"no JSON object found in reply: {reply!r}")
+    data = json.loads(match.group(0))
+    translation = data.get("translation", "")
+    raw_words = data["words"]
+    raw_phrases = data.get("phrases", [])
+    if not isinstance(translation, str) or not isinstance(raw_words, list) or not isinstance(raw_phrases, list):
+        raise ValueError(f"unexpected JSON shape: {data!r}")
+
+    def entries(raw: list, fields: tuple[str, ...]) -> list[dict[str, str]]:
+        out = []
+        for item in raw:
+            if not isinstance(item, dict) or not str(item.get("surface", "")).strip():
+                continue
+            out.append({"surface": str(item["surface"]).strip(), **{f: str(item.get(f, "") or "").strip() for f in fields}})
+        return out
+
+    words = entries(raw_words, ("gloss", "grammar"))
+    phrases = [p for p in entries(raw_phrases, ("gloss", "note")) if len(p["surface"].split()) > 1]
+    return translation.strip(), words, phrases
 
 
 def _parse_labeled_lines(reply: str, native_name: str, target_name: str) -> tuple[str, str]:
