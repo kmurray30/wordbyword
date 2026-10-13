@@ -1,9 +1,9 @@
-"""Voice mode: live microphone streaming and the spoken-conversation coach.
+"""Voice input: live microphone streaming for dictation.
 
-The microphone path is a WebSocket rather than request/response because
-turn-taking has to come from the audio itself (server-side endpointing on
-the transcription provider) - with the phone's screen off there is no
-"stop" button to tap.
+Dictation streams the learner's words into the chat input as they speak;
+the learner ends it with the Done button, after which it's ordinary text
+(see ChatInput.tsx). A WebSocket because the audio and the transcript both
+stream continuously in opposite directions.
 """
 
 import asyncio
@@ -12,84 +12,17 @@ import logging
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
-from app.models import ChatMessage
-from app.schemas import (
-    CoachErrorEvent,
-    VoiceCoachDraftEvent,
-    VoiceCoachIntentEvent,
-    VoiceCoachRequest,
-    VoiceCoachSayChunkEvent,
-    VoiceCoachSayCompleteEvent,
-    VoiceCoachVerdictEvent,
-)
-from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
+from app.languages import get_language
 from app.stt import deepgram_client
 from app.stt.deepgram_client import STTUnavailableError
-from app.translate import llm_translate
 from app.wordbank import store
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/voice", tags=["voice"])
-
-_VOICE_COACH_HISTORY_TURNS = 8
-_SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
-
-
-def _sse(event: str, data: str) -> str:
-    return f"event: {event}\ndata: {data}\n\n"
-
-
-@router.post("/coach")
-def voice_coach(req: VoiceCoachRequest, session: Session = Depends(get_session)) -> StreamingResponse:
-    """The spoken coach's turn, streamed as SSE in the same style as
-    /translate/coach: "intent", then "verdict" + "draft" (what to send, if
-    anything), then "say_chunk"/"say_complete" for the spoken reply (the
-    client turns each completed sentence into coach-voice TTS as it
-    arrives). "error" means nothing was usable. See
-    llm_translate.voice_coach_stream for the field semantics."""
-    history_rows = session.scalars(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == req.session_id)
-        .order_by(ChatMessage.id.desc())
-        .limit(_VOICE_COACH_HISTORY_TURNS)
-    ).all()
-    history = [(row.role, row.text) for row in reversed(history_rows)]
-    words = [{"word": w.word, "confidence": w.confidence} for w in req.words]
-    coach_dialog = [(turn.role, turn.text) for turn in req.coach_dialog]
-
-    def events():
-        try:
-            for item in iter_with_keepalive(
-                llm_translate.voice_coach_stream(
-                    req.transcript, words, coach_dialog, history, NATIVE_LANGUAGE, TARGET_LANGUAGE
-                )
-            ):
-                if item is None:
-                    yield KEEPALIVE_LINE
-                    continue
-                kind, *rest = item
-                if kind == "intent":
-                    yield _sse("intent", VoiceCoachIntentEvent(intent=rest[0]).model_dump_json())
-                elif kind == "verdict":
-                    yield _sse("verdict", VoiceCoachVerdictEvent(verdict=rest[0]).model_dump_json())
-                elif kind == "draft":
-                    yield _sse("draft", VoiceCoachDraftEvent(draft=rest[0]).model_dump_json())
-                elif kind == "say_chunk":
-                    yield _sse("say_chunk", VoiceCoachSayChunkEvent(delta=rest[0]).model_dump_json())
-                elif kind == "say_complete":
-                    yield _sse("say_complete", VoiceCoachSayCompleteEvent(say=rest[0]).model_dump_json())
-        except llm_translate.TranslationUnavailableError as exc:
-            yield _sse("error", CoachErrorEvent(message=str(exc)).model_dump_json())
-
-    return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
-
 
 @router.websocket("/ping")
 async def ping(websocket: WebSocket) -> None:
@@ -106,11 +39,11 @@ async def ping(websocket: WebSocket) -> None:
         return
 
 
-def keyterms_for(session: Session, limit: int = deepgram_client.MAX_KEYTERMS) -> list[str]:
-    """The learner's most recently seen word-bank lemmas - fed to Deepgram's
-    keyterm prompting so the exact words they're studying are the ones the
-    recognizer is biased toward hearing."""
-    entries = sorted(store.list_all(session), key=lambda e: e.last_seen_at, reverse=True)
+def keyterms_for(session: Session, limit: int = deepgram_client.MAX_KEYTERMS, language: str = "es") -> list[str]:
+    """The learner's most recently seen word-bank lemmas in this language -
+    fed to Deepgram's keyterm prompting so the exact words they're studying
+    are the ones the recognizer is biased toward hearing."""
+    entries = sorted(store.list_all(session, language), key=lambda e: e.last_seen_at, reverse=True)
     return [e.lemma for e in entries if e.lemma.isalpha()][:limit]
 
 
@@ -120,7 +53,8 @@ async def listen(websocket: WebSocket, session: Session = Depends(get_session)) 
     back (keeps the Deepgram key server-side).
 
     Client -> server: binary frames are 16kHz mono 16-bit PCM audio; JSON
-    text frames are control messages - {"type":"start"} (must come first),
+    text frames are control messages - {"type":"start", "language"} (must
+    come first; `language` as on every request, default Spanish),
     {"type":"mute"} / {"type":"unmute"} (frames are dropped while muted -
     the app's own TTS is playing and the mic would just hear it; dropping
     server-side is cheaper than reconnecting to Deepgram every turn), and
@@ -186,7 +120,9 @@ async def listen(websocket: WebSocket, session: Session = Depends(get_session)) 
 
     reader = asyncio.create_task(read_client())
     try:
-        async for event in deepgram_client.stream_transcripts(frame_iter(), keyterms_for(session)):
+        language = str(first.get("language") or "es")
+        keyterms = keyterms_for(session, language=get_language(language).code)
+        async for event in deepgram_client.stream_transcripts(frame_iter(), keyterms, language):
             await websocket.send_json({"type": event.kind, "text": event.text, "words": event.words})
     except STTUnavailableError as exc:
         await _send_error(websocket, str(exc))

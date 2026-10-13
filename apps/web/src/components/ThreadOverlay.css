@@ -1,0 +1,143 @@
+/* A message's coach conversation as a sheet over most of the screen (see
+   ThreadOverlay.tsx). Positioned inside .app, which tracks the visible part
+   of the screen - so the keyboard just makes the sheet shorter. */
+.thread-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+}
+
+/* The chat stays visible behind it, greyed out. */
+.thread-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 10, 16, 0.62);
+}
+
+.thread-overlay__sheet {
+  position: absolute;
+  /* Clear margins all round, so it reads as a popup over the chat, not a
+     new page. */
+  top: 12%;
+  left: 22px;
+  right: 22px;
+  /* More of the chat below it when the screen is tall enough: ~22%, giving
+     way (down to 8%) so the sheet keeps at least 380px. */
+  bottom: max(8%, min(22%, calc(88% - 380px)));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  box-sizing: border-box;
+  border-radius: 18px;
+  border: 1px solid rgba(130, 170, 255, 0.35);
+  background: #161a23;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  font-size: 0.9rem;
+}
+
+/* Keyboard up: less room, smaller margins (still a visible edge). */
+.app--keyboard .thread-overlay__sheet {
+  top: 10px;
+  bottom: 10px;
+  left: 12px;
+  right: 12px;
+}
+
+.thread-overlay__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thread-overlay__label {
+  flex: 1;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #b8c7ee;
+}
+
+.thread-overlay__close {
+  border: none;
+  background: none;
+  color: #c9cfdb;
+  font-size: 1rem;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+/* The message it's about: the chat bubble itself (ChatMessage, "sheet"),
+   full width, its popups opening underneath over the conversation. */
+.thread-overlay__quote {
+  flex: none;
+  position: relative;
+  z-index: 3;
+}
+
+.thread-overlay__quote .chat-message {
+  margin: 0;
+}
+
+.thread-overlay__quote .chat-message__column {
+  max-width: none;
+  width: 100%;
+}
+
+.thread-overlay__quote .chat-message__bubble {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.thread-overlay__quote .chat-message__actions:empty {
+  display: none;
+}
+
+/* The conversation fills the sheet; its box sits at the bottom. */
+.thread-overlay .message-thread {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 0.9rem;
+}
+
+.thread-overlay .message-thread__log {
+  flex: 1;
+  max-height: none;
+}
+
+.thread-overlay .message-thread__input {
+  margin-top: auto;
+}
+
+/* What flies (see ThreadOverlay): the sheet's background growing out of
+   the bubble, and a copy of the bubble. */
+.thread-overlay__plate,
+.thread-overlay__flyer {
+  position: absolute;
+  display: none;
+  box-sizing: border-box;
+  margin: 0;
+  pointer-events: none;
+}
+
+.thread-overlay__plate {
+  z-index: 1;
+  border: 1px solid rgba(130, 170, 255, 0.35);
+  background: #161a23;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.thread-overlay__flyer {
+  z-index: 2;
+}
+
+.thread-overlay__flyer > .chat-message__bubble {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border-radius: inherit;
+  overflow: hidden;
+}

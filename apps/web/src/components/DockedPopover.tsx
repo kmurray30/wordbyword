@@ -2,9 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import "./DockedPopover.css";
 
-// How far off the viewport's own edge a "right"/"left" popover is allowed
-// to sit before getting nudged back - matches FloatingPopover's own MARGIN.
+// How close to the screen's edge a "right"/"left" popover may reach before
+// it drops under its bubble instead - matches FloatingPopover's MARGIN.
 const EDGE_MARGIN = 8;
+// The gap between a bubble and a popover beside it (padding in the CSS).
+const SIDE_GAP = 8;
+// A wrapping side popup is never squeezed narrower than this.
+const MIN_WRAP_WIDTH = 64;
+const MAX_SIDE_WIDTH = 240;
 
 interface DockedPopoverProps {
   children: ReactNode;
@@ -20,7 +25,22 @@ interface DockedPopoverProps {
   // the mirror of "right" - for a user bubble's own per-word gloss, since
   // those bubbles sit flush against the right edge of the viewport;
   // docking "right" there would run off-screen.
-  position?: "above" | "below" | "right" | "left";
+  // "inline" sits in normal flow instead of floating - for the message
+  // box, which is pinned to the bottom of the screen with no room below
+  // it: the popup opens right under the box and pushes the bars up.
+  //
+  // "under"/"over" sit flush under/over the anchor, as wide as it (never
+  // narrower than a side popup), lined up with its start or end (`align`)
+  // - a chat bubble's phrase meaning, say.
+  position?: "above" | "below" | "right" | "left" | "inline" | "under" | "over";
+  // "right"/"left" only - what to do when the popup doesn't fit beside its
+  // anchor: drop "under" or "over" it, or "wrap" - stay beside it, as
+  // narrow as the room there allows, and grow taller.
+  overflow?: "under" | "over" | "wrap";
+  // "right"/"left" only: line up with the anchor's bottom edge and grow
+  // upward instead of down from its top.
+  growUp?: boolean;
+  align?: "start" | "end";
   // For a hover-triggered popover (the word-tap one, which still opens on
   // desktop hover): docking it away from the hovered word/bubble means the
   // mouse now has to travel there, almost always leaving the original
@@ -30,6 +50,16 @@ interface DockedPopoverProps {
   // itself, regardless of what's happening back at the original target.
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
+  // Any click/tap anywhere closes the popover - on the popover itself too,
+  // except on a control inside it (a candidate to pick, an audio button,
+  // "next option"), which does its own thing. `keepOpenFor` exempts
+  // elements outside it that manage the popover themselves (the word that
+  // toggles it, the box being typed in).
+  onDismiss?: () => void;
+  keepOpenFor?: (target: Element) => boolean;
+  // Scroll it into view when it opens below/under its anchor (the chat).
+  // Off where there's nothing to scroll (the coach overlay).
+  autoScroll?: boolean;
 }
 
 // For popovers that should sit flush against a fixed anchor (the chat
@@ -41,17 +71,45 @@ interface DockedPopoverProps {
 // including however a mobile keyboard has already repositioned it -
 // instead of recomputing viewport bounds. Docks in the same place every
 // time rather than hugging whichever word/button triggered it.
-export function DockedPopover({ children, position = "above", onMouseEnter, onMouseLeave }: DockedPopoverProps) {
+export function DockedPopover({
+  children,
+  position = "above",
+  overflow = "under",
+  growUp = false,
+  align = "start",
+  onMouseEnter,
+  onMouseLeave,
+  onDismiss,
+  keepOpenFor,
+  autoScroll = true,
+}: DockedPopoverProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
-  // Only "right"/"left" need this: they dock flush against their anchor's
-  // own edge (see the CSS), and that anchor (a chat bubble) can sit
-  // anywhere horizontally - a short bubble near either side of a narrow
-  // mobile viewport leaves too little room for the popover to grow into
-  // before running off-screen. "above"/"below" don't have this problem -
-  // they're already full-width-with-margin relative to their anchor (see
-  // DockedPopover.css), which never exceeds the viewport on its own.
-  const [edgeShift, setEdgeShift] = useState(0);
-
+  const dismissRef = useRef({ onDismiss, keepOpenFor });
+  useEffect(() => {
+    dismissRef.current = { onDismiss, keepOpenFor };
+  });
+  const dismissible = !!onDismiss;
+  useEffect(() => {
+    if (!dismissible) return;
+    // Capture phase, added after the click that opened the popover has
+    // already passed through - so only LATER clicks count.
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      const inside = !!wrapRef.current?.contains(target);
+      if (inside && target.closest("button, a, input, textarea, select")) return;
+      if (!inside && dismissRef.current.keepOpenFor?.(target)) return;
+      dismissRef.current.onDismiss?.();
+    };
+    document.addEventListener("click", handleClick, true);
+    return () => document.removeEventListener("click", handleClick, true);
+  }, [dismissible]);
+  // "right"/"left" sit beside their anchor (a chat bubble) when there's
+  // room; when the popup is wider than the space beside the bubble, it
+  // drops to just under the bubble instead, flush against it and lined up
+  // with the bubble's own edge. Re-checked on every render, since the
+  // popup can grow after it opens ("…" turning into a long translation).
+  const [dropped, setDropped] = useState(false);
   // "below" grows the page's own scrollable overflow downward from a
   // container that's often already flush with the bottom of the viewport
   // (the input bar) - without this, opening it leaves the popover rendered
@@ -59,60 +117,63 @@ export function DockedPopover({ children, position = "above", onMouseEnter, onMo
   // scroll there, let alone that it should. Only runs once per mount (the
   // popover only mounts once per open), so this doesn't fight the user if
   // they scroll away afterward.
+  const side = position === "right" || position === "left";
   useEffect(() => {
-    if (position === "below" || position === "right" || position === "left") wrapRef.current?.scrollIntoView({ block: "nearest" });
-  }, [position]);
+    if (!autoScroll) return;
+    if (position === "below" || position === "under" || (side && !growUp)) {
+      wrapRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [position, side, growUp, autoScroll]);
+  // overflow="wrap": the room beside the anchor, as the popup's max width.
+  const [room, setRoom] = useState<number | null>(null);
 
-  // Nudges a "right"/"left" popover back on screen if it would otherwise
-  // run past the viewport's own left/right edge - e.g. a short reply's
-  // bubble sitting close to the edge, combined with a long translation/
-  // note, could dock a popover that's mostly off-screen (unreadable, and
-  // the exact "should always fit on the mobile screen" bug report this
-  // guards against) without this. Deliberately NOT measured via the
-  // anchor's own position (no FloatingPopover-style portal+clamp here) -
-  // this keeps the CSS-inherited vertical/side docking (including however
-  // a mobile keyboard has already repositioned the anchor) and only
-  // corrects the one axis that can actually go wrong. Runs on every
-  // render, not just mount, since the popover's own width can change after
-  // its content finishes loading (a short "…" placeholder growing into a
-  // real, possibly long, translation) - the bail-out check below (only
-  // call setState when the value actually changed) keeps that from
-  // looping, same pattern FloatingPopover already uses for the same
-  // reason.
   useLayoutEffect(() => {
-    if (position !== "right" && position !== "left") {
-      setEdgeShift((prev) => (prev === 0 ? prev : 0));
+    if (!side) return;
+    const wrap = wrapRef.current;
+    const anchor = wrap?.parentElement;
+    const box = wrap?.firstElementChild as HTMLElement | null;
+    if (!wrap || !anchor || !box) return;
+    const a = anchor.getBoundingClientRect();
+    const space = position === "right" ? window.innerWidth - EDGE_MARGIN - a.right : a.left - EDGE_MARGIN;
+    if (overflow === "wrap") {
+      const width = Math.min(MAX_SIDE_WIDTH, Math.max(MIN_WRAP_WIDTH, Math.round(space - SIDE_GAP)));
+      setRoom((prev) => (prev === width ? prev : width));
       return;
     }
-    const el = wrapRef.current;
-    if (!el) return;
-    // getBoundingClientRect() reflects whatever `edgeShift` is ALREADY
-    // applied as a transform right now - computing the new shift directly
-    // from it (instead of from the un-shifted position) would measure an
-    // already-corrected box, "fix" it again on top of that, overcorrect,
-    // measure THAT as the new baseline next render, and so on - an
-    // infinite oscillation (caught live: "Maximum update depth exceeded").
-    // Subtracting the currently-applied shift first recovers the natural,
-    // untransformed position every time, so each run's answer depends only
-    // on the anchor's own (stable) position and this popover's own
-    // (stable, once loaded) size - exactly the idempotent math
-    // FloatingPopover's analogous clamp relies on for the same reason.
-    const rect = el.getBoundingClientRect();
-    const naturalLeft = rect.left - edgeShift;
-    const naturalRight = rect.right - edgeShift;
-    let shift = 0;
-    if (naturalRight > window.innerWidth - EDGE_MARGIN) shift = window.innerWidth - EDGE_MARGIN - naturalRight;
-    else if (naturalLeft < EDGE_MARGIN) shift = EDGE_MARGIN - naturalLeft;
-    setEdgeShift((prev) => (prev === shift ? prev : shift));
+    const room = space;
+    // Dropped, the box is at least as wide as it was beside the bubble, so
+    // it never flips back and forth. (Callers remount it for new content -
+    // a different word - so that gets a fresh look at the side first.)
+    const drop = box.offsetWidth + SIDE_GAP > room;
+    setDropped((prev) => (prev === drop ? prev : drop));
   });
 
+  // Once dropped under the bubble, bring it into view like "below" does.
+  useEffect(() => {
+    if (autoScroll && dropped && overflow === "under") wrapRef.current?.scrollIntoView({ block: "nearest" });
+  }, [dropped, overflow, autoScroll]);
+
+  // A side popup that doesn't fit drops under/over its anchor, lined up
+  // with the anchor's edge on the same side ("right" = its start).
+  const placement = dropped && overflow !== "wrap" ? overflow : position;
+  const edge = dropped ? (position === "right" ? "start" : "end") : align;
+  const classes = [
+    "docked-popover-wrap",
+    `docked-popover-wrap--${placement}`,
+    placement === "under" || placement === "over" ? `docked-popover-wrap--align-${edge}` : "",
+    side && growUp && placement === position ? "docked-popover-wrap--grow-up" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div
-      ref={wrapRef}
-      className={`docked-popover-wrap docked-popover-wrap--${position}`}
-      style={edgeShift ? { transform: `translateX(${edgeShift}px)` } : undefined}
-    >
-      <div className="docked-popover" onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
+    <div ref={wrapRef} className={classes}>
+      <div
+        className="docked-popover"
+        style={side && overflow === "wrap" && room !== null ? { maxWidth: room } : undefined}
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
+      >
         {children}
       </div>
     </div>

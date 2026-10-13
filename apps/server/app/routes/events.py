@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_session
+from app.languages import get_language
 from app.schemas import RewardEventRequest, RewardEventResponse
 from app.vocab.suggest import record_pick_up
 from app.wordbank import store
@@ -12,12 +13,12 @@ router = APIRouter(prefix="/events", tags=["events"])
 @router.post("/reward", response_model=RewardEventResponse)
 def reward_event(req: RewardEventRequest, session: Session = Depends(get_session)) -> RewardEventResponse:
     try:
-        entry = store.apply_reward_event(session, req.event_type, req.lemma)
+        entry = store.apply_reward_event(session, req.event_type, req.lemma, get_language(req.language).code)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if req.event_type == "userTypedSpanishWord":
+    if req.event_type in ("userTypedTargetWord", "userTypedSpanishWord"):
         # A no-op unless contextual vocab recently offered this word.
-        record_pick_up(session, entry.lemma)
+        record_pick_up(session, entry.lemma, entry.language)
 
     session.commit()
     return RewardEventResponse(

@@ -25,7 +25,9 @@
 	# serving a stale index.html - and so the OLD build's JS - for a long
 	# time after a deploy. Vite's hashed assets, on the other hand, never
 	# change under the same name, so they can be cached forever.
-	@html path / /index.html /*.html
+	# /version.json is how an open app notices a newer deploy (see
+	# src/lib/useAppUpdate.ts), so it is never cached either.
+	@html path / /index.html /*.html /version.json
 	header @html Cache-Control "no-cache, must-revalidate"
 	@assets path /assets/*
 	header @assets Cache-Control "public, max-age=31536000, immutable"

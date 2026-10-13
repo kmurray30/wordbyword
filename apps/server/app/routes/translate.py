@@ -5,34 +5,38 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import NATIVE_LANGUAGE, TARGET_LANGUAGE
 from app.db import get_session
+from app.languages import NATIVE_LANGUAGE, get_language
+from app.chat.threads import append_entries, entry_out
 from app.models import ChatMessage
 from app.schemas import (
+    CoachAboutEvent,
     CoachDraftRequest,
     CoachErrorEvent,
-    CoachMeaningChunkEvent,
-    CoachMeaningCompleteEvent,
-    CoachOptionChunkEvent,
-    CoachOptionCompleteEvent,
-    CoachSuggestionChunkEvent,
-    CoachSuggestionCompleteEvent,
-    CoachVerdictEvent,
+    CoachReadyEvent,
+    CoachReplyChunkEvent,
+    CoachReplyCompleteEvent,
     DraftSpan,
     DraftToken,
     GlossSpansRequest,
     GlossSpansResponse,
     InterpretInputRequest,
     InterpretInputResponse,
+    ReadingOut,
+    ReadingsRequest,
+    ReadingsResponse,
     TagInputRequest,
     TagInputResponse,
+    ThreadEntryIn,
     TranslateCandidate,
     TranslateTextRequest,
     TranslateTextResponse,
+    TextReadings,
 )
 from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
 from app.translate.lemmatizer import analyze
+from app.translate.readings import readings_for
 from app.translate.span_matching import match_spans
 
 logger = logging.getLogger(__name__)
@@ -93,12 +97,13 @@ def translate_text(req: TranslateTextRequest) -> TranslateTextResponse:
 @router.post("/interpret", response_model=InterpretInputResponse)
 def interpret_input(req: InterpretInputRequest) -> InterpretInputResponse:
     """For the learner's own message: infers what they meant across a
-    possible mix of English/Spanish and grammar mistakes, returning a
-    corrected English restatement alongside its Spanish translation - used
+    possible mix of English/the target language and grammar mistakes,
+    returning a corrected English restatement alongside its target-language
+    translation - used
     to show both under the user's chat bubble rather than a single literal
     (and possibly nonsensical) pass."""
     try:
-        native, target = llm_translate.interpret_user_input(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+        native, target = llm_translate.interpret_user_input(req.text, NATIVE_LANGUAGE, req.language)
     except llm_translate.TranslationUnavailableError as exc:
         msg = f"(translation unavailable: {exc})"
         return InterpretInputResponse(native=msg, target=msg)
@@ -107,98 +112,124 @@ def interpret_input(req: InterpretInputRequest) -> InterpretInputResponse:
 
 @router.post("/coach")
 def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session)) -> StreamingResponse:
-    """For a message the learner is still drafting (not yet sent) - unlike
-    /interpret above, which corrects a single message in isolation, this
-    pulls the session's recent conversation for context so the suggested
-    phrasing actually fits the tone of what's been said so far, and returns
-    feedback on the attempt plus phrasing options at a few formality
-    levels rather than a single flat correction.
+    """The coach's reply, streamed as SSE. With `thread_message_id` it's
+    the side conversation about that message (opened from its 💬) and is
+    saved in its thread; without it, it's about the learner's next message
+    (the coach box at the bottom; with `check`, the exact message they're
+    about to send) and lives in the coach panel until it's sent. Events:
+    "about" (that message's id, or null), "ready" (their own target-language text is
+    fine to send as written), "reply_chunk"s and "reply_complete"; "error"
+    if nothing came back. See app.translate.llm_translate.coach_reply_stream."""
+    history_rows = list(
+        reversed(
+            session.scalars(
+                select(ChatMessage)
+                .where(ChatMessage.session_id == req.session_id)
+                .order_by(ChatMessage.id.desc())
+                .limit(_COACH_HISTORY_TURNS)
+            ).all()
+        )
+    )
 
-    Streamed as Server-Sent Events, one event per field of the SAME
-    underlying LLM call (app.translate.llm_translate.coach_draft_stream -
-    see its own docstring for the full field-by-field sequence). First, a
-    "verdict" event ("clean"/"minor"/"fix") - usable INSTANTLY, before
-    anything else has streamed, to decide whether the draft is already
-    good to go (see ChatInput.tsx's coachReady). Then "meaning_chunk"/
-    "meaning_complete" carry the restatement live, delta by delta - the
-    same token-by-token feel /chat/turn/stream's own reply already has.
-    What follows depends on the verdict: nothing further for "clean";
-    "suggestion_chunk"/"suggestion_complete" (one lightweight corrected-
-    text suggestion) for "minor"; or, for "fix", three formality-ranked
-    options streamed via "option_chunk"/"option_complete" events (each
-    carrying `index` 0/1/2 and `field` "spanish"/"english"), each option's
-    own English back-translation streaming in right after its own Spanish
-    text - not batched together at the end. An "error" event means
-    nothing at all was usable (not even the verdict); a stream that ends
-    partway through the "fix" options just means the rest weren't ready -
-    whatever DID arrive stays fully usable (see coach_draft_stream's own
-    docstring on this graceful-degradation philosophy)."""
-    history_rows = session.scalars(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == req.session_id)
-        .order_by(ChatMessage.id.desc())
-        .limit(_COACH_HISTORY_TURNS)
-    ).all()
-    history = [(row.role, row.text) for row in reversed(history_rows)]
+    # The message this conversation is about, if it's really one of this
+    # session's (a check is always about the next message).
+    anchor = None
+    if req.thread_message_id is not None and not req.check:
+        candidate = session.get(ChatMessage, req.thread_message_id)
+        if candidate is not None and candidate.session_id == req.session_id:
+            anchor = candidate
+    if anchor is not None and anchor.id not in {row.id for row in history_rows}:
+        history_rows = [anchor, *history_rows]
+
+    numbered = [
+        {
+            "number": i + 1,
+            "role": row.role,
+            "text": row.text,
+            "glosses": "; ".join(f"{t.surface} = {t.gloss}" for t in row.tokens if t.gloss)[:600],
+        }
+        for i, row in enumerate(history_rows)
+    ]
+    number_to_row = {i + 1: row for i, row in enumerate(history_rows)}
+    about_number = next((n for n, row in number_to_row.items() if anchor is not None and row.id == anchor.id), None)
+    thread_turns = (
+        [
+            ("learner" if e.kind == "question" else "coach", e.text)
+            for e in anchor.thread
+            if e.kind in ("question", "answer")
+        ]
+        if anchor is not None
+        else []
+    )
+    draft_turns = [(t.role, t.text) for t in req.draft_thread if t.text.strip()]
 
     def events():
+        about_row = anchor
+        reply = ""
+        yield _sse("about", CoachAboutEvent(message_id=anchor.id if anchor else None).model_dump_json())
         try:
             for item in iter_with_keepalive(
-                llm_translate.coach_draft_stream(req.text, history, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+                llm_translate.coach_reply_stream(
+                    req.text,
+                    numbered,
+                    about_number,
+                    thread_turns,
+                    draft_turns,
+                    NATIVE_LANGUAGE,
+                    req.language,
+                    check=req.check,
+                    message_draft="" if req.check else req.message_draft,
+                )
             ):
                 if item is None:
                     yield KEEPALIVE_LINE
                     continue
                 kind, *rest = item
-                if kind == "verdict":
-                    yield _sse("verdict", CoachVerdictEvent(verdict=rest[0]).model_dump_json())
-                elif kind == "meaning_chunk":
-                    yield _sse("meaning_chunk", CoachMeaningChunkEvent(delta=rest[0]).model_dump_json())
-                elif kind == "meaning_complete":
-                    yield _sse("meaning_complete", CoachMeaningCompleteEvent(meaning=rest[0]).model_dump_json())
-                elif kind == "suggestion_chunk":
-                    yield _sse("suggestion_chunk", CoachSuggestionChunkEvent(delta=rest[0]).model_dump_json())
-                elif kind == "suggestion_complete":
-                    yield _sse(
-                        "suggestion_complete", CoachSuggestionCompleteEvent(suggestion=rest[0]).model_dump_json()
-                    )
-                elif kind == "option_spanish_chunk":
-                    yield _sse(
-                        "option_chunk", CoachOptionChunkEvent(index=rest[0], field="spanish", delta=rest[1]).model_dump_json()
-                    )
-                elif kind == "option_spanish_complete":
-                    yield _sse(
-                        "option_complete",
-                        CoachOptionCompleteEvent(index=rest[0], field="spanish", text=rest[1]).model_dump_json(),
-                    )
-                elif kind == "option_english_chunk":
-                    yield _sse(
-                        "option_chunk", CoachOptionChunkEvent(index=rest[0], field="english", delta=rest[1]).model_dump_json()
-                    )
-                elif kind == "option_english_complete":
-                    yield _sse(
-                        "option_complete",
-                        CoachOptionCompleteEvent(index=rest[0], field="english", text=rest[1]).model_dump_json(),
-                    )
+                if kind == "ready":
+                    yield _sse("ready", CoachReadyEvent(ready=rest[0]).model_dump_json())
+                elif kind == "reply_chunk":
+                    yield _sse("reply_chunk", CoachReplyChunkEvent(delta=rest[0]).model_dump_json())
+                elif kind == "reply_complete":
+                    reply = rest[0]
         except llm_translate.TranslationUnavailableError as exc:
             yield _sse("error", CoachErrorEvent(message=str(exc)).model_dump_json())
+            return
+        # Saved only now, after every model call - a short write, so the
+        # SQLite write lock is never held while the model streams (see
+        # routes/chat.py's _gloss_and_persist_reply).
+        entries = []
+        if about_row is not None and reply:
+            rows = append_entries(
+                session,
+                about_row.id,
+                [
+                    ThreadEntryIn(role="learner", kind="question", text=req.text),
+                    ThreadEntryIn(role="coach", kind="answer", text=reply),
+                ],
+            )
+            session.commit()
+            entries = [entry_out(r) for r in rows]
+        yield _sse("reply_complete", CoachReplyCompleteEvent(reply=reply, entries=entries).model_dump_json())
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/tag-input", response_model=TagInputResponse)
 def tag_input(req: TagInputRequest) -> TagInputResponse:
-    """Cheap, synchronous, LLM-free per-word classification (spaCy +
-    lemmatizer.py's is_spanish heuristic) - fast enough to call on every
-    keystroke (debounced). Needed for reward-event tracking
-    (userTypedSpanishWord) and the phrase-selection direction vote. The
+    """Cheap, synchronous, LLM-free per-word classification (see
+    app.translate.lemmatizer) - fast enough to call on every keystroke
+    (debounced). Needed for reward-event tracking (userTypedTargetWord) and
+    the phrase-selection direction vote. The
     slower LLM-backed word/group glossing that drives the hover-to-
     translate UI lives separately in /translate/gloss-spans below, fetched
     lazily on interaction rather than on every edit."""
+    spaced = get_language(req.language).spaced
     tokens = [
-        DraftToken(surface=tok.surface, lemma=tok.lemma, is_spanish=tok.is_spanish, start=tok.start, end=tok.end)
-        for tok in analyze(req.text)
-        if tok.surface.isalpha() and len(tok.surface) > 1
+        DraftToken(surface=tok.surface, lemma=tok.lemma, is_target=tok.is_target, start=tok.start, end=tok.end)
+        for tok in analyze(req.text, req.language)
+        # A one-letter "word" is noise in a spaced language; a single
+        # character is a real word in Japanese/Chinese.
+        if any(c.isalpha() for c in tok.surface) and (len(tok.surface) > 1 or not spaced)
     ]
     return TagInputResponse(tokens=tokens)
 
@@ -212,7 +243,7 @@ def gloss_spans(req: GlossSpansRequest) -> GlossSpansResponse:
     real LLM call. On failure, returns an empty span list - no dictionary/
     MT fallback."""
     try:
-        _translation, raw_spans = llm_translate.tag_draft(req.text, NATIVE_LANGUAGE, TARGET_LANGUAGE)
+        _translation, raw_spans = llm_translate.tag_draft(req.text, NATIVE_LANGUAGE, req.language)
     except llm_translate.TranslationUnavailableError as exc:
         logger.warning("tag_draft unavailable for %r: %s", req.text, exc)
         raw_spans = []
@@ -227,3 +258,23 @@ def gloss_spans(req: GlossSpansRequest) -> GlossSpansResponse:
         logger.warning("tag_draft returned %d span(s) but none matched %r: %r", len(raw_spans), req.text, raw_spans)
 
     return GlossSpansResponse(spans=spans)
+
+
+@router.post("/readings", response_model=ReadingsResponse)
+def readings(req: ReadingsRequest) -> ReadingsResponse:
+    """How to read each text: romanization for every word, kana over kanji,
+    and Mandarin in the learner's characters (see app.translate.readings).
+    Deterministic and fast - no LLM. Empty readings for a language written
+    in the Latin alphabet."""
+    items = []
+    for i, text in enumerate(req.texts[:100]):
+        raw_words = (req.words or [])[i] if req.words and i < len(req.words) else None
+        words = [(w[0], w[1]) for w in raw_words or [] if len(w) == 2]
+        shown, found = readings_for(text, req.language, words) if len(text) <= 4000 else (text, [])
+        items.append(
+            TextReadings(
+                text=shown,
+                readings=[ReadingOut(start=r.start, end=r.end, roman=r.roman, kana=r.kana, cont=r.cont) for r in found],
+            )
+        )
+    return ReadingsResponse(items=items)

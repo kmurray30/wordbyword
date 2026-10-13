@@ -14,7 +14,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-6-luna")
 
 # Model used for the pure translation/glossing calls (translate_text,
-# gloss_reply, interpret_user_input, tag_draft - everything in
+# gloss_message, interpret_user_input, tag_draft - everything in
 # llm_translate.py except coach_draft_stream, which mixes conversational
 # feedback with translation and so stays on the main chat model). Defaults
 # to OPENAI_CHAT_MODEL (no behavior change out of the box) - override with
@@ -30,7 +30,7 @@ OPENAI_TRANSLATE_MODEL = os.environ.get("OPENAI_TRANSLATE_MODEL", OPENAI_CHAT_MO
 # style model (confirmed by openai_client.py's own comment on requiring
 # max_completion_tokens over the classic max_tokens field) whose internal
 # reasoning tokens count against this SAME budget before any visible output
-# - see llm_translate.py's _TAG_DRAFT_MAX_TOKENS/_GLOSS_REPLY_MAX_TOKENS/
+# - see llm_translate.py's _TAG_DRAFT_MAX_TOKENS/_GLOSS_MESSAGE_MAX_TOKENS/
 # _COACH_STREAM_MAX_TOKENS comments for the first time this bit:
 # those calls' heavier structured-JSON prompts needed a much bigger budget
 # (1600-3000) for the exact same reason. 300 mostly worked for a plain
@@ -46,35 +46,39 @@ OPENAI_TRANSLATE_MODEL = os.environ.get("OPENAI_TRANSLATE_MODEL", OPENAI_CHAT_MO
 # before any visible tokens are expected.
 MAX_REPLY_TOKENS = int(os.environ.get("MAX_REPLY_TOKENS", "1200"))
 
-TARGET_LANGUAGE = "es"
-NATIVE_LANGUAGE = "en"
+# The languages themselves (what the learner studies, in English) live in
+# app/languages.py.
 
-# Text-to-speech (DeepInfra, a hosted API - separate from the self-hosted chat
-# model above). Empty token means TTS is disabled; app/tts/deepinfra_client.py
-# raises a clear error rather than silently failing. Voice is picked per
-# request from app/tts/kokoro_voices.py's language map, not a fixed default -
-# DEEPINFRA_TTS_VOICE below is only an escape hatch to force one voice
-# regardless of language.
+# Text-to-speech providers. Every voice in the app (the coach's, the
+# partner's, every 🔊) goes through TTS_PROVIDER unless a request names
+# another (TTSRequest.provider) - "elevenlabs" (default; see ELEVENLABS_*
+# below) or "kokoro" (DeepInfra-hosted Kokoro-82M, see DEEPINFRA_* here).
+TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "elevenlabs")
+TTS_PROVIDERS = ("elevenlabs", "kokoro")
+
+# Kokoro on DeepInfra. Empty token means that provider is unavailable;
+# app/tts/deepinfra_client.py raises a clear error rather than silently
+# failing. Each Kokoro voice speaks ONE language, so the voice is picked per
+# request from app/tts/kokoro_voices.py's language map - DEEPINFRA_TTS_VOICE
+# is only an escape hatch to force one voice regardless of language.
 DEEPINFRA_API_TOKEN = os.environ.get("DEEPINFRA_API_TOKEN", "")
 DEEPINFRA_TTS_MODEL = os.environ.get("DEEPINFRA_TTS_MODEL", "hexgrad/Kokoro-82M")
 DEEPINFRA_TTS_VOICE = os.environ.get("DEEPINFRA_TTS_VOICE", "")
 
 # Speech-to-text for voice mode (Deepgram, streaming over a WebSocket - see
 # app/stt/deepgram_client.py). Chosen for its code-switching mode
-# (`language=multi`): the learner's speech is genuinely mixed Spanish/
-# English inside one utterance. Empty key means voice mode is disabled -
+# (`language=multi`): the learner's speech is genuinely mixed with English
+# inside one utterance (per-language settings in app/languages.py). Empty key means voice mode is disabled -
 # /voice/listen reports a clear error rather than failing obscurely, same
 # convention as the other provider keys above.
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 DEEPGRAM_STT_MODEL = os.environ.get("DEEPGRAM_STT_MODEL", "nova-3")
 
-# Text-to-speech for voice mode's COACH voice (ElevenLabs - see
-# app/tts/elevenlabs_client.py). A different provider from the partner's
-# Kokoro voice above on purpose: the coach speaks English with Spanish
-# phrases embedded in it, and Kokoro's voices are each tied to ONE
-# language's pronunciation rules, while ElevenLabs' multilingual models
-# switch pronunciation inside a single text. The two providers also give
-# the two voices Kyle asked for (coach vs partner) for free.
+# ElevenLabs text-to-speech (the default provider - see
+# app/tts/elevenlabs_client.py): the coach speaks English with
+# target-language phrases embedded in it, and the multilingual models switch
+# pronunciation inside a single text; the partner speaks the target language
+# in a different voice.
 # ELEVENLABS_TTS_MODEL: eleven_multilingual_v2 for quality;
 # eleven_flash_v2_5 is the lower-latency/cheaper multilingual alternative.
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -85,13 +89,16 @@ ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingu
 # plan as a *library* voice ("Free users cannot use library voices via the
 # API"), while the voices GET /v1/voices lists for the account itself work.
 ELEVENLABS_COACH_VOICE_ID = os.environ.get("ELEVENLABS_COACH_VOICE_ID", "")
+# The partner's default voice for Spanish (the learner can pick another in
+# the app; other languages prefer a voice that sounds native).
+# Empty: the first of the account's voices that isn't the coach's.
+ELEVENLABS_PARTNER_VOICE_ID = os.environ.get("ELEVENLABS_PARTNER_VOICE_ID", "")
 
-# Model for the spoken-conversation coach (llm_translate.voice_coach_stream).
-# Latency-critical - it sits between the learner finishing a sentence and
-# the coach starting to talk - so it defaults to the lighter translation
-# model rather than the main chat model (see the reasoning-overhead notes
-# on MAX_REPLY_TOKENS above).
-OPENAI_VOICE_COACH_MODEL = os.environ.get("OPENAI_VOICE_COACH_MODEL", OPENAI_TRANSLATE_MODEL)
+# Model for the coach (llm_translate.coach_reply_stream). Latency-critical -
+# the reply is read aloud as it streams - so it defaults to the lighter
+# translation model rather than the main chat model (see the
+# reasoning-overhead notes on MAX_REPLY_TOKENS above).
+OPENAI_COACH_MODEL = os.environ.get("OPENAI_COACH_MODEL", OPENAI_TRANSLATE_MODEL)
 
 # Word-bank exposure/familiarity tuning knobs.
 DEFAULT_REVIEW_INTERVAL_DAYS = 1.0

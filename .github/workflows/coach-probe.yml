@@ -1,0 +1,26 @@
+name: Coach probe (deployed Railway app)
+
+# Ad-hoc diagnostic against the deployed backend (see the script). Manual diagnostic; push-triggered for the same reason as
+# chat-sample.yml.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/language-learning-chat-app-krn12w"]
+    paths:
+      - ".github/workflows/coach-probe.yml"
+      - ".github/scripts/coach-probe.mjs"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FRONTEND_URL: https://web-production-63d72.up.railway.app
+      BACKEND_URL: https://server-production-f688.up.railway.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Probe
+        run: node .github/scripts/coach-probe.mjs

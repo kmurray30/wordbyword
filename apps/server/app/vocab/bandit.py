@@ -44,13 +44,16 @@ class BanditArm:
     urgency: float
     alpha: float
     beta: float
+    # Multiplies the draw - e.g. words the learner saved to their list.
+    weight: float = 1.0
 
 
 def thompson_pick(arms: list[BanditArm], k: int, rng: np.random.Generator) -> list[str]:
     if k <= 0 or not arms:
         return []
     draws = [
-        (WILDCARD_URGENCY_FLOOR + arm.urgency) * rng.beta(max(arm.alpha, 1e-3), max(arm.beta, 1e-3)) for arm in arms
+        arm.weight * (WILDCARD_URGENCY_FLOOR + arm.urgency) * rng.beta(max(arm.alpha, 1e-3), max(arm.beta, 1e-3))
+        for arm in arms
     ]
     order = np.argsort(draws)[::-1][:k]
     return [arms[i].lemma for i in order]

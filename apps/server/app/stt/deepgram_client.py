@@ -9,15 +9,18 @@ are what let the learner just stop talking and have the app react, with no
 "stop" button - which is the whole point of voice mode working with the
 phone's screen off.
 
-Why `language=multi`: the learner's speech is genuinely mixed Spanish and
-English inside one utterance ("¿te gusta running?"). Nova-3's multilingual
-code-switching mode transcribes both in one pass; a single-language model
-would mangle whichever half it wasn't told about.
+Why `language=multi` (where Deepgram has it - Spanish, French, Japanese):
+the learner's speech is genuinely mixed with English inside one utterance
+("¿te gusta running?"). Nova-3's multilingual code-switching mode
+transcribes both in one pass; a single-language model would mangle
+whichever half it wasn't told about. Korean and Mandarin aren't in that set,
+so they're transcribed as that language alone (see app/languages.py).
 """
 
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from urllib.parse import urlencode
@@ -25,6 +28,7 @@ from urllib.parse import urlencode
 import websockets
 
 from app.config import DEEPGRAM_API_KEY, DEEPGRAM_STT_MODEL
+from app.languages import CJK_RE, get_language
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +70,18 @@ class TranscriptEvent:
     words: list[dict] = field(default_factory=list)
 
 
-def build_listen_url(keyterms: list[str] = ()) -> str:
+def build_listen_url(keyterms: list[str] = (), language: str = "es") -> str:
+    """Deepgram's streaming URL for the language being learned (see
+    Language.stt_model / stt_language: code-switching with English where
+    Deepgram offers it, that language alone otherwise)."""
+    lang = get_language(language)
+    model = DEEPGRAM_STT_MODEL if lang.stt_model == "nova-3" else lang.stt_model
+    stt_language = lang.stt_language
+    if lang.code == "zh" and language.lower() == "zh-hant":
+        stt_language = "zh-TW"
     params = [
-        ("model", DEEPGRAM_STT_MODEL),
-        ("language", "multi"),
+        ("model", model),
+        ("language", stt_language),
         ("encoding", "linear16"),
         ("sample_rate", str(SAMPLE_RATE)),
         ("channels", "1"),
@@ -83,7 +95,9 @@ def build_listen_url(keyterms: list[str] = ()) -> str:
         ("utterance_end_ms", "1200"),
         ("vad_events", "true"),
     ]
-    params.extend(("keyterm", term) for term in list(keyterms)[:MAX_KEYTERMS])
+    # Keyterm prompting is a Nova-3 feature.
+    if model.startswith("nova-3"):
+        params.extend(("keyterm", term) for term in list(keyterms)[:MAX_KEYTERMS])
     return f"{DEEPGRAM_LISTEN_URL}?{urlencode(params)}"
 
 
@@ -119,9 +133,20 @@ def normalize_message(raw: dict) -> TranscriptEvent | None:
     return TranscriptEvent(kind="final" if raw.get("is_final") else "interim", text=text, words=words)
 
 
+# Deepgram puts spaces between Japanese/Chinese words; the language has none.
+_SPACE_BETWEEN_CJK = re.compile(f"(?<={CJK_RE.pattern})\\s+(?={CJK_RE.pattern})")
+
+
+def unspace(text: str, language: str) -> str:
+    """`text` without the spaces Deepgram puts between words of a language
+    written without them."""
+    return text if get_language(language).spaced else _SPACE_BETWEEN_CJK.sub("", text)
+
+
 async def stream_transcripts(
     audio_frames: AsyncIterator[bytes | None],
     keyterms: list[str] = (),
+    language: str = "es",
 ) -> AsyncIterator[TranscriptEvent]:
     """Pipes `audio_frames` (raw PCM chunks; a `None` item means "the caller
     is done, flush and finish") into Deepgram and yields TranscriptEvents
@@ -131,7 +156,7 @@ async def stream_transcripts(
     if not DEEPGRAM_API_KEY:
         raise STTUnavailableError("DEEPGRAM_API_KEY is not configured on the server")
 
-    url = build_listen_url(keyterms)
+    url = build_listen_url(keyterms, language)
     headers = {"Authorization": f"Token {DEEPGRAM_API_KEY}"}
     try:
         ws = await websockets.connect(url, additional_headers=headers, open_timeout=10)
@@ -186,6 +211,8 @@ async def stream_transcripts(
                 logger.warning("Deepgram error frame: %s", raw)
                 continue
             event = normalize_message(raw)
+            if event is not None and event.text:
+                event.text = unspace(event.text, language)
             if event is not None:
                 yield event
     except websockets.exceptions.ConnectionClosed as exc:

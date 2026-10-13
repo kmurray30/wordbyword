@@ -1,9 +1,18 @@
+import type { ReactNode } from "react";
 import "./WordToken.css";
 
 interface WordTokenProps {
-  surface: string;
+  // The word as shown (its romanization, or kana for kanji, depending on
+  // the reading settings - see ReadingText).
+  surface: ReactNode;
   gloss: string;
   open: boolean;
+  // Part of the phrase the open word belongs to (highlighted together).
+  inPhrase?: boolean;
+  // A little floating note right above the word ("add word?").
+  badge?: ReactNode;
+  // Asking "add word?" (green) or "remove?" (red).
+  tone?: "add" | "remove" | null;
   onOpen: () => void;
   onClose: () => void;
   onTogglePin: () => void;
@@ -13,7 +22,7 @@ interface WordTokenProps {
 // the whole message bubble (see ChatMessage), not floated next to this
 // specific word, so ChatMessage owns which word (if any) is open across
 // the whole message and just tells this one whether it's the one.
-export function WordToken({ surface, gloss, open, onOpen, onClose, onTogglePin }: WordTokenProps) {
+export function WordToken({ surface, gloss, open, inPhrase = false, badge, tone = null, onOpen, onClose, onTogglePin }: WordTokenProps) {
   if (!gloss) {
     // Punctuation or a token we don't track in the word bank - render plain.
     return <span>{surface}</span>;
@@ -21,19 +30,26 @@ export function WordToken({ surface, gloss, open, onOpen, onClose, onTogglePin }
 
   return (
     <span
-      className={`word-token${open ? " word-token--active" : ""}`}
-      onMouseEnter={onOpen}
-      onMouseLeave={onClose}
+      className={`word-token${open ? " word-token--active" : ""}${inPhrase ? " word-token--phrase" : ""}${
+        tone ? ` word-token--${tone}` : ""
+      }`}
+      // Hover previews only for a real mouse: a tap on iOS also fires an
+      // emulated "hover" right before its click, which opened the popover
+      // and then the click toggled it shut again (the first-tap flicker).
+      onPointerEnter={(e) => {
+        if (e.pointerType === "mouse") onOpen();
+      }}
+      onPointerLeave={(e) => {
+        if (e.pointerType === "mouse") onClose();
+      }}
       onClick={(e) => {
-        // Tapping on mobile never fires onMouseEnter at all, and even on
-        // desktop a click explicitly pinning it open (rather than just
-        // relying on hover) matches ChatMessage's own pin-to-keep-open
-        // pattern for its translation rows.
+        // A click/tap pins it open; clicking it again closes it.
         e.stopPropagation();
         onTogglePin();
       }}
     >
       {surface}
+      {badge}
     </span>
   );
 }

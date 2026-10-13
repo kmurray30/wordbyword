@@ -1,18 +1,46 @@
 # wordbyword
 
-A chat-based Spanish tutor. You talk to an LLM, and every word you've been
+A chat-based language tutor - Spanish, French, Japanese, Korean and
+Mandarin (pick one from the flag menu in the header; each language is its
+own conversation). You talk to an LLM, and every word you've been
 exposed to has a mastery score that decays over time and gets reinforced (or
 penalized) based on how you interact with it - mainly whether you hover to
 translate it. Hover any word (or short group of words), in the agent's
 replies or in your own draft, to see its translation in context; click the
 🌐 at the end of a message to toggle a full translation underneath it.
 
+## Languages
+
+Everything that varies by language lives in one place per side:
+`apps/server/app/languages.py` (prompt names and examples, which script
+it's written in, Deepgram settings, articles for phrase completion) and
+`apps/web/src/lib/language.ts` (flag, greeting, reading options). Every
+request carries a `language` (`es`, `fr`, `ja`, `ko`, `zh`, or for
+Mandarin `zh-Hans`/`zh-Hant` - the learner's characters), and each
+language has its own session id in the browser (Spanish keeps the original
+`wordbyword.sessionId` key), so chats, saved words and coach notes are
+separate per language.
+
+Japanese, Korean and Mandarin can be shown (☰ menu) as romanization only,
+the script with readings over it, or the script alone; Japanese also picks
+its reading aids (furigana over kanji, romaji under) and can swap kanji for
+kana, Mandarin picks Simplified or Traditional characters (the partner and
+coach write in them too). Readings come from `POST /translate/readings`,
+which is deterministic - pykakasi (Japanese), pypinyin (Mandarin, with its
+phrase dictionary for characters read more than one way), opencc
+(Simplified/Traditional) and a Revised Romanization of Korean
+(`app/translate/readings.py`) - never the LLM.
+
+Spanish words are lemmatized with spaCy for the word bank; other languages
+use the words the LLM glossed (it splits Japanese and Chinese into words,
+which a plain tokenizer can't).
+
 ## Architecture
 
 ```
 apps/server   Python (FastAPI) - word bank exposure/familiarity tracking,
               chat orchestration (talks to OpenAI), translation (spaCy for
-              lemmatizing/word-bank tracking, the LLM itself for every
+              Spanish lemmatizing/word-bank tracking, the LLM itself for every
               actual translation - single words, the learner's in-progress
               draft, and whole messages), SQLite storage.
 apps/web      React + Vite + TypeScript - chat UI, hover tooltips, the
@@ -52,15 +80,17 @@ Environment variables (all optional except the API key, sensible defaults shown)
 | `OPENAI_TRANSLATE_MODEL` | same as `OPENAI_CHAT_MODEL` | model id used for the pure translation/glossing calls (whole-message translation, per-word hover glosses, the learner-input interpreter) - override with a smaller/faster model if translation latency matters more than matching the chat model's quality for these short, simple tasks |
 | `MAX_REPLY_TOKENS` | `300` | hard cap on tokens per generation (chat + translation calls alike) |
 | `WORDBYWORD_DATA_DIR` | `apps/server/data` | where the SQLite DB file lives |
-| `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for text-to-speech; `/tts/speak` returns 503 if unset |
-| `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used to synthesize speech |
-| `DEEPINFRA_TTS_VOICE` | *(none)* | force one specific voice regardless of language - normally left unset so the voice is picked per-request from `app/tts/kokoro_voices.py`'s language map |
 | `DEEPGRAM_API_KEY` | *(none)* | Deepgram API key for voice mode's streaming speech-to-text (`WS /voice/listen`); the mic button reports an error if unset |
-| `DEEPGRAM_STT_MODEL` | `nova-3` | Deepgram model for transcription - must support `language=multi` (Spanish/English code-switching) |
-| `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key for voice mode's coach voice (`/tts/speak` with `role: "coach"`); the coach falls silent (text still shown) if unset |
+| `DEEPGRAM_STT_MODEL` | `nova-3` | Deepgram model for transcription - must support `language=multi` (code-switching with English, for Spanish/French/Japanese); Korean uses Nova-3 in Korean alone, Mandarin Nova-2 (`zh-CN`/`zh-TW`) - see `app/languages.py` |
+| `TTS_PROVIDER` | `elevenlabs` | which text-to-speech provider every voice uses unless a request names one (`provider` on `/tts/speak` and `/tts/voices`): `elevenlabs` or `kokoro` |
+| `DEEPINFRA_API_TOKEN` | *(none)* | DeepInfra API key for the `kokoro` provider; requests for it return 503 if unset |
+| `DEEPINFRA_TTS_MODEL` | `hexgrad/Kokoro-82M` | DeepInfra model used by the `kokoro` provider |
+| `DEEPINFRA_TTS_VOICE` | *(none)* | force one Kokoro voice regardless of language - normally left unset so the voice is picked per-request from `app/tts/kokoro_voices.py`'s language map |
+| `ELEVENLABS_API_KEY` | *(none)* | ElevenLabs API key for the `elevenlabs` provider (the default: coach, partner, every 🔊); its requests return 503 if unset |
 | `ELEVENLABS_TTS_MODEL` | `eleven_multilingual_v2` | ElevenLabs model - must be multilingual (the coach mixes English and Spanish in one sentence); `eleven_flash_v2_5` is the faster/cheaper option |
 | `ELEVENLABS_COACH_VOICE_ID` | *(none - auto-picked)* | which ElevenLabs voice the coach speaks with; unset, the server picks one of the account's own premade (English) voices at first use - the free plan rejects "library" voice ids via the API, so a well-known id like Rachel's does NOT work there |
-| `OPENAI_VOICE_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the spoken coach (`POST /voice/coach`) - latency matters more here than for text coaching |
+| `ELEVENLABS_PARTNER_VOICE_ID` | *(none - auto-picked)* | the partner's default voice (the learner can pick another in ☰); unset, the first of the account's voices that isn't the coach's (own/added voices first, then Spanish-accented ones) |
+| `OPENAI_COACH_MODEL` | same as `OPENAI_TRANSLATE_MODEL` | model id for the coach (read aloud as it streams, so latency matters) |
 | `CONTEXTUAL_VOCAB_ENABLED` | `false` | turn on contextual vocabulary suggestions (see "Contextual vocabulary suggestions" below); needs `DEEPINFRA_API_TOKEN` for the relevance half |
 | `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-4B` | DeepInfra embedding model for contextual vocab; changing it re-embeds the word bank in the background |
 | `EMBEDDING_DIMENSIONS` | `1024` | vectors are truncated to this many dimensions (Matryoshka) |
@@ -195,13 +225,22 @@ rows, plus the agent's) gets its own 🔊 button, reusing the same TTS
 pipeline as the agent's raw-message audio; the raw user input itself doesn't,
 since its grammar or spelling might be exactly what's in question.
 
+**Tapping a word in a chat message** (theirs or yours) shows just that
+word's meaning beside the bubble ("good", "to eat"), with a note on its form
+underneath when it helps (a verb's infinitive, person and tense). If the word
+is part of an expression ("qué bueno" = "how wonderful"), the expression's
+meaning shows above the bubble and the whole expression is highlighted. All
+of it comes from one call per message (`llm_translate.gloss_message`), made
+when the partner replies and saved with the message (`ChatMessage.glosses`);
+your own messages, and replies from before this existed, get theirs once via
+`POST /chat/message/glosses`, which saves them too.
+
 **Hovering a word (or short group of words) in the input box** gives its
 in-context translation via `POST /translate/tag-input`, and clicking a
 clickable one replaces that span in place. Fired after every word boundary
 while typing (debounced), this asks the LLM to gloss the whole draft in one
-call (`llm_translate.tag_draft`) - the same `{translation, spans}` shape
-`gloss_reply` already uses for the agent's own replies, just run on the
-learner's still-being-typed, possibly mixed-language text instead. The
+call (`llm_translate.tag_draft`), run on the learner's still-being-typed,
+possibly mixed-language text. The
 model decides span boundaries itself (usually one word, occasionally a few
 words grouped together for an idiom or phrasal verb) and, since it has real
 sentence context, picks the one sense that applies rather than needing a
@@ -212,80 +251,84 @@ misplaced.
 
 ## Text-to-speech
 
-Click the 🔊 next to an assistant message to hear it spoken aloud, so you can
-hear correct pronunciation alongside the hover translations. `POST
-/tts/speak` (`app/tts/deepinfra_client.py`) calls DeepInfra's OpenAI-
-compatible `/v1/audio/speech` endpoint, using [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)
-(`hexgrad/Kokoro-82M` on DeepInfra), and streams the mp3 back; the frontend
-plays it via the browser's `Audio` API and caches the blob per message so
-replaying doesn't re-fetch. This is a separate hosted API from the chat
-model above - it needs its own `DEEPINFRA_API_TOKEN` (see env vars).
+Two providers sit behind `POST /tts/speak` (mp3 back) and
+`GET /tts/voices`: ElevenLabs (`app/tts/elevenlabs_client.py`, the
+default) and Kokoro-82M on DeepInfra (`app/tts/deepinfra_client.py`).
+`TTS_PROVIDER` picks the default; any request can name one with
+`provider`, which is what a per-user choice will use. With Kokoro, each
+voice speaks one language (`app/tts/kokoro_voices.py` maps the request's
+`language` to a voice; the coach gets that language's default voice), so
+the coach's mixed English/Spanish sounds best on ElevenLabs.
 
-Kokoro doesn't infer language from the input text - each of its 54 voices is
-tied to one language (its phonemizer rules follow the voice, not the text),
-so the request body includes a `language` field (`es` by default, matching
-`TARGET_LANGUAGE`) and `app/tts/kokoro_voices.py` maps it to the right voice:
-the full 9-language, 54-voice catalog Kokoro ships with, plus one default
-voice per language (`voice_for_language`). Spanish text uses `ef_dora`.
-`DEEPINFRA_TTS_VOICE` overrides the map entirely if you want to force one
-specific voice regardless of language.
+By default every voice in the app is ElevenLabs: the 🔊 on a message, the
+partner's replies read aloud, and the coach. Its multilingual model (`ELEVENLABS_TTS_MODEL`)
+reads any language with any voice, so the coach's English-with-Spanish
+needs no splicing and every voice can speak the partner's Spanish.
 
-The "Voice" picker in the header lets you choose between Spanish's three
-voices - Dora (`ef_dora`), Alex (`em_alex`), Santa (`em_santa`) - fetched
-from `GET /tts/voices?language=es` and persisted in `localStorage`, and
-never any of Kokoro's other languages' voices. `POST /tts/speak` takes an
-optional `voice` field and rejects one that isn't valid for the given
-`language` with a 400.
+The coach and the partner get different voices: `role: "coach"` always
+uses the coach's (`ELEVENLABS_COACH_VOICE_ID`, else one of the account's
+premade voices), and `role: "partner"` (the default) uses the request's
+`voice`, else the partner default (`ELEVENLABS_PARTNER_VOICE_ID`, else the
+first account voice that isn't the coach's). The "Voice" picker in ☰ lists
+up to six of the account's voices from `GET /tts/voices` (voices you've
+added or cloned first, then Spanish-accented ones, then premade) and is
+remembered in `localStorage`. The frontend caches each clip's blob, so a
+replay doesn't re-fetch.
 
-## Voice mode
+## Two inputs, the coach, threads, and voice
 
-The 🎤 button next to Send turns the chat into a spoken conversation - in
-place, not on a separate screen: what you say appears in the draft box
-(with the same hoverable word glosses), the coach's spoken reply appears in
-the same docked popover the text "Check" uses, a ready verdict lights the
-Send button green, and the sent message and the partner's reply are
-ordinary chat bubbles. The microphone streams to `WS /voice/listen`
-(`app/routes/voice.py`), which proxies it to Deepgram's live transcription
-(`app/stt/deepgram_client.py`) using Nova-3's code-switching mode
-(`language=multi`) - the learner's speech is genuinely mixed Spanish and
-English in one breath, and a single-language model would mangle whichever
-half it wasn't told about. Turn-taking comes from Deepgram's server-side
-endpointing, so there's no "stop" button to tap. The learner's own recent
-word-bank lemmas are passed as `keyterm` hints so the words they're
-studying are the ones the recognizer is biased toward.
+**The message box** (bottom) holds only what you'll actually send. Send
+sends it as is. 💡 asks the coach to check it.
 
-When the learner stops talking, `POST /voice/coach`
-(`app.translate.llm_translate.voice_coach_stream`) classifies what they
-said (an attempt, a question, "no I meant…", "yes send it", a pick among
-options, cancel, "what did they say?"), decides whether there's now a
-correct Spanish sentence worth sending, and streams what the coach says
-back out loud - written to work as audio alone: options are read aloud
-with spoken labels, a word the recognizer wasn't sure about gets an "it
-sounded like X - did you mean Y?", and the key fix is explained in one
-short sentence. The coach speaks through ElevenLabs' multilingual model
-(`app/tts/elevenlabs_client.py`, `role: "coach"` on `/tts/speak`) because
-its speech is English with Spanish phrases inside it; the partner's reply
-keeps the Kokoro Spanish voice. Once a sentence is good (or the learner
-says so), it goes through the normal send path and the partner's reply is
-spoken. The mic is muted while either voice is playing.
+**Your next message** (the green panel above it) is a conversation with
+your coach about what to say. It has its own box: type or talk in any mix
+of English and Spanish - cold Spanish ("me gusta swimming"), "I want to
+say ...", "more casual", "what does llamas mean?". The coach answers like a
+coach: explains, corrects, drills, or suggests. A suggestion shows as a
+card with its English meaning and **Use this**, which puts it in the
+message box and turns Send green ("✓ In message" until you edit the box).
+When you send, the conversation becomes the thread under the message you
+sent. Both the panel and the threads scroll and stay on the newest line.
 
-**Screen off.** iOS treats the two ways of opening the app differently:
-a page in a plain Safari tab keeps its microphone across lock as long as
-audio is playing (voice mode keeps a near-silent loop going, with Media
-Session metadata so the lock screen shows it and its pause button ends the
-chat), while a home-screen ("Add to Home Screen") app loses the mic the
-moment the screen locks - no web page can change that. In that case voice
-mode falls back to keeping the screen on with the Screen Wake Lock API -
-the chat stays visible as usual; the coach popover suggests turning the
-brightness down. `public/voice-spike.html`
-is the standalone page used to verify this on a real phone: open it, tap
-Start, lock the phone for a minute, and its summary says whether the mic,
-timers and socket kept flowing.
+**Their messages** each have their own thread (💬 under the bubble). A
+question about their message is answered there. While one of those
+threads is open, follow-ups like "llamas?" continue it.
+
+Under the hood both boxes go to `POST /translate/coach`
+(`app.translate.llm_translate.coach_reply_stream`). The model writes three
+fields: which partner message it's about (0 = your next message), whether
+your own Spanish is ready to send, then its reply, with any suggestion
+written as `[[Spanish | English]]` for the app to render as a card. The
+panel's conversation so far is sent along (`draft_thread`). 💡 in the
+message box sends the box's text with `check: true`.
+
+**Voice input is dictation.** Tap 🎤 in either box and your words stream
+into that box as you speak (`WS /voice/listen` in `app/routes/voice.py`,
+proxying Deepgram's live transcription in `app/stt/deepgram_client.py` with
+Nova-3's code-switching mode, `language=multi`; your recent word-bank
+lemmas are passed as `keyterm` hints). While you talk, the button becomes
+a speech bubble with moving dots. A pause does nothing; tapping the bubble
+finishes. In the panel's box that asks the coach. In the message box the
+text stays (it's your message) and gets checked.
+
+**Read aloud** (☰ menu, on by default, per device) speaks the coach's
+replies sentence by sentence as they stream (a suggestion is read as
+"«Spanish», which means «English»") and the partner's replies. The coach
+uses ElevenLabs' multilingual model
+(`app/tts/elevenlabs_client.py`, `role: "coach"` on `/tts/speak`), because
+its speech is English with Spanish inside it; the partner speaks in its
+own (different) ElevenLabs voice. All of it goes through one queue
+(`src/voice/speech.ts`), so voices never overlap, and starting to dictate
+stops whatever is playing.
+
+Hands-free use with the screen off is not a goal of this design: finishing and
+Send are taps. `public/voice-spike.html` remains as a standalone diagnostic
+for microphone/audio behaviour on a phone.
 
 Rough cost at personal-use volumes: Deepgram streaming ≈ $0.0077/min of
-listening, ElevenLabs multilingual ≈ $0.12/min of coach speech
-(`eleven_flash_v2_5` is about half that), Kokoro and the coach LLM calls are
-negligible by comparison.
+listening, ElevenLabs multilingual ≈ $0.12/min of speech, coach and
+partner alike (`eleven_flash_v2_5` is about half that); the coach LLM calls
+are negligible by comparison (the coach runs on the lighter translation model by default).
 
 ## Deployed on Railway
 

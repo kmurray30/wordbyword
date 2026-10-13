@@ -5,8 +5,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
 from app.chat.prompt_builder import build_messages, build_vocab_block
-from app.config import CONTEXTUAL_VOCAB_ENABLED, NATIVE_LANGUAGE, TARGET_LANGUAGE
+from app.chat.glosses import build_glosses, load_glosses, reply_tokens, save_glosses, token_glosses
+from app.chat.threads import append_entries, entry_out
+from app.config import CONTEXTUAL_VOCAB_ENABLED
 from app.db import get_session
+from app.languages import NATIVE_LANGUAGE, get_language
 from app.models import ChatMessage, MessageToken
 from app.schemas import (
     ChatHistoryMessage,
@@ -16,14 +19,16 @@ from app.schemas import (
     ChatTurnRequest,
     ChatTurnResponse,
     ClearHistoryResponse,
+    MessageGlosses,
+    MessageGlossesRequest,
     SaveUserInterpretationRequest,
     SaveUserInterpretationResponse,
+    ThreadEntryIn,
     TokenAnnotation,
+    VocabDebug,
 )
 from app.sse_streaming import KEEPALIVE_LINE, iter_with_keepalive
 from app.translate import llm_translate
-from app.translate.lemmatizer import Token, analyze
-from app.translate.span_matching import MatchedSpan, match_spans
 from app.vocab import suggest as vocab_suggest
 from app.vocab.summary import clear_summary
 from app.wordbank import store
@@ -50,28 +55,6 @@ _SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Acce
 HISTORY_TURNS = 10
 
 
-def _match_token_glosses(tokens: list[Token], matched_spans: list[MatchedSpan]) -> list[tuple[str, str, str]]:
-    """Both `tokens` (spaCy, left-to-right) and `matched_spans` (left-to-
-    right, non-overlapping - see span_matching.match_spans) are ordered by
-    position, so a single left-to-right walk finds each token's covering
-    span, if any, without re-scanning from the start each time. A
-    multi-word span (e.g. "el tuyo") covers more than one token - every
-    token inside it gets that same span's gloss/note/literal, rather than
-    only the first one or splitting the group across two separate
-    glosses."""
-    result: list[tuple[str, str, str]] = []
-    span_idx = 0
-    for tok in tokens:
-        while span_idx < len(matched_spans) and matched_spans[span_idx].end <= tok.start:
-            span_idx += 1
-        if span_idx < len(matched_spans) and matched_spans[span_idx].start <= tok.start < matched_spans[span_idx].end:
-            span = matched_spans[span_idx]
-            result.append((span.gloss, span.note, span.literal))
-        else:
-            result.append(("", "", ""))
-    return result
-
-
 def _recent_history(session: Session, session_id: str) -> list[tuple[str, str]]:
     rows = session.scalars(
         select(ChatMessage)
@@ -87,17 +70,27 @@ def _prepare_turn(
     session: Session, req: ChatTurnRequest
 ) -> tuple[list[dict[str, str]], "vocab_suggest.TurnSuggestions | None"]:
     """The model's input messages for this turn, plus - when contextual
-    vocab is on - the words its system prompt offered (None when off, which
-    also tells _gloss_and_persist_reply to skip the vocab bookkeeping)."""
+    vocab is on - what its system prompt offered (None when off, which also
+    tells _gloss_and_persist_reply to skip the vocab bookkeeping)."""
     history = _recent_history(session, req.session_id)
     if not CONTEXTUAL_VOCAB_ENABLED:
-        return build_messages(history, req.message), None
-    suggestions = vocab_suggest.suggest_for_turn(session, req.session_id, history, req.message)
+        return build_messages(history, req.message, req.language), None
+    suggestions = vocab_suggest.suggest_for_turn(session, req.session_id, req.language, history, req.message)
     vocab_block = build_vocab_block(
         [(w.lemma, w.translation) for w in suggestions.relevant],
         [(w.lemma, w.translation) for w in suggestions.wildcard],
     )
-    return build_messages(history, req.message, vocab_block), suggestions
+    return build_messages(history, req.message, req.language, vocab_block), suggestions
+
+
+def _load_vocab_debug(message: ChatMessage) -> VocabDebug | None:
+    """The saved debug payload of an assistant reply, if it has one."""
+    if not message.vocab_debug:
+        return None
+    try:
+        return VocabDebug.model_validate_json(message.vocab_debug)
+    except ValueError:
+        return None
 
 
 @router.get("/history", response_model=ChatHistoryResponse)
@@ -124,6 +117,9 @@ def get_history(session_id: str, session: Session = Depends(get_session)) -> Cha
             ],
             native=row.native_text,
             target=row.target_text,
+            thread=[entry_out(e) for e in row.thread],
+            glosses=load_glosses(row),
+            vocab_debug=_load_vocab_debug(row),
         )
         for row in rows
     ]
@@ -142,14 +138,44 @@ def save_user_interpretation(
     persists that already-fetched result against the message it belongs to,
     so GET /chat/history can hydrate it directly on a later reload instead
     of leaving the learner looking at "Translating…" forever for an old
-    message if that on-demand fetch is ever slow or fails."""
+    message if that on-demand fetch is ever slow or fails. Also used for an
+    assistant reply whose translation wasn't saved with it (`native` only)."""
     message = session.get(ChatMessage, req.message_id)
-    if message is None or message.role != "user":
-        raise HTTPException(status_code=404, detail="user message not found")
+    if message is None:
+        raise HTTPException(status_code=404, detail="message not found")
     message.native_text = req.native
-    message.target_text = req.target
+    # An assistant reply only has a translation (native); keep target empty.
+    message.target_text = req.target if message.role == "user" else ""
     session.commit()
     return SaveUserInterpretationResponse(ok=True)
+
+
+@router.post("/message/glosses", response_model=MessageGlosses)
+def message_glosses(req: MessageGlossesRequest, session: Session = Depends(get_session)) -> MessageGlosses:
+    """The word/phrase glosses for a message, made and saved the first time
+    they're asked for (the learner's own messages, and replies from before
+    glosses were saved) - after that, GET /chat/history carries them.
+    503 if they can't be made right now."""
+    message = session.get(ChatMessage, req.message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    saved = load_glosses(message)
+    if saved is not None:
+        return saved
+    text = message.text
+    learner = message.role == "user"
+    language = message.language or "es"
+    session.rollback()  # no transaction open while the model runs (see _gloss_and_persist_reply)
+    try:
+        _translation, words, phrases = llm_translate.gloss_message(text, NATIVE_LANGUAGE, language, learner=learner)
+    except llm_translate.TranslationUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    glosses = build_glosses(text, words, phrases, language)
+    message = session.get(ChatMessage, req.message_id)
+    if message is not None and glosses.words:
+        save_glosses(message, glosses)
+        session.commit()
+    return glosses
 
 
 @router.post("/history/clear", response_model=ClearHistoryResponse)
@@ -167,6 +193,8 @@ def _gloss_and_persist_reply(
     session_id: str,
     reply_text: str,
     user_message: ChatMessage,
+    user_thread: list[ThreadEntryIn] | None = None,
+    language: str = "es",
     suggestions: "vocab_suggest.TurnSuggestions | None" = None,
 ) -> ChatTurnResponse:
     """Shared by both /chat/turn and /chat/turn/stream - everything that
@@ -190,32 +218,37 @@ def _gloss_and_persist_reply(
     commit at the end.
 
     `suggestions` (contextual vocab on) are rewarded against the reply's
-    lemmas in that same transaction, and the slower follow-up work
-    (running summary, embedding new words) is handed to a background
-    thread once it commits."""
+    words in that same transaction, kept as the reply's debug payload, and
+    the slower follow-up work (running summary, embedding new words) is
+    handed to a background thread once it commits."""
+    base = get_language(language).code
     try:
-        translation, raw_spans = llm_translate.gloss_reply(reply_text, TARGET_LANGUAGE, NATIVE_LANGUAGE)
+        translation, words, phrases = llm_translate.gloss_message(reply_text, NATIVE_LANGUAGE, language)
     except llm_translate.TranslationUnavailableError:
-        translation, raw_spans = "", []
+        translation, words, phrases = "", [], []
+    glosses = build_glosses(reply_text, words, phrases, base)
 
     session.add(user_message)
     session.flush()  # assigns user_message.id without committing yet - needed below
+    if user_thread:
+        # The coach checks behind this message, kept as its thread.
+        append_entries(session, user_message.id, user_thread)
 
-    tokens = analyze(reply_text)
-    matched_spans = match_spans(reply_text, raw_spans)
-    token_glosses = _match_token_glosses(tokens, matched_spans)
+    tokens = reply_tokens(reply_text, base, glosses)
+    per_token = token_glosses(tokens, glosses)
     annotations: list[TokenAnnotation] = []
     token_rows: list[MessageToken] = []
 
-    for position, (tok, (word_gloss, word_note, word_literal)) in enumerate(zip(tokens, token_glosses)):
-        # tok.is_spanish is a heuristic built for the learner's own possibly-
+    for position, (tok, (word_gloss, word_note)) in enumerate(zip(tokens, per_token)):
+        # tok.is_target is a heuristic built for the learner's own possibly-
         # English-mixed input (see lemmatizer.py); it's gated on a small
-        # ~300-word frequency list, so applying it here to the agent's own
-        # reply - which is always Spanish - silently dropped the gloss (and
-        # word-bank tracking) for any real Spanish word outside that list,
-        # e.g. "tormenta". Every alphabetic token in the agent's reply is
-        # Spanish by construction; only punctuation has nothing to gloss.
-        if not tok.surface.isalpha():
+        # ~300-word frequency list for Spanish, so applying it here to the
+        # agent's own reply - which is always in the target language -
+        # silently dropped the gloss (and word-bank tracking) for any real
+        # word outside that list, e.g. "tormenta". Every word in the agent's
+        # reply is in the target language by construction; only
+        # punctuation has nothing to gloss.
+        if not any(c.isalpha() for c in tok.surface):
             annotations.append(TokenAnnotation(surface=tok.surface, lemma=tok.lemma, pos=tok.pos, gloss="", is_new=False))
             # Persisted too (not just returned live) - a MessageToken row
             # with no gloss, same as any other token with nothing to show.
@@ -228,8 +261,7 @@ def _gloss_and_persist_reply(
             continue
 
         word_note = word_note if word_gloss else ""
-        word_literal = word_literal if word_gloss else ""
-        entry = store.record_exposure(session, tok.lemma, pos=tok.pos, translation=word_gloss)
+        entry = store.record_exposure(session, tok.lemma, pos=tok.pos, translation=word_gloss, language=base)
         is_new = entry.exposure_count == 1
 
         annotations.append(
@@ -240,7 +272,6 @@ def _gloss_and_persist_reply(
                 gloss=word_gloss,
                 is_new=is_new,
                 note=word_note,
-                literal=word_literal,
             )
         )
         token_rows.append(
@@ -252,23 +283,35 @@ def _gloss_and_persist_reply(
                 gloss=word_gloss,
                 is_new=is_new,
                 note=word_note,
-                literal=word_literal,
             )
         )
 
-    assistant_message = ChatMessage(session_id=session_id, role="assistant", text=reply_text, tokens=token_rows)
+    assistant_message = ChatMessage(
+        session_id=session_id,
+        language=base,
+        role="assistant",
+        text=reply_text,
+        tokens=token_rows,
+        native_text=translation,
+    )
+    if glosses.words:
+        save_glosses(assistant_message, glosses)
     session.add(assistant_message)
+    vocab_debug: VocabDebug | None = None
     if suggestions is not None:
         session.flush()  # assigns assistant_message.id for the suggestion log
-        vocab_suggest.record_outcome(
-            session, session_id, assistant_message.id, suggestions, {tok.lemma for tok in tokens}
-        )
+        # Lemmas and surface forms both - a saved word is stored as the
+        # learner saw it, which needn't be its lemma.
+        reply_words = {tok.lemma for tok in tokens} | {tok.surface.lower() for tok in tokens}
+        vocab_suggest.record_outcome(session, session_id, base, assistant_message.id, suggestions, reply_words)
+        vocab_debug = VocabDebug.model_validate(suggestions.debug_dict(reply_words))
+        assistant_message.vocab_debug = vocab_debug.model_dump_json()
     session.commit()
     session.refresh(assistant_message)
 
     if suggestions is not None:
         vocab_suggest.schedule_post_turn(
-            sessionmaker(bind=session.get_bind()), session_id, user_message.text, reply_text
+            sessionmaker(bind=session.get_bind()), session_id, base, user_message.text, reply_text
         )
 
     return ChatTurnResponse(
@@ -277,6 +320,8 @@ def _gloss_and_persist_reply(
         tokens=annotations,
         translation=translation,
         user_message_id=user_message.id,
+        glosses=glosses if glosses.words else None,
+        vocab_debug=vocab_debug,
     )
 
 
@@ -300,8 +345,12 @@ def take_turn(req: ChatTurnRequest, session: Session = Depends(get_session)) -> 
         # in history forever once saved.
         raise HTTPException(status_code=502, detail="Model returned an empty reply")
 
-    user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
-    return _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, suggestions)
+    user_message = ChatMessage(
+        session_id=req.session_id, language=get_language(req.language).code, role="user", text=req.message
+    )
+    return _gloss_and_persist_reply(
+        session, req.session_id, reply_text, user_message, req.thread, req.language, suggestions
+    )
 
 
 @router.post("/turn/stream")
@@ -318,7 +367,9 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
     # Not added to the session until the reply is in (see
     # _gloss_and_persist_reply) - no DB write, and so no SQLite write lock,
     # is held while the model streams.
-    user_message = ChatMessage(session_id=req.session_id, role="user", text=req.message)
+    user_message = ChatMessage(
+        session_id=req.session_id, language=get_language(req.language).code, role="user", text=req.message
+    )
 
     def events():
         # A leading SSE comment line (any line starting with ":" - part of
@@ -356,7 +407,9 @@ def take_turn_stream(req: ChatTurnRequest, session: Session = Depends(get_sessio
             # history either.
             yield _sse("error", ChatTurnErrorEvent(message="Model returned an empty reply").model_dump_json())
             return
-        result = _gloss_and_persist_reply(session, req.session_id, reply_text, user_message, suggestions)
+        result = _gloss_and_persist_reply(
+            session, req.session_id, reply_text, user_message, req.thread, req.language, suggestions
+        )
         yield _sse("done", result.model_dump_json())
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)

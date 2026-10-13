@@ -40,9 +40,33 @@ export interface paths {
          *     persists that already-fetched result against the message it belongs to,
          *     so GET /chat/history can hydrate it directly on a later reload instead
          *     of leaving the learner looking at "Translating…" forever for an old
-         *     message if that on-demand fetch is ever slow or fails.
+         *     message if that on-demand fetch is ever slow or fails. Also used for an
+         *     assistant reply whose translation wasn't saved with it (`native` only).
          */
         post: operations["save_user_interpretation_chat_message_interpretation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/message/glosses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Message Glosses
+         * @description The word/phrase glosses for a message, made and saved the first time
+         *     they're asked for (the learner's own messages, and replies from before
+         *     glosses were saved) - after that, GET /chat/history carries them.
+         *     503 if they can't be made right now.
+         */
+        post: operations["message_glosses_chat_message_glosses_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -139,8 +163,9 @@ export interface paths {
         /**
          * Interpret Input
          * @description For the learner's own message: infers what they meant across a
-         *     possible mix of English/Spanish and grammar mistakes, returning a
-         *     corrected English restatement alongside its Spanish translation - used
+         *     possible mix of English/the target language and grammar mistakes,
+         *     returning a corrected English restatement alongside its target-language
+         *     translation - used
          *     to show both under the user's chat bubble rather than a single literal
          *     (and possibly nonsensical) pass.
          */
@@ -162,32 +187,14 @@ export interface paths {
         put?: never;
         /**
          * Coach Draft
-         * @description For a message the learner is still drafting (not yet sent) - unlike
-         *     /interpret above, which corrects a single message in isolation, this
-         *     pulls the session's recent conversation for context so the suggested
-         *     phrasing actually fits the tone of what's been said so far, and returns
-         *     feedback on the attempt plus phrasing options at a few formality
-         *     levels rather than a single flat correction.
-         *
-         *     Streamed as Server-Sent Events, one event per field of the SAME
-         *     underlying LLM call (app.translate.llm_translate.coach_draft_stream -
-         *     see its own docstring for the full field-by-field sequence). First, a
-         *     "verdict" event ("clean"/"minor"/"fix") - usable INSTANTLY, before
-         *     anything else has streamed, to decide whether the draft is already
-         *     good to go (see ChatInput.tsx's coachReady). Then "meaning_chunk"/
-         *     "meaning_complete" carry the restatement live, delta by delta - the
-         *     same token-by-token feel /chat/turn/stream's own reply already has.
-         *     What follows depends on the verdict: nothing further for "clean";
-         *     "suggestion_chunk"/"suggestion_complete" (one lightweight corrected-
-         *     text suggestion) for "minor"; or, for "fix", three formality-ranked
-         *     options streamed via "option_chunk"/"option_complete" events (each
-         *     carrying `index` 0/1/2 and `field` "spanish"/"english"), each option's
-         *     own English back-translation streaming in right after its own Spanish
-         *     text - not batched together at the end. An "error" event means
-         *     nothing at all was usable (not even the verdict); a stream that ends
-         *     partway through the "fix" options just means the rest weren't ready -
-         *     whatever DID arrive stays fully usable (see coach_draft_stream's own
-         *     docstring on this graceful-degradation philosophy).
+         * @description The coach's reply, streamed as SSE. With `thread_message_id` it's
+         *     the side conversation about that message (opened from its 💬) and is
+         *     saved in its thread; without it, it's about the learner's next message
+         *     (the coach box at the bottom; with `check`, the exact message they're
+         *     about to send) and lives in the coach panel until it's sent. Events:
+         *     "about" (that message's id, or null), "ready" (their own target-language text is
+         *     fine to send as written), "reply_chunk"s and "reply_complete"; "error"
+         *     if nothing came back. See app.translate.llm_translate.coach_reply_stream.
          */
         post: operations["coach_draft_translate_coach_post"];
         delete?: never;
@@ -207,10 +214,10 @@ export interface paths {
         put?: never;
         /**
          * Tag Input
-         * @description Cheap, synchronous, LLM-free per-word classification (spaCy +
-         *     lemmatizer.py's is_spanish heuristic) - fast enough to call on every
-         *     keystroke (debounced). Needed for reward-event tracking
-         *     (userTypedSpanishWord) and the phrase-selection direction vote. The
+         * @description Cheap, synchronous, LLM-free per-word classification (see
+         *     app.translate.lemmatizer) - fast enough to call on every keystroke
+         *     (debounced). Needed for reward-event tracking (userTypedTargetWord) and
+         *     the phrase-selection direction vote. The
          *     slower LLM-backed word/group glossing that drives the hover-to-
          *     translate UI lives separately in /translate/gloss-spans below, fetched
          *     lazily on interaction rather than on every edit.
@@ -247,6 +254,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/translate/readings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Readings
+         * @description How to read each text: romanization for every word, kana over kanji,
+         *     and Mandarin in the learner's characters (see app.translate.readings).
+         *     Deterministic and fast - no LLM. Empty readings for a language written
+         *     in the Latin alphabet.
+         */
+        post: operations["readings_translate_readings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/events/reward": {
         parameters: {
             query?: never;
@@ -271,7 +301,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Voices */
+        /**
+         * List Voices
+         * @description The partner voices a provider offers, and its default. ElevenLabs:
+         *     the account's voices (see picker_order) - multilingual, so `language`
+         *     doesn't narrow them. Kokoro: that language's voices.
+         */
         get: operations["list_voices_tts_voices_get"];
         put?: never;
         post?: never;
@@ -298,26 +333,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/voice/coach": {
+    "/words": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Words */
+        get: operations["list_words_words_get"];
         put?: never;
         /**
-         * Voice Coach
-         * @description The spoken coach's turn, streamed as SSE in the same style as
-         *     /translate/coach: "intent", then "verdict" + "draft" (what to send, if
-         *     anything), then "say_chunk"/"say_complete" for the spoken reply (the
-         *     client turns each completed sentence into coach-voice TTS as it
-         *     arrives). "error" means nothing was usable. See
-         *     llm_translate.voice_coach_stream for the field semantics.
+         * Save Word
+         * @description Saving a word that's already saved returns the existing entry.
          */
-        post: operations["voice_coach_voice_coach_post"];
-        delete?: never;
+        post: operations["save_word_words_post"];
+        /** Remove Word */
+        delete: operations["remove_word_words_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -392,6 +424,12 @@ export interface components {
              * @default
              */
             target: string;
+            /**
+             * Thread
+             * @default []
+             */
+            thread: components["schemas"]["ThreadEntryOut"][];
+            glosses?: components["schemas"]["MessageGlosses"] | null;
         };
         /** ChatHistoryResponse */
         ChatHistoryResponse: {
@@ -404,6 +442,16 @@ export interface components {
             message: string;
             /** Session Id */
             session_id: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
+            /**
+             * Thread
+             * @default []
+             */
+            thread: components["schemas"]["ThreadEntryIn"][];
         };
         /** ChatTurnResponse */
         ChatTurnResponse: {
@@ -423,6 +471,7 @@ export interface components {
              * @default 0
              */
             user_message_id: number;
+            glosses?: components["schemas"]["MessageGlosses"] | null;
         };
         /** ClearHistoryResponse */
         ClearHistoryResponse: {
@@ -435,6 +484,28 @@ export interface components {
             text: string;
             /** Session Id */
             session_id: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
+            /** Thread Message Id */
+            thread_message_id?: number | null;
+            /**
+             * Message Draft
+             * @default
+             */
+            message_draft: string;
+            /**
+             * Draft Thread
+             * @default []
+             */
+            draft_thread: components["schemas"]["DraftTurn"][];
+            /**
+             * Check
+             * @default false
+             */
+            check: boolean;
         };
         /** DraftSpan */
         DraftSpan: {
@@ -465,17 +536,29 @@ export interface components {
             surface: string;
             /** Lemma */
             lemma: string;
-            /** Is Spanish */
-            is_spanish: boolean;
+            /** Is Target */
+            is_target: boolean;
             /** Start */
             start: number;
             /** End */
             end: number;
         };
+        /** DraftTurn */
+        DraftTurn: {
+            /** Role */
+            role: string;
+            /** Text */
+            text: string;
+        };
         /** GlossSpansRequest */
         GlossSpansRequest: {
             /** Text */
             text: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
         };
         /** GlossSpansResponse */
         GlossSpansResponse: {
@@ -491,6 +574,11 @@ export interface components {
         InterpretInputRequest: {
             /** Text */
             text: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
         };
         /** InterpretInputResponse */
         InterpretInputResponse: {
@@ -504,12 +592,95 @@ export interface components {
             /** Ready */
             ready: boolean;
         };
+        /**
+         * MessageGlosses
+         * @description What a tapped word in a chat message shows: its own meaning (to the
+         *     side) and, if it's part of an expression, the expression's (below).
+         *     See app.translate.llm_translate.gloss_message.
+         */
+        MessageGlosses: {
+            /**
+             * Words
+             * @default []
+             */
+            words: components["schemas"]["WordGloss"][];
+            /**
+             * Phrases
+             * @default []
+             */
+            phrases: components["schemas"]["PhraseGloss"][];
+        };
+        /** MessageGlossesRequest */
+        MessageGlossesRequest: {
+            /** Message Id */
+            message_id: number;
+        };
+        /** PhraseGloss */
+        PhraseGloss: {
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
+            /** Gloss */
+            gloss: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /** ReadingOut */
+        ReadingOut: {
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
+            /** Roman */
+            roman: string;
+            /**
+             * Kana
+             * @default
+             */
+            kana: string;
+            /**
+             * Cont
+             * @default false
+             */
+            cont: boolean;
+        };
+        /** ReadingsRequest */
+        ReadingsRequest: {
+            /** Texts */
+            texts: string[];
+            /** Words */
+            words?: (number[][] | null)[] | null;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
+        };
+        /** ReadingsResponse */
+        ReadingsResponse: {
+            /** Items */
+            items: components["schemas"]["TextReadings"][];
+        };
+        /** RemoveSavedWordResponse */
+        RemoveSavedWordResponse: {
+            /** Removed */
+            removed: number;
+        };
         /** RewardEventRequest */
         RewardEventRequest: {
             /** Event Type */
             event_type: string;
             /** Lemma */
             lemma: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
         };
         /** RewardEventResponse */
         RewardEventResponse: {
@@ -534,6 +705,55 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
+        /** SavedWordIn */
+        SavedWordIn: {
+            /** Session Id */
+            session_id: string;
+            /** Word */
+            word: string;
+            /**
+             * Gloss
+             * @default
+             */
+            gloss: string;
+            /**
+             * Grammar
+             * @default
+             */
+            grammar: string;
+            /**
+             * Sentence
+             * @default
+             */
+            sentence: string;
+            /** Message Id */
+            message_id?: number | null;
+        };
+        /** SavedWordOut */
+        SavedWordOut: {
+            /** Id */
+            id: number;
+            /** Word */
+            word: string;
+            /** Gloss */
+            gloss: string;
+            /** Grammar */
+            grammar: string;
+            /** Sentence */
+            sentence: string;
+            /** Message Id */
+            message_id: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** SavedWordsResponse */
+        SavedWordsResponse: {
+            /** Words */
+            words: components["schemas"]["SavedWordOut"][];
+        };
         /** TTSRequest */
         TTSRequest: {
             /** Text */
@@ -550,11 +770,22 @@ export interface components {
              * @default partner
              */
             role: string;
+            /** Provider */
+            provider?: string | null;
+        };
+        /** TTSVoice */
+        TTSVoice: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
         };
         /** TTSVoicesResponse */
         TTSVoicesResponse: {
+            /** Provider */
+            provider: string;
             /** Voices */
-            voices: string[];
+            voices: components["schemas"]["TTSVoice"][];
             /** Default */
             default: string;
         };
@@ -562,11 +793,59 @@ export interface components {
         TagInputRequest: {
             /** Text */
             text: string;
+            /**
+             * Language
+             * @default es
+             */
+            language: string;
         };
         /** TagInputResponse */
         TagInputResponse: {
             /** Tokens */
             tokens: components["schemas"]["DraftToken"][];
+        };
+        /** TextReadings */
+        TextReadings: {
+            /** Text */
+            text: string;
+            /** Readings */
+            readings: components["schemas"]["ReadingOut"][];
+        };
+        /** ThreadEntryIn */
+        ThreadEntryIn: {
+            /** Role */
+            role: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Data
+             * @default
+             */
+            data: string;
+        };
+        /** ThreadEntryOut */
+        ThreadEntryOut: {
+            /** Role */
+            role: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Data
+             * @default
+             */
+            data: string;
+            /** Id */
+            id: number;
         };
         /** TokenAnnotation */
         TokenAnnotation: {
@@ -634,36 +913,19 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
-        /** VoiceCoachRequest */
-        VoiceCoachRequest: {
-            /** Transcript */
-            transcript: string;
+        /** WordGloss */
+        WordGloss: {
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
+            /** Gloss */
+            gloss: string;
             /**
-             * Words
-             * @default []
+             * Grammar
+             * @default
              */
-            words: components["schemas"]["VoiceWord"][];
-            /**
-             * Coach Dialog
-             * @default []
-             */
-            coach_dialog: components["schemas"]["VoiceDialogTurn"][];
-            /** Session Id */
-            session_id: string;
-        };
-        /** VoiceDialogTurn */
-        VoiceDialogTurn: {
-            /** Role */
-            role: string;
-            /** Text */
-            text: string;
-        };
-        /** VoiceWord */
-        VoiceWord: {
-            /** Word */
-            word: string;
-            /** Confidence */
-            confidence: number;
+            grammar: string;
         };
     };
     responses: never;
@@ -725,6 +987,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SaveUserInterpretationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    message_glosses_chat_message_glosses_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MessageGlossesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageGlosses"];
                 };
             };
             /** @description Validation Error */
@@ -1000,6 +1295,39 @@ export interface operations {
             };
         };
     };
+    readings_translate_readings_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reward_event_events_reward_post: {
         parameters: {
             query?: never;
@@ -1037,6 +1365,7 @@ export interface operations {
         parameters: {
             query?: {
                 language?: string;
+                provider?: string | null;
             };
             header?: never;
             path?: never;
@@ -1097,7 +1426,38 @@ export interface operations {
             };
         };
     };
-    voice_coach_voice_coach_post: {
+    list_words_words_get: {
+        parameters: {
+            query: {
+                session_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedWordsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_word_words_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1106,7 +1466,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["VoiceCoachRequest"];
+                "application/json": components["schemas"]["SavedWordIn"];
             };
         };
         responses: {
@@ -1116,7 +1476,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SavedWordOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_word_words_delete: {
+        parameters: {
+            query: {
+                session_id: string;
+                word: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoveSavedWordResponse"];
                 };
             };
             /** @description Validation Error */

@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from app.tts import elevenlabs_client
-from app.tts.deepinfra_client import TTSUnavailableError
+from app.tts.errors import TTSUnavailableError
 from app.tts.elevenlabs_client import pick_voice, synthesize
 
 
@@ -22,8 +22,10 @@ def _mock_async_client(fake_response=None, side_effect=None, voices_response=Non
 @pytest.fixture(autouse=True)
 def _reset_discovered_voice():
     elevenlabs_client._discovered_voice_id = None
+    elevenlabs_client._voices_cache = None
     yield
     elevenlabs_client._discovered_voice_id = None
+    elevenlabs_client._voices_cache = None
 
 
 def test_synthesize_raises_when_key_missing():

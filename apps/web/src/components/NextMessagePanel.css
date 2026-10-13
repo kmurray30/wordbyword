@@ -1,0 +1,239 @@
+@import "./TalkLines.css";
+/* "Discuss your next message" - the side conversation about the message
+   you're about to send. Coach blue, like every coach conversation. */
+.next-message {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* The bar that opens it, shown while folded: big, blue, with a slow glow
+   so it reads as something to tap. Opening, it folds away (rows 1fr ->
+   0fr) as the conversation slides open below. The inner padding leaves
+   room for the glow inside the clip; the wrap's negative margin cancels
+   it out of the layout. */
+.next-message__header-wrap {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin: -8px;
+  transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.next-message__header-wrap--gone {
+  grid-template-rows: 0fr;
+}
+
+.next-message__header-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px;
+  transition: opacity 0.2s ease;
+}
+
+/* Fades as it folds - the glow room would otherwise leave a sliver. */
+.next-message__header-wrap--gone .next-message__header-inner {
+  opacity: 0;
+}
+
+.next-message__header {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(59, 110, 240, 0.2);
+  border: 1px solid rgba(110, 150, 255, 0.6);
+  cursor: pointer;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #e3eaff;
+  animation: next-message-glow 2.6s ease-in-out infinite;
+}
+
+@keyframes next-message-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(90, 140, 255, 0);
+  }
+  50% {
+    box-shadow: 0 0 7px 1px rgba(90, 140, 255, 0.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .next-message__header {
+    animation: none;
+  }
+}
+
+.next-message__header:hover {
+  background: rgba(59, 110, 240, 0.28);
+}
+
+.next-message__header:active {
+  background: rgba(59, 110, 240, 0.36);
+}
+
+.next-message__chevron {
+  display: inline-block;
+  width: 10px;
+}
+
+.next-message__title {
+  flex: 1;
+}
+
+.next-message__count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(59, 110, 240, 0.55);
+  color: white;
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.next-message__toggle-label {
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+
+/* The conversation and its box, sliding open and closed under the header
+   (rows 0fr <-> 1fr animates to the content's own height). */
+.next-message__body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.next-message__body--open {
+  grid-template-rows: 1fr;
+}
+
+.next-message__body-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.next-message__log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* A share of the VISIBLE screen, so with the keyboard up the chat above
+     still gets room. */
+  max-height: calc(var(--vv-height, 100dvh) * 0.3);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 10px;
+  border-left: 2px solid rgba(90, 140, 255, 0.6);
+  border-radius: 0 8px 8px 0;
+  background: rgba(90, 140, 255, 0.06);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.next-message__input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.next-message__textarea {
+  flex: 1;
+  min-height: 38px;
+  /* Grows with what you type or say (see NextMessagePanel), then scrolls. */
+  max-height: 140px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  box-sizing: border-box;
+  resize: none;
+  border-radius: 10px;
+  border: 1px solid rgba(90, 140, 255, 0.35);
+  background: #1d2230;
+  color: #f2f2f2;
+  font: inherit;
+  /* 16px or more: iOS zooms the page into any smaller text field. */
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+.next-message__textarea:focus {
+  outline: none;
+  border-color: rgba(90, 140, 255, 0.7);
+}
+
+.next-message__textarea::placeholder {
+  color: #8b93a6;
+  font-size: 0.85em;
+}
+
+.next-message__ask {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 10px;
+  padding: 9px 14px;
+  background: #3b6ef0;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.next-message__ask:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.next-message .talk-button {
+  padding: 9px 6px;
+  font-size: 0.9rem;
+}
+
+/* The bottom row of the screen: its outer corners follow the screen's
+   rounded corners (see App.css --bottom-round; plain elsewhere). Folded,
+   that's the header; open, the coach box and its send button. */
+.next-message__header {
+  border-bottom-left-radius: max(8px, calc(var(--bottom-round) - 11px));
+  border-bottom-right-radius: max(8px, calc(var(--bottom-round) - 11px));
+}
+
+.next-message__textarea {
+  border-bottom-left-radius: max(10px, calc(var(--bottom-round) - 11px));
+}
+
+.next-message__ask {
+  border-bottom-right-radius: max(10px, calc(var(--bottom-round) - 11px));
+}
+
+/* Folds it back up - beside the box's mic and send, labelled so it reads
+   as "close this" rather than a mystery arrow. */
+.next-message__fold {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(110, 150, 255, 0.45);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: rgba(59, 110, 240, 0.14);
+  color: #c9d7ff;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.next-message__fold:hover {
+  background: rgba(59, 110, 240, 0.26);
+}
+
+.next-message__fold-chevron {
+  font-size: 0.85em;
+}

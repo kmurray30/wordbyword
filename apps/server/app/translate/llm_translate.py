@@ -15,13 +15,12 @@ import logging
 import re
 
 from app.chat.openai_client import ModelServerUnavailableError, chat as model_chat, chat_stream as model_chat_stream
-from app.config import OPENAI_TRANSLATE_MODEL, OPENAI_VOICE_COACH_MODEL
-from app.translate.lemmatizer import analyze
+from app.config import OPENAI_COACH_MODEL, OPENAI_TRANSLATE_MODEL
+from app.languages import NATIVE_LANGUAGE, get_language, has_foreign_script, language_name
+from app.translate.lemmatizer import looks_like_target
 from app.translate.sequential_stream import Field, stream_sequential_fields
 
 logger = logging.getLogger(__name__)
-
-_LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 
 # gloss_reply's JSON response needs room for a translation plus one span
 # per TOKEN in the source text (not per distinct word, unlike the old
@@ -46,32 +45,35 @@ _LANGUAGE_NAMES = {"es": "Spanish", "en": "English"}
 # the same model and the same new `literal` field, so the same generous
 # headroom applies here too, before it gets caught by the exact same
 # failure mode on some longer/idiom-heavy reply.
-_GLOSS_REPLY_MAX_TOKENS = 2800
+_GLOSS_MESSAGE_MAX_TOKENS = 3200
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
-# Qwen3 is heavily trained on Chinese data and, on a bad roll, can emit CJK
-# tokens instead of the requested Spanish/English - observed live: a
-# translation click inserted Chinese characters into the input. Neither
-# language this app handles uses these scripts, so any hit here means the
-# reply is garbage, not a real translation.
-_UNEXPECTED_SCRIPT_RE = re.compile(r"[一-鿿぀-ヿ가-힯]")
 
 
 class TranslationUnavailableError(RuntimeError):
     pass
 
 
-def _looks_garbled(text: str) -> bool:
-    return bool(_UNEXPECTED_SCRIPT_RE.search(text))
+def _looks_garbled(text: str, language: str) -> bool:
+    """A reply meant to be in `language` and English that contains a script
+    neither uses - observed live (with an earlier model): Chinese characters
+    in a Spanish translation. Garbage, not a real answer."""
+    return has_foreign_script(text, language)
+
+
+def _non_english(*codes: str) -> str:
+    """Of a translation's two languages, the one being learned."""
+    return next((c for c in codes if c.split("-")[0].lower() != NATIVE_LANGUAGE), codes[0])
 
 
 def translate_text(text: str, source_lang: str, target_lang: str) -> str:
     if not text.strip():
         return ""
 
-    source_name = _LANGUAGE_NAMES.get(source_lang, source_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    source_name = language_name(source_lang)
+    target_name = language_name(target_lang)
+    studied = _non_english(source_lang, target_lang)
     messages = [
         {
             "role": "system",
@@ -91,74 +93,88 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> str:
             last_result = model_chat(messages, model=OPENAI_TRANSLATE_MODEL).strip()
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if not _looks_garbled(last_result):
+        if not _looks_garbled(last_result, studied):
             return last_result
     raise TranslationUnavailableError(f"Model returned a garbled reply: {last_result!r}")
 
 
-def gloss_reply(text: str, source_lang: str, target_lang: str) -> tuple[str, list[dict[str, str]]]:
-    """Translates `text` (the assistant's own reply) and, in the same call,
-    glosses it word-by-word using each word's/group's meaning IN THIS
-    SENTENCE - one consistent source for both, instead of a separately-
-    fetched whole-sentence translation and per-word glosses that could each
-    land on a different sense of an ambiguous word. Returns
-    (translation, raw_spans), the exact same ordered-span-list shape
-    tag_draft returns (ready for app.translate.span_matching.match_spans) -
-    deliberately NOT a dict keyed by surface text like this function used
-    to return: a dict can't represent a multi-word group (e.g. "el tuyo")
-    without one of its words winning and the other vanishing, and also
-    silently collapses a repeated surface form's second occurrence onto
-    the first. Spans must cover EVERY word, including short function words
-    (y, mi, el, la, de, que, ...) - skipping those was the original bug
-    this shape change fixes. Raises TranslationUnavailableError if the
-    model's reply isn't parseable JSON even after a retry - callers get no
-    gloss for that turn rather than a dictionary/MT fallback."""
-    if not text.strip():
-        return "", []
+def gloss_message(
+    text: str, native_lang: str, target_lang: str, learner: bool = False
+) -> tuple[str, list[dict[str, str]], list[dict[str, str]]]:
+    """Everything the app shows when a word in a chat message is tapped, in
+    one call so it all agrees on the sense each word has in THIS sentence.
+    Returns (translation, words, phrases), lists ordered left to right:
 
-    source_name = _LANGUAGE_NAMES.get(source_lang, source_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    - words: EVERY word, one at a time - {"surface", "gloss", "grammar"}.
+      `gloss` is just what that one word means here, as short as a
+      dictionary headword ("good", "to eat", "the"). `grammar` is optional
+      detail about the word's form: for a conjugated verb its infinitive
+      and the tense/person ("comer (to eat): I, present"), likewise a
+      plural/feminine/contracted form worth knowing - otherwise empty.
+    - phrases: ONLY multi-word expressions whose meaning isn't just the
+      words added up (idioms, fixed expressions like "qué bueno" = "how
+      wonderful", "tener que" = "to have to") - {"surface", "gloss",
+      "note"}, `note` an optional bit of usage/context, usually empty.
+
+    `text` is the partner's reply by default (target_lang, translated into
+    native_lang). With `learner`, it's the learner's own message, which may
+    mix both languages and have mistakes: a target_lang word is glossed in
+    native_lang, a native_lang word gets its target_lang translation, and
+    no whole-message translation is asked for ("" - the learner's message
+    has its own interpretation, see interpret_user_input).
+
+    Raises TranslationUnavailableError if no usable JSON comes back after
+    retries - callers then just have no glosses for that message."""
+    if not text.strip():
+        return "", [], []
+
+    native_name = language_name(native_lang)
+    target_name = language_name(target_lang)
+    lang = get_language(target_lang)
+    if learner:
+        intro = (
+            f"This is a message a {native_name}-speaking learner wrote to their {target_name} "
+            f"conversation partner. It may mix {target_name} and {native_name} and have mistakes. "
+            f"For a {target_name} word, `gloss` is its {native_name} meaning; for a {native_name} "
+            f"word, `gloss` is how to say it in {target_name}. Use the meaning the learner "
+            f"clearly intended."
+        )
+        translation_field = ""
+    else:
+        intro = (
+            f"This is a {target_name} chat message. Translate it to {native_name}, and gloss it "
+            f"for a {native_name}-speaking learner."
+        )
+        translation_field = f'"translation": "<the whole message in {native_name}>", '
     messages = [
         {
             "role": "system",
             "content": (
-                f"Translate the following {source_name} text to {target_name}, "
-                f"and also break it into a list of words or short word-groups, "
-                f"IN THE SAME ORDER THEY APPEAR IN THE TEXT (left to right, "
-                f"earliest first), that together cover EVERY word in it - "
-                f"including short function words like y, mi, el, la, de, que, "
-                f"and the like. Do not skip any word. Skip only pure "
-                f"punctuation. Group a few words together ONLY when they form "
-                f"a fixed expression that doesn't translate word-by-word (for "
-                f'example "el tuyo" meaning "yours" should be ONE span, not '
-                f'"el" and "tuyo" separately) - most spans should be a single '
-                f"word. Copy each span's `surface` EXACTLY as it appears in "
-                f"the text - same spelling, same case, same accents. For each "
-                f"span, give a short {target_name} gloss of what it means "
-                f"IN THIS SENTENCE - not a generic dictionary definition, "
-                f"since the same word/group can mean different things in "
-                f"different sentences. For a MULTI-WORD span only, also give "
-                f"a short `literal` word-by-word breakdown in {target_name}, "
-                f"showing what each individual word in the group means on "
-                f"its own and, if the group's overall sense isn't a literal/"
-                f'word-for-word match for `gloss`, making that plain too - '
-                f'e.g. for a {source_name} idiom span like "tener en cuenta" '
-                f'meaning "take into account", `literal` could be "tener (to '
-                f'have) + en (in) + cuenta (account)" - so the learner can '
-                f"see how the phrase is built, not just what it means "
-                f"overall. Leave `literal` an empty string for a single-word "
-                f"span - it would just repeat `gloss`. Reply with ONLY a "
-                f"single JSON object and nothing else - no markdown code "
-                f"fences, no explanation - in exactly this shape: "
-                f'{{"translation": "<the full {target_name} translation>", '
-                f'"spans": [{{"surface": "<exact text from the source, one '
-                f'word or a short fixed-expression group>", "gloss": "<its '
-                f'{target_name} meaning in this sentence>", "note": "<in '
-                f"{target_name}: if this word could easily be confused with "
-                f"a different sense or word, one short phrase explaining why "
-                f'this sense applies here - otherwise an empty string>", '
-                f'"literal": "<word-by-word breakdown for a multi-word span '
-                f'only - else empty>"}}, ...]}}'
+                f"{intro}\n\n"
+                f"`words`: EVERY word in the message, one word per entry, in order (left to right), "
+                f"including short function words (articles, particles, prepositions) - skip only "
+                f"punctuation. Copy `surface` exactly as written (same characters, spelling, case and "
+                f"accents). `gloss`: the word's OWN basic dictionary meaning - the sense that fits "
+                f"here, but never the meaning of an idiom or phrase it's part of (that goes in "
+                f"`phrases`, so the learner sees both and can connect them). As short as a dictionary "
+                f'entry - one to three words, e.g. "good", "to eat", "the", "you (informal)". A '
+                f"conjugated verb is glossed as conjugated, with the subject it has here - never just "
+                f"the dictionary form (that goes in `grammar`). No explanations in `gloss`. "
+                f"`grammar`: optional, in {native_name}, about the word's form - for a conjugated verb "
+                f"its dictionary form and meaning, then person/tense/politeness; for a plural, "
+                f"feminine, contracted or object-pronoun form, say so briefly. Leave it EMPTY for a "
+                f'word already in its basic dictionary form - never write "masculine singular" or the '
+                f"like for one - and for any word that needs nothing more; most words get none.\n\n"
+                f"`phrases`: ONLY groups of two or more words whose meaning isn't simply the words "
+                f"added up - idioms and fixed expressions. Most messages have none or one. Its "
+                f"`surface` must be the WHOLE expression - every word its gloss covers. "
+                f"`gloss`: the phrase's {native_name} meaning here. `note`: optional, "
+                f"in {native_name}, a short bit of usage or context only if it really helps - usually "
+                f"empty. Do not break a phrase down word by word.\n\n"
+                f"For {lang.name}: {lang.gloss_examples}\n\n"
+                f"Reply with ONLY one JSON object, no markdown fences, no explanation, exactly:\n"
+                f'{{{translation_field}"words": [{{"surface": "...", "gloss": "...", "grammar": ""}}, ...], '
+                f'"phrases": [{{"surface": "...", "gloss": "...", "note": ""}}, ...]}}'
             ),
         },
         {"role": "user", "content": text},
@@ -166,27 +182,56 @@ def gloss_reply(text: str, source_lang: str, target_lang: str) -> tuple[str, lis
 
     last_reply = ""
     last_error: Exception | None = None
-    # 3 attempts, not 2 - same reasoning as tag_draft's own retry count:
-    # this is the other call in this file with a large, multi-field-per-
-    # span JSON payload, so it's worth the same extra insurance against an
-    # occasional truncated/empty completion.
+    # Three tries: a big JSON payload like this occasionally comes back
+    # empty or cut off (see _TAG_DRAFT_MAX_TOKENS on reasoning budgets).
     for attempt in range(3):
         try:
-            last_reply = model_chat(messages, max_tokens=_GLOSS_REPLY_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
+            last_reply = model_chat(messages, max_tokens=_GLOSS_MESSAGE_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if not last_reply.strip() or _looks_garbled(last_reply):
+        if not last_reply.strip() or _looks_garbled(last_reply, target_lang):
             last_error = ValueError("empty or garbled reply")
-            logger.warning("gloss_reply attempt %d/3 for %r: empty or garbled reply (len=%d)", attempt + 1, text, len(last_reply))
+            logger.warning("gloss_message attempt %d/3 for %r: empty or garbled reply (len=%d)", attempt + 1, text, len(last_reply))
             continue
         try:
-            return _extract_span_list_json(last_reply)
+            return _extract_gloss_json(last_reply, spaced=lang.spaced)
         except (ValueError, json.JSONDecodeError, KeyError) as exc:
             last_error = exc
             logger.warning(
-                "gloss_reply attempt %d/3 for %r: unparseable reply (len=%d): %s", attempt + 1, text, len(last_reply), exc
+                "gloss_message attempt %d/3 for %r: unparseable reply (len=%d): %s", attempt + 1, text, len(last_reply), exc
             )
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
+
+
+def _extract_gloss_json(reply: str, spaced: bool = True) -> tuple[str, list[dict[str, str]], list[dict[str, str]]]:
+    match = _JSON_OBJECT_RE.search(reply)
+    if not match:
+        raise ValueError(f"no JSON object found in reply: {reply!r}")
+    data = json.loads(match.group(0))
+    translation = data.get("translation", "")
+    raw_words = data["words"]
+    raw_phrases = data.get("phrases", [])
+    if not isinstance(translation, str) or not isinstance(raw_words, list) or not isinstance(raw_phrases, list):
+        raise ValueError(f"unexpected JSON shape: {data!r}")
+
+    def entries(raw: list, fields: tuple[str, ...]) -> list[dict[str, str]]:
+        out = []
+        for item in raw:
+            if not isinstance(item, dict) or not str(item.get("surface", "")).strip():
+                continue
+            out.append({"surface": str(item["surface"]).strip(), **{f: str(item.get(f, "") or "").strip() for f in fields}})
+        return out
+
+    words = entries(raw_words, ("gloss", "grammar"))
+    # A "phrase" of one word is the model repeating a word. Without spaces
+    # (Japanese, Chinese) that can't be told from the text - any phrase of
+    # two or more characters stays.
+    phrases = [
+        p
+        for p in entries(raw_phrases, ("gloss", "note"))
+        if (len(p["surface"].split()) > 1 if spaced else len(p["surface"].strip()) > 1)
+    ]
+    return translation.strip(), words, phrases
 
 
 def _parse_labeled_lines(reply: str, native_name: str, target_name: str) -> tuple[str, str]:
@@ -225,50 +270,12 @@ def _looks_like_unwanted_reply(original: str, restated: str) -> bool:
     return restated_words > original_words * 2 and restated_words - original_words >= 4
 
 
-def _looks_spanish(text: str) -> bool:
-    """Rough majority-vote check reusing the same Spanish/English classifier
+def _looks_target(text: str, target_lang: str) -> bool:
+    """Rough majority-vote check reusing the same target/English classifier
     the word bank already relies on (app/translate/lemmatizer.py) - used to
     catch the case where the model labeled its two lines correctly but put
     the wrong language's content under one of them."""
-    words = [t for t in analyze(text) if t.surface.isalpha() and len(t.surface) > 1]
-    if not words:
-        return False
-    return sum(1 for t in words if t.is_spanish) > len(words) / 2
-
-
-def _correct_option_languages(spanish_text: str, english_text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
-    """Post-hoc sanity check for one coach_draft_stream FIX-verdict option's
-    Spanish suggestion plus its own English back-translation - the plain-
-    text, marker-delimited protocol has no structural anchor (unlike the
-    old JSON-keyed one) forcing the model to keep each field in the
-    language its marker name promises, and a small/fast model sometimes
-    drifts. Reuses the same _looks_spanish classifier and the same
-    target_lang=="es"/native_lang=="en" scoping interpret_user_input's own
-    swap-correction already relies on, extended to the two cases a plain
-    swap doesn't cover: either field just never got translated out of the
-    OTHER language at all. Degrades to the original pair, uncorrected, if
-    the extra translate_text call this needs is itself unavailable."""
-    if target_lang != "es" or native_lang != "en" or not spanish_text or not english_text:
-        return spanish_text, english_text
-
-    spanish_is_spanish = _looks_spanish(spanish_text)
-    english_is_spanish = _looks_spanish(english_text)
-
-    if spanish_is_spanish and not english_is_spanish:
-        return spanish_text, english_text
-
-    try:
-        if not spanish_is_spanish and english_is_spanish:
-            # Classic swap - the right content landed under the wrong label.
-            return english_text, spanish_text
-        if not spanish_is_spanish and not english_is_spanish:
-            # The "Spanish" field was never actually translated into Spanish.
-            return translate_text(spanish_text, native_lang, target_lang), english_text
-        # Both fields look Spanish - the "English" field was never
-        # translated into English.
-        return spanish_text, translate_text(english_text, target_lang, native_lang)
-    except TranslationUnavailableError:
-        return spanish_text, english_text
+    return looks_like_target(text, target_lang)
 
 
 def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple[str, str]:
@@ -282,8 +289,8 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
     if not text.strip():
         return "", ""
 
-    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    native_name = language_name(native_lang)
+    target_name = language_name(target_lang)
     messages = [
         {
             "role": "system",
@@ -317,7 +324,7 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
             reply = model_chat(messages, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if not _looks_garbled(reply):
+        if not _looks_garbled(reply, target_lang):
             break
     else:
         # Both attempts came back garbled - fall back to translate_text
@@ -325,7 +332,7 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
         # translate_text has its own retry, so this is a genuinely
         # independent second chance, not just repeating the same failure.
         target_text = translate_text(text, native_lang, target_lang)
-        native_text = translate_text(text, target_lang, native_lang) if _looks_spanish(text) else text
+        native_text = translate_text(text, target_lang, native_lang) if _looks_target(text, target_lang) else text
         return native_text, target_text
 
     native_text, target_text = _parse_labeled_lines(reply, native_name, target_name)
@@ -337,20 +344,18 @@ def interpret_user_input(text: str, native_lang: str, target_lang: str) -> tuple
         # has no "conversation" framing for the model to go off-script
         # with.
         target_text = translate_text(text, native_lang, target_lang)
-        native_text = translate_text(text, target_lang, native_lang) if _looks_spanish(text) else text
+        native_text = translate_text(text, target_lang, native_lang) if _looks_target(text, target_lang) else text
         return native_text, target_text
 
     # A small model can label its two lines correctly but swap which
     # language's content goes under which label - observed live: the
     # "English" row came back showing Spanish text. Catch that rather than
-    # trust the labels blindly, when we know target_lang is Spanish (the
-    # only case this app actually exercises - the classifier is Spanish-
-    # specific, see _looks_spanish).
-    if native_text and target_text and target_lang == "es" and native_lang == "en":
-        if _looks_spanish(native_text) and not _looks_spanish(target_text):
+    # trust the labels blindly (see _looks_target).
+    if native_text and target_text and native_lang == NATIVE_LANGUAGE:
+        if _looks_target(native_text, target_lang) and not _looks_target(target_text, target_lang):
             native_text, target_text = target_text, native_text
-        elif not _looks_spanish(target_text):
-            # Not a swap - the model just left the "Spanish" line in
+        elif not _looks_target(target_text, target_lang):
+            # Not a swap - the model just left the target-language line in
             # English too (observed live: "sup bro. there once was a red
             # monkey" came back with the same English text under both
             # labels). The swap above only fixes mislabeled lines; this
@@ -483,8 +488,8 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
     if not draft.strip():
         return "", []
 
-    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    native_name = language_name(native_lang)
+    target_name = language_name(target_lang)
     messages = [
         {
             "role": "system",
@@ -511,15 +516,16 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
                 f"word, check whether that exact spelling is ALSO a legitimate, "
                 f"different word in {native_name} (a true cross-language cognate - "
                 f'for example "once" is Spanish for "eleven" but also an ordinary '
-                f"English word). If so, give that other word's meaning as "
+                f"English word; there are none between English and a language in "
+                f"another script). If so, give that other word's meaning as "
                 f"`alternate_gloss`, in {native_name} - otherwise leave "
                 f"`alternate_gloss` an empty string; it will be empty for nearly "
                 f"every span. For a MULTI-WORD span only, also give a short "
                 f"`literal` word-by-word breakdown in {native_name}, showing what "
                 f"each individual word in the group means on its own and, if the "
                 f"group's overall sense isn't a literal/word-for-word match for "
-                f'`gloss`, making that plain too - e.g. for a {target_name} idiom '
-                f'span like "tener en cuenta" meaning "take into account", '
+                f'`gloss`, making that plain too - e.g. for the Spanish idiom '
+                f'"tener en cuenta" meaning "take into account", '
                 f'`literal` could be "tener (to have) + en (in) + cuenta '
                 f'(account)" - so the learner can see how the phrase is built, '
                 f"not just what it means overall. Leave `literal` an empty string "
@@ -556,7 +562,7 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
             last_reply = model_chat(messages, max_tokens=_TAG_DRAFT_MAX_TOKENS, model=OPENAI_TRANSLATE_MODEL)
         except ModelServerUnavailableError as exc:
             raise TranslationUnavailableError(str(exc)) from exc
-        if not last_reply.strip() or _looks_garbled(last_reply):
+        if not last_reply.strip() or _looks_garbled(last_reply, target_lang):
             last_error = ValueError("empty or garbled reply")
             # Per-attempt, not just on final failure - if this keeps
             # happening, knowing whether EVERY attempt came back truly
@@ -575,60 +581,32 @@ def tag_draft(draft: str, native_lang: str, target_lang: str) -> tuple[str, list
     raise TranslationUnavailableError(f"Model reply wasn't usable JSON: {last_reply!r} ({last_error})")
 
 
-# Shared across the WHOLE call (verdict + meaning + up to 3x(spanish +
-# english) for a FIX verdict) rather than split per-field, same reasoning
-# the old PART1/PART2 split budget this replaces had for not splitting
-# further: a hard per-field cap risks one field starving a later one with
-# no way for the model to redistribute leftover budget, and that only gets
-# worse the more fields there are (8 here vs. 2 before). Lower than the
-# old combined 2800 despite more fields: the whole protocol is plain text
-# now, no JSON braces/keys/quoting overhead anywhere, and - the single
-# biggest token sink the old protocol had, per _COACH_TRANSLATIONS_MAX_
-# TOKENS's own history below - a picked option's word-by-word gloss
-# breakdown is no longer part of this call at all; it's fetched lazily via
-# /translate/gloss-spans only once an option is actually picked (see
-# ChatInput.tsx's handleSelectCoachOption). Still treat this as a starting
-# point to tune against real output, not a settled number: this model
-# (OPENAI_CHAT_MODEL, a reasoning-style model - see openai_client.py's own
-# comment on requiring max_completion_tokens) has repeatedly come back
-# completely empty under budget pressure elsewhere in this file
-# (_TAG_DRAFT_MAX_TOKENS's history is the clearest example) when its own
-# internal reasoning tokens alone exhausted a tight cap before any visible
-# output - the same failure mode remains possible here.
-_COACH_STREAM_MAX_TOKENS = 2400
-_COACH_HISTORY_TURNS = 8
-_COACH_FORMALITIES = ("neutral", "casual", "formal")  # fixed, positional - never parsed from the model
-_COACH_VERDICTS = {"clean", "minor", "fix"}
+# The coach: one conversation about what the learner wants to say next and
+# about the messages so far. It answers questions, explains words and
+# grammar, drills, and - whenever it suggests something to say - writes
+# the suggestion as a [[target language | English meaning]] block, which the app
+# renders as a card with "Use this". Read aloud as well as shown.
+_COACH_MAX_TOKENS = 1800
+_COACH_HISTORY_MESSAGES = 8
+_COACH_READY_MARKER = "<<<READY>>>"
 
-# Written literally into the prompt and watched for verbatim in the
-# streamed reply, same convention every marker in this file already
-# follows - each one terminates the field named after it. Unlike the
-# two-marker protocol this replaces, there are now up to 8 of these in one
-# call (a verdict, a meaning, then up to 6 per-option fields for a FIX
-# verdict) - app.translate.sequential_stream.stream_sequential_fields
-# drives the whole sequence generically; see its own docstring for how the
-# marker-safe-tail withholding generalizes across all of them at once.
-_COACH_VERDICT_MARKER = "<<<VERDICT>>>"
-_COACH_MEANING_MARKER = "<<<MEANING>>>"
-_COACH_SUGGESTION_MARKER = "<<<SUGGESTION>>>"
-_COACH_OPT_MARKERS = (
-    "<<<OPT1_ES>>>",
-    "<<<OPT1_EN>>>",
-    "<<<OPT2_ES>>>",
-    "<<<OPT2_EN>>>",
-    "<<<OPT3_ES>>>",
-    "<<<OPT3_EN>>>",
-)
+# The model sometimes echoes a field's name into the field ("READY: yes",
+# "REPLY: ..."), which would break parsing or get read aloud. Stripped from
+# the start of each field; the prompt also tells it not to.
+_FIELD_LABEL_RE = re.compile(r"^\s*(?:READY|REPLY|ANSWER)\b\s*[:\-–—]?\s*", re.IGNORECASE)
+# How much of the reply to hold back before deciding whether it starts
+# with an echoed label - "ANSWER" plus a separator is 8 chars at most.
+_REPLY_HOLDBACK = 8
+
+
+def _strip_field_label(text: str) -> str:
+    return _FIELD_LABEL_RE.sub("", text, count=1)
 
 
 def _run_sequential_fields(chunks, fields, initial_buffer: str = ""):
-    """Drives sequential_stream.stream_sequential_fields and exposes its
-    leftover-buffer return value to a plain caller - a generator's own
-    `return <value>` is only visible via `StopIteration.value`, which a
-    normal `for` loop has no way to capture, so this hands it back instead
-    as the second element of the returned tuple (an itself-exhausted-by-
-    then single-item list, filled in once the wrapped generator truly
-    finishes - read it only AFTER fully iterating the first element)."""
+    """Drives sequential_stream.stream_sequential_fields and hands its
+    leftover buffer back to a plain caller: returns (iterator, box), where
+    box[0] holds the leftover once the iterator is exhausted."""
     leftover_box: list[str] = []
 
     def driver():
@@ -644,431 +622,190 @@ def _run_sequential_fields(chunks, fields, initial_buffer: str = ""):
     return driver(), leftover_box
 
 
-def coach_draft_stream(
-    draft: str,
-    history: list[tuple[str, str]],
+def coach_reply_stream(
+    text: str,
+    messages: list[dict],
+    about_number: int | None,
+    thread_turns: list[tuple[str, str]],
+    draft_turns: list[tuple[str, str]],
     native_lang: str,
     target_lang: str,
+    check: bool = False,
+    message_draft: str = "",
 ):
-    """For a message the learner is still drafting (not yet sent): decides
-    whether it's already good to go, restates what it thinks they meant,
-    and - only if real correction is needed - suggests the ideal phrasing
-    at a few formality levels, given the recent conversation's tone and
-    context. ONE streamed LLM call, entirely plain text (no JSON anywhere,
-    unlike this function's earlier JSON-blob-based protocol - removes a
-    whole class of truncation/parse failure this file has hit repeatedly
-    elsewhere), driven field-by-field via app.translate.sequential_stream:
+    """Streams the coach's reply to `text`.
 
-    First, a VERDICT - "clean" (nothing to fix at all), "minor" (fine to
-    send as-is, but one small cosmetic suggestion follows), or "fix" (real
-    correction needed) - yielded as ("verdict", "clean"|"minor"|"fix") the
-    moment it's parsed, before anything else has streamed. This is the one
-    piece of the old "core" event's `feedback`/`options` a caller actually
-    needs INSTANTLY: it's what lets the Send button light up the moment a
-    draft is known good, well before the explanation has finished
-    streaming (see ChatInput.tsx's coachReady vs. the slower-to-settle
-    coachVerified).
+    `messages` is the recent conversation with the partner, oldest first,
+    each {"number", "role" ("user"|"assistant"), "text", optional
+    "glosses"}. `about_number` is the message this side conversation is
+    about (the learner opened it from that message), or None for the
+    learner's next message. `thread_turns` is the side conversation already
+    under that message; `draft_turns` the conversation about the next
+    message, both as (role, text) with role "learner" | "coach". `check` =
+    `text` is the message the learner is about to send, as written.
+    `message_draft` is what's in their message box right now (typed, not
+    sent), if anything.
 
-    Then the restated meaning streams live, delta by delta - the one part
-    of the reply worth reading char-by-char while it's still generating,
-    same "zipper" feel /chat/turn/stream's own reply tokens have -
-    yielded as ("meaning_chunk", delta) per newly-arrived, marker-safe
-    piece of text, then ("meaning_complete", full_text) once settled.
-
-    What follows depends on the verdict:
-    - "clean": nothing further - the generator simply ends.
-    - "minor": a single corrected suggestion streams the same way -
-      ("suggestion_chunk", delta) then ("suggestion_complete", full_text).
-    - "fix": three formality-ranked suggestions stream in order (index 0 =
-      neutral, 1 = casual, 2 = formal - see _COACH_FORMALITIES), each
-      INTERLEAVED with its own whole-sentence native_lang back-translation
-      immediately after - not batched together at the end the way the old
-      protocol's PART 3 was: ("option_spanish_chunk", i, delta) /
-      ("option_spanish_complete", i, text), then ("option_english_chunk",
-      i, delta) / ("option_english_complete", i, text), repeated for i in
-      0, 1, 2. A picked option's word-by-word gloss breakdown is
-      DELIBERATELY not part of this stream at all - see
-      _COACH_STREAM_TOKENS's own comment on why, and ChatInput.tsx's
-      handleSelectCoachOption for where it's fetched instead.
-
-    Unlike every other LLM-backed helper here, this does NOT retry on a
-    garbled/unusable reply - earlier fields may already have been yielded
-    (and acted on by the caller) by the time a later one turns out
-    unusable, so there's nothing to cleanly retry; a field that never
-    completes (chunks ran out, or the model skipped straight past it)
-    just means the generator yields one fewer event than the full
-    sequence - whatever DID complete stays fully usable (see
-    sequential_stream's own docstring on why fields are independent this
-    way). Raises TranslationUnavailableError only when NOTHING at all is
-    usable - the verdict marker itself never arrived."""
-    if not draft.strip():
+    Yields, in order:
+      ("ready", bool) - the learner's own target-language text in `text` is already
+        correct and natural to send as written.
+      ("reply_chunk", delta) ... then ("reply_complete", full_text).
+    Raises TranslationUnavailableError if the model can't be reached or
+    produced no reply at all."""
+    if not text.strip():
         return
 
-    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
+    native_name = language_name(native_lang)
+    target_name = language_name(target_lang)
+    lang = get_language(target_lang)
+    recent = messages[-_COACH_HISTORY_MESSAGES:]
+    listing = "\n".join(
+        f"[{m['number']}] {'Learner' if m['role'] == 'user' else 'Partner'}: {m['text']}"
+        + (f"\n    (word glosses: {m['glosses']})" if m.get("glosses") else "")
+        for m in recent
+    )
 
-    recent = history[-_COACH_HISTORY_TURNS:]
-    transcript = "\n".join(f"{'Learner' if role == 'user' else 'Partner'}: {text}" for role, text in recent)
-    context_block = f"The conversation so far:\n{transcript}\n\n" if transcript else ""
+    def lines(turns: list[tuple[str, str]]) -> str:
+        return "\n".join(f"{'Learner' if role == 'learner' else 'Coach'}: {t}" for role, t in turns[-10:])
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                f"You are a warm, encouraging writing coach for someone learning "
-                f"{target_name}, whose native language is {native_name}. They are "
-                f"drafting their NEXT message in the conversation below - it may "
-                f"mix {native_name} and {target_name}, and may have grammar or "
-                f"spelling mistakes in either.\n\n"
-                f"{context_block}"
-                f"FIRST, decide a VERDICT for their draft - exactly one word, "
-                f"nothing else:\n"
-                f"- CLEAN: the draft is already completely correct {target_name} - "
-                f"not even a trivial issue. If you would change literally nothing, "
-                f"it's CLEAN.\n"
-                f"- MINOR: the draft is understandable, natural-enough "
-                f"{target_name} that could be sent as-is, but has ONE small "
-                f"cosmetic issue - a missing or wrong accent mark, a punctuation "
-                f"slip (missing ¿/¡, a wrong comma), or an obvious one-letter "
-                f"spelling typo. Nothing about word choice, verb conjugation, or "
-                f"sentence structure is wrong - only surface-level polish. If in "
-                f"doubt between MINOR and FIX, and the issue is purely visual/"
-                f"orthographic, choose MINOR.\n"
-                f"- FIX: anything else - a wrong verb form, wrong word choice, "
-                f"missing words, unnatural phrasing, structural or grammar "
-                f"problems, or the draft is in {native_name}/mixed and needs real "
-                f"translation.\n\n"
-                f"Write exactly one of CLEAN, MINOR, or FIX, then immediately "
-                f"write this marker: {_COACH_VERDICT_MARKER}\n\n"
-                f"THEN, PLAIN TEXT ONLY - no quotes, no labels, no JSON: state "
-                f"their intent as a concise {native_name} sentence - if what they "
-                f"typed is ALREADY clear, grammatical {native_name}, just copy it "
-                f"verbatim; otherwise give the shortest natural {native_name} "
-                f"phrasing of what they meant, not a description of their intent. "
-                f"Nothing else - no preamble, no explanation.\n\n"
-                f"Immediately after that, write exactly this marker: "
-                f"{_COACH_MEANING_MARKER}\n\n"
-                f"THEN, depending on which VERDICT you chose above:\n\n"
-                f"IF YOU CHOSE CLEAN: write nothing further at all - stop "
-                f"immediately after {_COACH_MEANING_MARKER}.\n\n"
-                f"IF YOU CHOSE MINOR: write ONE corrected version of their whole "
-                f"draft, fixing ONLY that small issue - plain {target_name} text, "
-                f"no quotes, no labels - then immediately write this marker: "
-                f"{_COACH_SUGGESTION_MARKER}\n\n"
-                f"IF YOU CHOSE FIX: write THREE suggested rephrasings in "
-                f"{target_name}, each one natural sentence ready to send as-is, "
-                f"each immediately followed by its OWN whole-sentence "
-                f"{native_name} back-translation (so the learner can double "
-                f"check it) - in this exact order, each piece followed "
-                f"immediately by its own marker. Each marker's name tells you "
-                f"which language that piece MUST be written in - never put "
-                f"{target_name} text after an _EN marker's content, and never "
-                f"put {native_name} text after an _ES marker's content:\n"
-                f"1. A natural/neutral way to say it, in {target_name}, then "
-                f"{_COACH_OPT_MARKERS[0]}\n"
-                f"2. That SAME suggestion's back-translation, in {native_name}, "
-                f"then {_COACH_OPT_MARKERS[1]}\n"
-                f"3. A more casual/informal way to say it, in {target_name}, "
-                f"then {_COACH_OPT_MARKERS[2]}\n"
-                f"4. That suggestion's back-translation, in {native_name}, then "
-                f"{_COACH_OPT_MARKERS[3]}\n"
-                f"5. A more formal/polite way to say it, in {target_name}, then "
-                f"{_COACH_OPT_MARKERS[4]}\n"
-                f"6. That suggestion's back-translation, in {native_name}, then "
-                f"{_COACH_OPT_MARKERS[5]}\n"
-                f"Keep each {target_name} suggestion to one natural sentence or "
-                f"short exchange - not a lecture, and don't repeat the same "
-                f"phrasing across formality levels if you can genuinely vary it. "
-                f"If a formality distinction doesn't make sense for this "
-                f"particular message, it's fine for two to be similar, but still "
-                f"write all three suggestions and all three back-translations.\n\n"
-                f"No markdown fences, no explanation, no extra text anywhere "
-                f"beyond exactly what's specified above."
-            ),
-        },
-        {"role": "user", "content": draft},
-    ]
-
-    try:
-        chunks = model_chat_stream(messages, max_tokens=_COACH_STREAM_MAX_TOKENS)
-
-        verdict_iter, verdict_leftover = _run_sequential_fields(chunks, [Field("verdict", _COACH_VERDICT_MARKER)])
-        verdict_raw: str | None = None
-        for kind, text in verdict_iter:
-            if kind == "verdict_complete":
-                verdict_raw = text
-
-        if verdict_raw is None:
-            # The verdict marker never arrived at all - nothing downstream
-            # (not even which fields to expect next) can be trusted.
-            raise TranslationUnavailableError("Model reply had no usable verdict")
-
-        verdict = verdict_raw.strip().lower()
-        if verdict not in _COACH_VERDICTS:
-            # An unrecognized token defaults to the FULL correction flow,
-            # never to "looks good" - showing three suggestions for a
-            # draft that was secretly fine is harmless; silently telling
-            # the learner a genuinely broken draft is fine to send is not.
-            logger.warning("coach_draft_stream: unrecognized verdict token %r, defaulting to fix", verdict_raw)
-            verdict = "fix"
-
-        yield ("verdict", verdict)
-
-        fields = [Field("meaning", _COACH_MEANING_MARKER)]
-        if verdict == "minor":
-            fields.append(Field("suggestion", _COACH_SUGGESTION_MARKER))
-        elif verdict == "fix":
-            for i in range(3):
-                fields.append(Field("option_spanish", _COACH_OPT_MARKERS[2 * i], extra=(i,)))
-                fields.append(Field("option_english", _COACH_OPT_MARKERS[2 * i + 1], extra=(i,)))
-
-        rest_iter, _rest_leftover = _run_sequential_fields(chunks, fields, initial_buffer=verdict_leftover[0])
-        # Stashes each FIX option's Spanish text, by index, the moment it
-        # completes - needed because the Spanish/English language check
-        # below (_correct_option_languages) can only run once BOTH halves
-        # of an option are known, which is only true once its own
-        # option_english_complete arrives.
-        pending_option_spanish: dict[int, str] = {}
-        for kind, *rest in rest_iter:
-            if kind == "meaning_chunk":
-                yield ("meaning_chunk", rest[0])
-            elif kind == "meaning_complete":
-                yield ("meaning_complete", rest[0].strip())
-            elif kind == "suggestion_chunk":
-                yield ("suggestion_chunk", rest[0])
-            elif kind == "suggestion_complete":
-                yield ("suggestion_complete", rest[0].strip())
-            elif kind == "option_spanish_chunk":
-                yield ("option_spanish_chunk", rest[0], rest[1])
-            elif kind == "option_spanish_complete":
-                index, text = rest[0], rest[1].strip()
-                pending_option_spanish[index] = text
-                yield ("option_spanish_complete", index, text)
-            elif kind == "option_english_chunk":
-                yield ("option_english_chunk", rest[0], rest[1])
-            elif kind == "option_english_complete":
-                index, english_text = rest[0], rest[1].strip()
-                spanish_text = pending_option_spanish.get(index, "")
-                corrected_spanish, corrected_english = _correct_option_languages(
-                    spanish_text, english_text, native_lang, target_lang
-                )
-                if corrected_spanish != spanish_text:
-                    # A corrective second option_spanish_complete for the
-                    # same index - the frontend reducer already just
-                    # overwrites that field's state on a repeat event, so
-                    # no new frontend handling is needed for this.
-                    yield ("option_spanish_complete", index, corrected_spanish)
-                yield ("option_english_complete", index, corrected_english)
-    except ModelServerUnavailableError as exc:
-        raise TranslationUnavailableError(str(exc)) from exc
-
-
-# Voice mode's spoken coach. Same plain-text marker protocol as
-# coach_draft_stream above, but the field list is FIXED (no branching on an
-# early field), so one stream_sequential_fields call parses the whole reply.
-# Small decision-bearing fields first (so the client can act before the
-# long part has finished), the spoken text last so it can stream straight
-# into sentence-by-sentence TTS.
-_VOICE_COACH_MAX_TOKENS = 1600
-_VOICE_COACH_HISTORY_TURNS = 8
-_VOICE_INTENTS = {"attempt", "question", "clarify", "confirm", "pick", "cancel", "translate_last"}
-_VOICE_VERDICTS = {"ready", "revise", "none"}
-_VOICE_INTENT_MARKER = "<<<INTENT>>>"
-_VOICE_VERDICT_MARKER = "<<<VERDICT>>>"
-_VOICE_DRAFT_MARKER = "<<<DRAFT>>>"
-_VOICE_SAY_MARKER = "<<<SAY>>>"
-# Below this the recognizer's own confidence is low enough to be worth
-# flagging to the coach as a possible mis-hearing.
-_VOICE_LOW_CONFIDENCE = 0.75
-
-# Observed live: the model sometimes echoes the field's name into the field
-# ("SAY That's correct..." / "VERDICT ready"), which would both get read
-# aloud and break the exact-match checks on intent/verdict. Stripped from
-# every field; the prompt also tells it not to.
-_VOICE_LABEL_RE = re.compile(r"^\s*(?:INTENT|VERDICT|DRAFT|SAY)\b\s*[:\-–—]?\s*", re.IGNORECASE)
-# How much of the spoken field to hold back before deciding whether it
-# starts with an echoed label - "SAY" plus a separator is 5 chars at most.
-_VOICE_SAY_HOLDBACK = 6
-
-
-def _strip_voice_label(text: str) -> str:
-    return _VOICE_LABEL_RE.sub("", text, count=1)
-
-
-def voice_coach_stream(
-    transcript: str,
-    words: list[dict],
-    coach_dialog: list[tuple[str, str]],
-    history: list[tuple[str, str]],
-    native_lang: str,
-    target_lang: str,
-):
-    """The coach half of a spoken conversation: the learner SAID something
-    (`transcript`, speech-to-text - possibly mixed languages, possibly
-    mis-heard; `words` carries per-word recognizer confidence), and this
-    decides what it was and what to say back, out loud.
-
-    Yields, in order: ("intent", one of _VOICE_INTENTS) - what the
-    utterance IS (an attempt at their message, a question, a clarification,
-    a confirmation to send, a pick among options, a cancel, or "what did
-    they say?"); ("verdict", "ready"|"revise"|"none") - whether there is
-    now a correct Spanish sentence worth sending; ("draft", text) - that
-    sentence, or ""; then ("say_chunk", delta) / ("say_complete", text) -
-    the coach's spoken reply, streamed. Everything the coach says has to
-    work as audio alone (the phone's screen may be off), which the prompt
-    spells out. `coach_dialog` is the learner<->coach exchange about THIS
-    attempt so far; `history` is the partner conversation, for tone.
-
-    Like coach_draft_stream: no retry (fields already yielded may already
-    have been acted on); raises TranslationUnavailableError only when the
-    intent marker never arrives at all."""
-    if not transcript.strip():
-        return
-
-    native_name = _LANGUAGE_NAMES.get(native_lang, native_lang)
-    target_name = _LANGUAGE_NAMES.get(target_lang, target_lang)
-
-    recent = history[-_VOICE_COACH_HISTORY_TURNS:]
-    transcript_block = "\n".join(f"{'Learner' if role == 'user' else 'Partner'}: {text}" for role, text in recent)
-    context_block = f"The conversation with the partner so far:\n{transcript_block}\n\n" if transcript_block else ""
-    dialog_block = ""
-    if coach_dialog:
-        dialog_lines = "\n".join(f"{'Learner' if role == 'learner' else 'Coach'}: {text}" for role, text in coach_dialog)
-        dialog_block = f"What you and the learner have said to each other about THIS attempt so far:\n{dialog_lines}\n\n"
-    low_confidence = [w for w in words if float(w.get("confidence", 1.0)) < _VOICE_LOW_CONFIDENCE and w.get("word")]
-    confidence_block = ""
-    if low_confidence:
-        listed = ", ".join(f"'{w['word']}' ({float(w['confidence']):.2f})" for w in low_confidence)
-        confidence_block = (
-            f"The speech recognizer was unsure about these words (confidence in parentheses) - they may be "
-            f"mis-heard near-homophones, e.g. 'te gustas' for 'te gusta', 'corre' for 'correr': {listed}\n\n"
+    thread_lines = lines(thread_turns)
+    draft_lines = lines(draft_turns)
+    context = f"The conversation with their partner, numbered:\n{listing or '(nothing yet)'}\n\n"
+    if about_number is not None:
+        whose = next((m for m in recent if m["number"] == about_number), None)
+        who = "their partner's" if whose is None or whose["role"] == "assistant" else "their own"
+        context += (
+            f"This side conversation is about message [{about_number}] ({who} message) - what it says, "
+            f"its words and grammar, how to answer it, or anything else about it.\n"
         )
+        context += f"So far:\n{thread_lines}\n\n" if thread_lines else "\n"
+    else:
+        context += "This side conversation is about what they'll say next.\n"
+        context += f"So far:\n{draft_lines}\n\n" if draft_lines else "\n"
+    if message_draft.strip():
+        context += (
+            f"Their message box right now (typed, not sent yet): \"{message_draft.strip()}\". If they ask "
+            f"whether it's right, how it sounds, or refer to \"this\"/\"it\" without saying what, they "
+            f"mean this.\n\n"
+        )
+    if lang.script == "latin":
+        mechanics_note = (
+            "Ignore punctuation and capitalization (a missing opening \"¿\"/\"¡\" in Spanish, "
+            "a final period, a lowercase first letter) - that counts as right unless it changes the "
+            "meaning. Missing or wrong accents are worth fixing: then give the corrected sentence as "
+            "a block and say plainly that the only change is the accent(s), naming them (e.g. "
+            "\"Just one accent: 'está'\")."
+        )
+        ready_rule = "punctuation and capitalization don't count; accents do"
+        romanized_note = ""
+    else:
+        mechanics_note = (
+            "Ignore punctuation (a missing final 。 or ？, spacing) - that counts as right unless "
+            "it changes the meaning."
+        )
+        script_name = {"japanese": "kana and kanji", "chinese": "Chinese characters", "korean": "Hangul"}[lang.script]
+        ready_rule = f"punctuation doesn't count; it must be written in {script_name}, not romanization"
+        romanized_note = (
+            f"- They may write {target_name} in romanization (romaji, pinyin, romanized Korean) "
+            f"when they can't type the script yet - that's {target_name} too: react to it, and "
+            f"always write suggestions in {script_name}.\n"
+        )
+    check_note = (
+        "\nThe learner's message below is the exact message they're about to send to their partner "
+        "(typed or dictated in their message box) - treat it as what they want to say.\n"
+        if check
+        else ""
+    )
 
-    messages = [
+    prompt = [
         {
             "role": "system",
             "content": (
-                f"You are a warm, concise spoken {target_name} coach, talking OUT LOUD to a learner whose "
-                f"native language is {native_name}. They are SPEAKING into their phone, often with the "
-                f"screen off, so everything you say must work as audio alone - never refer to anything on "
-                f"screen.\n\n"
-                f"The learner is composing their next message to a {target_name}-speaking conversation "
-                f"partner. What they just said arrives as speech-to-text: it may mix {native_name} and "
-                f"{target_name}, may have grammar mistakes, and may contain mis-heard words.\n\n"
-                f"{context_block}{dialog_block}{confidence_block}"
-                f"Reply with exactly four fields, in this order, each immediately followed by its marker. "
-                f"Write only each field's content - never the field's name (do not write 'INTENT', "
-                f"'VERDICT', 'DRAFT' or 'SAY' themselves). No other text anywhere.\n\n"
-                f"1. INTENT - exactly one word, what the learner's utterance IS:\n"
-                f"- attempt: an attempt at the message they want to send (in {target_name}, {native_name}, or a mix)\n"
-                f"- question: asking you something ('how do I say...', 'what does X mean', 'why...')\n"
-                f"- clarify: correcting what they meant ('no, I meant...') after your suggestion\n"
-                f"- confirm: accepting your suggestion or telling you to send it ('yes', 'sí', 'send it', 'that one', 'mándalo')\n"
-                f"- pick: choosing one of several options you offered ('the casual one', 'the second one')\n"
-                f"- cancel: dropping the attempt ('never mind', 'forget it', 'olvídalo')\n"
-                f"- translate_last: asking what the partner's last message meant ('what did they say?')\n"
-                f"Then write {_VOICE_INTENT_MARKER}\n\n"
-                f"2. VERDICT - exactly one word:\n"
-                f"- ready: there is a correct, natural {target_name} sentence that faithfully says what they "
-                f"meant and it makes sense to send it now - their attempt was already correct or needed only "
-                f"a trivial fix (an accent, punctuation, a one-letter typo) you have made, or they confirmed/"
-                f"picked\n"
-                f"- revise: they should try again or choose first - real mistakes, doubt about what they "
-                f"meant, or you are offering options\n"
-                f"- none: not an attempt at all (a question you answered, a cancel, a translate request)\n"
-                f"Then write {_VOICE_VERDICT_MARKER}\n\n"
-                f"3. DRAFT - the single best {target_name} sentence to send, exactly as it should be sent: "
-                f"{target_name} only, no quotes, no explanation. MUST be filled when the verdict is ready. "
-                f"If you are offering several options, put your top recommendation here. Leave it empty "
-                f"when there is nothing to send. Then write {_VOICE_DRAFT_MARKER}\n\n"
-                f"4. SAY - what you say out loud, then write {_VOICE_SAY_MARKER}. Rules:\n"
-                f"- Spoken {native_name}, short sentences, warm but brief: one to four sentences unless they "
-                f"asked for an explanation.\n"
-                f"- Any {target_name} you say goes in whole quoted phrases, never single {target_name} words "
-                f"scattered through a {native_name} sentence - keep the two languages in separate sentences "
-                f"or clauses.\n"
-                f"- If the verdict is ready: confirm briefly, then read the exact {target_name} you will "
-                f"send, introduced with 'Sending:'. If you fixed something trivial, say what in a few words.\n"
-                f"- If the verdict is revise: first restate what you think they meant in {native_name}, as a "
-                f"question if you are unsure ('Did you mean: do you like running?'). Then the suggested "
-                f"{target_name}. If you offer alternatives, read each aloud with a spoken label ('Option one, "
-                f"casual: ... Option two, formal: ...'), at most three. Explain the key fix in one short "
-                f"sentence when it teaches something ('correr means to run, and it is te gusta, not te "
-                f"gustas - gustar agrees with the thing that is liked').\n"
-                f"- If a low-confidence word looks mis-heard, say so: 'It sounded like te gustas - did you "
-                f"mean te gusta?'\n"
-                f"- For a question: answer it directly and briefly, giving the {target_name} they asked for.\n"
-                f"- For translate_last: say the partner's last message in {native_name}.\n"
-                f"- Never use markdown, bullet characters, emoji, or numbered lists."
+                f"You are a warm, sharp {target_name} coach for a {native_name} speaker who is "
+                f"chatting in {target_name} with a conversation partner. You and the learner talk "
+                f"on the side: they work out what to say next, ask what things mean, ask about "
+                f"grammar, practise words, or just think out loud. Answer like a real coach in a "
+                f"real conversation - whatever fits: an answer, an explanation, a suggestion, a "
+                f"quick correction, encouragement, a question back.\n\n"
+                f"{context}"
+                f"How to read what they write:\n"
+                f"- If they write {target_name} (or mixed {target_name}/{native_name}) with no "
+                f"framing, it's most likely what they want to say to their partner - react to it "
+                f"as an attempt.\n"
+                f"- \"I want to say ...\", \"how do I tell him ...\" = they want to say that.\n"
+                f"- \"More casual\", \"shorter\", \"use a different word\" adjust your last "
+                f"suggestion.\n"
+                f"{romanized_note}"
+                f"- Questions about words, grammar or meaning - answer them; drill if they repeat "
+                f"a word back.\n\n"
+                f"Suggestions: whenever you suggest something for them to say, write it exactly "
+                f"as [[{target_name} sentence | {native_name} meaning]] - one block per suggestion, "
+                f"usually just one, more only if they ask for options. Never use [[ ]] for "
+                f"anything else.\n\n"
+                f"When their {target_name} is already right, say so briefly and stop - no "
+                f"suggestion block if it's already in their message box (it's ready to send); "
+                f"only give it back as a block if they wrote it here and haven't put it in their "
+                f"message box yet. {mechanics_note}\n\n"
+                f"Style: {native_name}, with {target_name} words in quotes outside the blocks. "
+                f"Short, natural sentences - it's read aloud. No markdown, lists, headings or "
+                f"emoji. Don't open with \"Did you mean\" by default; talk normally.\n\n"
+                f"Write exactly two fields, in order, and never write a field's name:\n"
+                f"1. yes if the learner's own {target_name} in their latest message is already "
+                f"correct and natural to send as written ({ready_rule}), otherwise no (no for "
+                f"questions and for {native_name}). "
+                f"Then this marker: {_COACH_READY_MARKER}\n"
+                f"2. Your reply, and nothing after it."
+                f"{check_note}"
             ),
         },
-        {"role": "user", "content": transcript},
-    ]
-
-    fields = [
-        Field("intent", _VOICE_INTENT_MARKER),
-        Field("verdict", _VOICE_VERDICT_MARKER),
-        Field("draft", _VOICE_DRAFT_MARKER),
-        Field("say", _VOICE_SAY_MARKER),
+        {"role": "user", "content": text},
     ]
 
     try:
-        chunks = model_chat_stream(messages, max_tokens=_VOICE_COACH_MAX_TOKENS, model=OPENAI_VOICE_COACH_MODEL)
-        intent: str | None = None
-        verdict: str | None = None
-        draft = ""
-        # The spoken field streams; its first few chars are held back until
-        # it's clear whether they're an echoed "SAY" label to drop.
-        say_head: str | None = ""
-        for kind, *rest in stream_sequential_fields(chunks, fields):
-            if kind == "intent_complete":
-                intent = _strip_voice_label(rest[0]).strip().lower()
-                if intent not in _VOICE_INTENTS:
-                    logger.warning("voice_coach_stream: unrecognized intent %r, treating as attempt", rest[0])
-                    intent = "attempt"
-                yield ("intent", intent)
-            elif kind == "verdict_complete":
-                verdict = _strip_voice_label(rest[0]).strip().lower()
-                if verdict not in _VOICE_VERDICTS:
-                    # Never default to "ready" - sending something the
-                    # learner didn't approve is the harmful direction.
-                    logger.warning("voice_coach_stream: unrecognized verdict %r, treating as revise", rest[0])
-                    verdict = "revise"
-                # `draft` hasn't arrived yet; the ready-needs-a-draft check
-                # happens once it has, below.
-            elif kind == "draft_complete":
-                draft = _strip_voice_label(rest[0]).strip()
-                if draft and target_lang == "es" and native_lang == "en" and not _looks_spanish(draft):
-                    # The model wrote the "Spanish only" field in English -
-                    # same post-hoc guard coach_draft_stream's options use.
-                    try:
-                        draft = translate_text(draft, native_lang, target_lang)
-                    except TranslationUnavailableError:
-                        pass
-                if verdict == "ready" and not draft:
-                    verdict = "revise"
-                yield ("verdict", verdict or "revise")
-                yield ("draft", draft)
-            elif kind == "say_chunk":
-                if say_head is not None:
-                    say_head += rest[0]
-                    if len(say_head) < _VOICE_SAY_HOLDBACK:
-                        continue
-                    head = _strip_voice_label(say_head)
-                    say_head = None
-                    if head:
-                        yield ("say_chunk", head)
-                else:
-                    yield ("say_chunk", rest[0])
-            elif kind == "say_complete":
-                if say_head:
-                    # Field ended before the holdback filled - flush it.
-                    flushed = _strip_voice_label(say_head)
-                    if flushed:
-                        yield ("say_chunk", flushed)
-                say_head = None
-                yield ("say_complete", _strip_voice_label(rest[0]).strip())
-        if intent is None:
-            raise TranslationUnavailableError("Model reply had no usable intent")
+        chunks = model_chat_stream(prompt, max_tokens=_COACH_MAX_TOKENS, model=OPENAI_COACH_MODEL)
+        head_iter, head_leftover = _run_sequential_fields(chunks, [Field("ready", _COACH_READY_MARKER)])
+        ready_raw: str | None = None
+        for kind, value in head_iter:
+            if kind == "ready_complete":
+                ready_raw = value
+
+        ready = bool(ready_raw and re.search(r"\byes\b", _strip_field_label(ready_raw), re.IGNORECASE))
+        yield ("ready", ready)
+
+        # Everything after the marker is the reply. If the marker never
+        # came, the leftover holds the rest of the text - keep it as the
+        # reply rather than losing it.
+        pending = head_leftover[0] if head_leftover else ""
+        reply = ""
+        head_done = False
+
+        def emit(piece: str) -> str | None:
+            nonlocal reply, head_done, pending
+            pending += piece
+            if not head_done:
+                if len(pending) < _REPLY_HOLDBACK:
+                    return None
+                pending = _strip_field_label(pending.lstrip())
+                head_done = True
+            out, pending = pending, ""
+            reply += out
+            return out or None
+
+        first = emit("")
+        if first:
+            yield ("reply_chunk", first)
+        for chunk in chunks:
+            out = emit(chunk)
+            if out:
+                yield ("reply_chunk", out)
+        if not head_done:
+            out = _strip_field_label(pending.lstrip())
+            if out:
+                reply += out
+                yield ("reply_chunk", out)
+        reply = reply.strip()
+        if not reply:
+            raise TranslationUnavailableError("Model reply had no text")
+        yield ("reply_complete", reply)
     except ModelServerUnavailableError as exc:
         raise TranslationUnavailableError(str(exc)) from exc

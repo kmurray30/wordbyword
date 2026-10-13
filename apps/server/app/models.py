@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.config import DEFAULT_REVIEW_INTERVAL_DAYS
@@ -19,9 +19,12 @@ class WordBankEntry(Base):
     weighting algorithm reads from and writes back to."""
 
     __tablename__ = "word_bank"
+    # One entry per word per language ("la" is Spanish's and French's both).
+    __table_args__ = (Index("uq_word_bank_language_lemma", "language", "lemma", unique=True),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    lemma: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    language: Mapped[str] = mapped_column(String(8), default="es")
+    lemma: Mapped[str] = mapped_column(String(128), index=True)
     pos: Mapped[str] = mapped_column(String(32), default="")
     primary_translation: Mapped[str] = mapped_column(String(256), default="")
 
@@ -50,21 +53,38 @@ class ChatMessage(Base):
     # history. Empty string on rows written before this column existed;
     # those are simply invisible to every session now, which is fine.
     session_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # The language the conversation is in (each language has its own
+    # session - see lib/session.ts on the frontend). Rows from before more
+    # languages existed are Spanish.
+    language: Mapped[str] = mapped_column(String(8), default="es")
     role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    # Only populated for role == "user": the same corrected-native-text/
-    # target-translation pair /translate/interpret computes live, persisted
-    # here too so a history-hydrated message doesn't need to re-fetch it
-    # (and show "Translating…" indefinitely if that fetch is ever slow/
-    # stuck) on every page reload. Empty string if the LLM call failed when
-    # this message was first sent - same "no fallback" convention as the
-    # assistant side's note/literal columns below.
+    # The message's translation, saved so a reload doesn't have to fetch it
+    # again (and show "Translating…" meanwhile). role == "user": the
+    # corrected-native-text/target-translation pair /translate/interpret
+    # computes. role == "assistant": native_text is the reply's translation
+    # from the same gloss pass as its word glosses; target_text unused.
+    # Empty if the LLM call failed - filled in later by the frontend via
+    # POST /chat/message/interpretation.
     native_text: Mapped[str] = mapped_column(String(1024), default="")
     target_text: Mapped[str] = mapped_column(String(1024), default="")
+    # The message's word/phrase glosses as JSON (schemas.MessageGlosses),
+    # for either role - see app/chat/glosses.py. Empty until made.
+    glosses: Mapped[str] = mapped_column(Text, default="")
+    # role == "assistant", contextual vocab on: JSON of what the embedding
+    # search offered for this reply (app/vocab/suggest.py's debug payload) -
+    # backs the debug view next to each bubble. Empty otherwise.
+    vocab_debug: Mapped[str] = mapped_column(Text, default="")
 
     tokens: Mapped[list["MessageToken"]] = relationship(
         back_populates="message", cascade="all, delete-orphan", order_by="MessageToken.position"
+    )
+    # The side conversation hanging off this message (see ThreadEntry) -
+    # the main chat shows only the phrases actually exchanged; everything
+    # said ABOUT a message lives here.
+    thread: Mapped[list["ThreadEntry"]] = relationship(
+        back_populates="message", cascade="all, delete-orphan", order_by="ThreadEntry.position"
     )
 
 
@@ -94,12 +114,14 @@ class MessageToken(Base):
 
 
 class WordEmbedding(Base):
-    """Cached embedding of one word-bank lemma (app/vocab/embeddings.py).
-    Keyed by model too, so switching EMBEDDING_MODEL just re-embeds rather
-    than comparing vectors from two different spaces."""
+    """Cached embedding of one word (app/vocab/embeddings.py). Keyed by
+    language (the same lemma can be two languages' words) and by model, so
+    switching EMBEDDING_MODEL just re-embeds rather than comparing vectors
+    from two different spaces."""
 
     __tablename__ = "word_embedding"
 
+    language: Mapped[str] = mapped_column(String(8), primary_key=True, default="es")
     lemma: Mapped[str] = mapped_column(String(128), primary_key=True)
     model: Mapped[str] = mapped_column(String(128), primary_key=True)
     vector: Mapped[bytes] = mapped_column(LargeBinary)  # float32, L2-normalized
@@ -128,6 +150,7 @@ class VocabSuggestion(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     session_id: Mapped[str] = mapped_column(String(64), index=True)
+    language: Mapped[str] = mapped_column(String(8), default="es")
     assistant_message_id: Mapped[int] = mapped_column(Integer, index=True)
     lemma: Mapped[str] = mapped_column(String(128), index=True)
     kind: Mapped[str] = mapped_column(String(16))  # "relevant" | "wildcard"
@@ -136,3 +159,46 @@ class VocabSuggestion(Base):
     # reward event) - the strongest signal the suggestion paid off.
     picked_up: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class ThreadEntry(Base):
+    """One step of the side conversation attached to a chat message:
+    - kind "check": a coach check of a draft the learner ran before sending
+      this (user) message. `text` is the draft as checked; `data` is the
+      JSON of the coach's result (verdict, meaning, suggestion, options,
+      which option was picked).
+    - kind "question" / "answer": a learner question about this message and
+      the tutor's answer (drill-downs on words, grammar, "break that down").
+    """
+
+    __tablename__ = "thread_entry"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("chat_message.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    role: Mapped[str] = mapped_column(String(16))  # "learner" | "coach" | "tutor"
+    kind: Mapped[str] = mapped_column(String(16))  # "check" | "question" | "answer"
+    text: Mapped[str] = mapped_column(Text, default="")
+    data: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    message: Mapped[ChatMessage] = relationship(back_populates="thread")
+
+
+class SavedWord(Base):
+    """A word the learner chose to keep (tap a word twice in a chat
+    message). Just a list for now - meant to feed a flashcard app later, so
+    it keeps the word's meaning and the sentence it came from."""
+
+    __tablename__ = "saved_word"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # As it appeared, and lowercased (what "already saved" is checked by).
+    word: Mapped[str] = mapped_column(String(128))
+    word_key: Mapped[str] = mapped_column(String(128), index=True)
+    gloss: Mapped[str] = mapped_column(String(256), default="")
+    grammar: Mapped[str] = mapped_column(String(512), default="")
+    sentence: Mapped[str] = mapped_column(Text, default="")
+    message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

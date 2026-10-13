@@ -53,6 +53,24 @@ def add_missing_columns(target_engine) -> None:
                 conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN native_text VARCHAR(1024) DEFAULT ''")
             if "target_text" not in existing:
                 conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN target_text VARCHAR(1024) DEFAULT ''")
+            if "glosses" not in existing:
+                conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN glosses TEXT DEFAULT ''")
+            if "language" not in existing:
+                conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN language VARCHAR(8) DEFAULT 'es'")
+            if "vocab_debug" not in existing:
+                conn.exec_driver_sql("ALTER TABLE chat_message ADD COLUMN vocab_debug TEXT DEFAULT ''")
+
+        if table_exists("word_bank"):
+            existing_bank_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(word_bank)")}
+            if "language" not in existing_bank_columns:
+                # Every word so far is Spanish. A lemma used to be unique on
+                # its own; now it's unique per language.
+                conn.exec_driver_sql("ALTER TABLE word_bank ADD COLUMN language VARCHAR(8) DEFAULT 'es'")
+                conn.exec_driver_sql("DROP INDEX IF EXISTS ix_word_bank_lemma")
+                conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_word_bank_lemma ON word_bank (lemma)")
+                conn.exec_driver_sql(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_word_bank_language_lemma ON word_bank (language, lemma)"
+                )
 
         if table_exists("message_token"):
             existing_token_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(message_token)")}

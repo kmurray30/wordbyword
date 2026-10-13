@@ -16,15 +16,15 @@ from app.chat.openai_client import ModelServerUnavailableError
 from app.chat.prompt_builder import build_vocab_block
 from app.config import EMBEDDING_MODEL
 from app.db import Base
-from app.models import ConversationSummary, VocabSuggestion, WordBankEntry, WordEmbedding
-from app.routes.chat import clear_history, take_turn
+from app.models import ConversationSummary, SavedWord, VocabSuggestion, WordBankEntry, WordEmbedding
+from app.routes.chat import clear_history, get_history, take_turn
 from app.routes.events import reward_event
 from app.schemas import ChatTurnRequest, RewardEventRequest
 from app.vocab import bandit, embeddings, suggest
 from app.wordbank.scoring import WordState, review_urgency
 
 NOW = datetime(2026, 1, 1)
-DIM = 16
+DIM = 64
 
 
 def _session():
@@ -110,18 +110,38 @@ def _one_hot(i: int) -> np.ndarray:
     return v
 
 
-def test_rank_relevant_returns_only_words_that_stand_out():
-    lemmas = [f"w{i}" for i in range(12)]
-    matrix = np.stack([_one_hot(i) for i in range(12)])
-    query = (_one_hot(3) + 0.1 * _one_hot(5)) / np.linalg.norm(_one_hot(3) + 0.1 * _one_hot(5))
-    picked = suggest.rank_relevant(query, lemmas, matrix, np.zeros(12), 3, np.random.default_rng(0))
-    assert picked == ["w3"]
+def _score(query, n, k=3, cooldown=frozenset(), urgencies=None):
+    lemmas = [f"w{i}" for i in range(n)]
+    matrix = np.stack([_one_hot(i) for i in range(n)])
+    urg = np.zeros(n) if urgencies is None else urgencies
+    return suggest.score_candidates(query, lemmas, matrix, urg, set(cooldown), k, np.random.default_rng(0))
 
 
-def test_rank_relevant_needs_a_big_enough_bank():
-    lemmas = [f"w{i}" for i in range(5)]
-    matrix = np.stack([_one_hot(i) for i in range(5)])
-    assert suggest.rank_relevant(_one_hot(0), lemmas, matrix, np.zeros(5), 3, np.random.default_rng(0)) == []
+def test_score_candidates_offers_only_words_that_stand_out():
+    query = _one_hot(3) + 0.1 * _one_hot(5)
+    query = query / np.linalg.norm(query)
+    offered, info = _score(query, 12)
+    assert offered == ["w3"]
+    assert info["w3"][2] == "offered"
+    assert info["w3"][1] > info["w5"][1] > info["w0"][1]  # z-scores follow similarity
+    assert info["w0"][2] == "below"
+
+
+def test_score_candidates_reports_the_ones_cut_by_the_limit_and_by_cooldown():
+    # Three equally-relevant words, room for one, one of them on cooldown.
+    query = (_one_hot(1) + _one_hot(2) + _one_hot(3)) / np.sqrt(3)
+    offered, info = _score(query, 40, k=1, cooldown={"w1"})
+    assert len(offered) == 1 and offered[0] in {"w2", "w3"}
+    assert info["w1"][2] == "cooldown"
+    assert {info["w2"][2], info["w3"][2]} == {"offered", "passed"}
+
+
+def test_score_candidates_prefers_the_word_due_for_review():
+    query = (_one_hot(1) + _one_hot(2)) / np.sqrt(2)
+    urgencies = np.zeros(40)
+    urgencies[2] = 1.0
+    offered, _ = _score(query, 40, k=1, urgencies=urgencies)
+    assert offered == ["w2"]
 
 
 def test_vocab_block_is_empty_with_nothing_to_suggest():
@@ -182,21 +202,29 @@ def test_embed_texts_retries_once_on_transport_error():
         assert embeddings.embed_texts(["hola"]).shape[0] == 1
 
 
-def test_embed_missing_words_skips_closed_class_and_already_embedded(tmp_path):
+def test_embed_missing_skips_already_embedded_and_is_per_language():
     session = _session()
-    session.add_all(
-        [
-            WordBankEntry(lemma="perro", pos="NOUN", primary_translation="dog"),
-            WordBankEntry(lemma="gato", pos="NOUN", primary_translation="cat"),
-            WordBankEntry(lemma="el", pos="DET"),
-            WordEmbedding(lemma="gato", model=EMBEDDING_MODEL, vector=_one_hot(0).tobytes()),
-        ]
-    )
+    session.add(WordEmbedding(language="es", lemma="gato", model=EMBEDDING_MODEL, vector=_one_hot(0).tobytes()))
     session.commit()
+    words = [("perro", "dog"), ("gato", "cat")]
     with patch("app.vocab.embeddings.embed_texts", return_value=np.stack([_one_hot(1)])) as embed:
-        added = embeddings.embed_missing_words(session, suggest.OPEN_CLASS_POS)
-    assert added == 1
-    assert embed.call_args.args[0] == ["perro: dog"]
+        added = embeddings.embed_missing(session, "es", words)
+        # "gato" in French is a different word that still needs embedding.
+        added_fr = embeddings.embed_missing(session, "fr", [("gato", "cat")])
+    assert added == 1 and added_fr == 1
+    assert embed.call_args_list[0].args[0] == ["perro: dog"]
+
+
+def test_remember_vectors_keeps_vectors_in_memory_only_until_persisted():
+    session = _session()
+    with patch("app.vocab.embeddings.embed_texts", return_value=np.stack([_one_hot(2)])) as embed:
+        embeddings.remember_vectors("es", [("playa", "beach")])
+        assert session.query(WordEmbedding).count() == 0
+        assert "playa" in embeddings.load_vectors(session, "es", ["playa"])
+        # Persisting it reuses the cached vector instead of calling the API again.
+        assert embeddings.embed_missing(session, "es", [("playa", "beach")]) == 1
+    assert embed.call_count == 1
+    assert session.query(WordEmbedding).filter_by(lemma="playa").count() == 1
 
 
 # --- /chat/turn wiring -----------------------------------------------------
@@ -204,15 +232,33 @@ def test_embed_missing_words_skips_closed_class_and_already_embedded(tmp_path):
 BANK = ["fútbol", "ventana", "cocina", "playa", "libro", "montaña", "tren", "camisa", "lluvia", "mesa", "perro", "río"]
 
 
-def _seed_bank(session):
-    for i, lemma in enumerate(BANK):
-        session.add(WordBankEntry(lemma=lemma, pos="NOUN", primary_translation=f"en-{lemma}", last_reviewed_at=NOW))
-        session.add(WordEmbedding(lemma=lemma, model=EMBEDDING_MODEL, vector=_one_hot(i).tobytes()))
+def _seed_bank(session, language="es", bank=BANK):
+    for i, lemma in enumerate(bank):
+        session.add(
+            WordBankEntry(
+                language=language, lemma=lemma, pos="NOUN", primary_translation=f"en-{lemma}", last_reviewed_at=datetime.utcnow()
+            )
+        )
+        session.add(WordEmbedding(language=language, lemma=lemma, model=EMBEDDING_MODEL, vector=_one_hot(i).tobytes()))
     session.commit()
 
 
-def _run_post_turn_inline(session_factory, session_id, user_message, reply):
-    suggest.post_turn(session_factory, session_id, user_message, reply)
+def _run_post_turn_inline(session_factory, session_id, language, user_message, reply):
+    suggest.post_turn(session_factory, session_id, language, user_message, reply)
+
+
+def _turn(session, reply="Hola.", message="hola", session_id="s", language="es", query=_one_hot(0), post_turn=None):
+    """One /chat/turn with contextual vocab on and every model call patched;
+    returns (response, the partner model's system prompt)."""
+    with (
+        patch("app.routes.chat.CONTEXTUAL_VOCAB_ENABLED", True),
+        patch("app.vocab.embeddings.embed_query", return_value=query),
+        patch("app.routes.chat.model_chat", return_value=reply) as chat,
+        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+        patch("app.vocab.suggest.schedule_post_turn", side_effect=post_turn or (lambda *a, **k: None)),
+    ):
+        result = take_turn(ChatTurnRequest(session_id=session_id, message=message, language=language), session=session)
+    return result, chat.call_args.args[0][0]["content"]
 
 
 def test_toggle_off_adds_no_vocab_block_and_makes_no_embedding_calls():
@@ -225,26 +271,23 @@ def test_toggle_off_adds_no_vocab_block_and_makes_no_embedding_calls():
         patch("app.vocab.embeddings.embed_texts", side_effect=AssertionError("must not embed")),
         patch("app.vocab.suggest.schedule_post_turn", side_effect=AssertionError("must not schedule")),
     ):
-        take_turn(ChatTurnRequest(session_id="s", message="hola"), session=session)
+        result = take_turn(ChatTurnRequest(session_id="s", message="hola"), session=session)
     assert "Optional vocabulary" not in chat.call_args.args[0][0]["content"]
     assert session.query(VocabSuggestion).count() == 0
+    assert result.vocab_debug is None
 
 
 def test_toggle_on_offers_relevant_word_rewards_its_use_and_updates_summary():
     session = _session()
     _seed_bank(session)
     with (
-        patch("app.routes.chat.CONTEXTUAL_VOCAB_ENABLED", True),
-        patch("app.vocab.embeddings.embed_query", return_value=_one_hot(0)),  # "fútbol"-shaped conversation
-        patch("app.routes.chat.model_chat", return_value="Me gusta el fútbol.") as chat,
-        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
         patch("app.vocab.summary.model_chat", return_value="Talking about soccer."),
         patch("app.vocab.embeddings.embed_texts", return_value=np.zeros((0, DIM), dtype=np.float32)),
-        patch("app.vocab.suggest.schedule_post_turn", side_effect=_run_post_turn_inline),
     ):
-        take_turn(ChatTurnRequest(session_id="s", message="¿Te gustan los deportes?"), session=session)
+        _, system_prompt = _turn(
+            session, reply="Me gusta el fútbol.", message="¿Te gustan los deportes?", post_turn=_run_post_turn_inline
+        )
 
-    system_prompt = chat.call_args.args[0][0]["content"]
     assert "Related to the current conversation: fútbol (en-fútbol)" in system_prompt
     assert "Low priority" in system_prompt
 
@@ -262,34 +305,108 @@ def test_toggle_on_offers_relevant_word_rewards_its_use_and_updates_summary():
 def test_toggle_on_with_embeddings_down_still_offers_a_wildcard_and_never_fails_the_turn():
     session = _session()
     _seed_bank(session)
-    with (
-        patch("app.routes.chat.CONTEXTUAL_VOCAB_ENABLED", True),
-        patch("app.vocab.embeddings.embed_query", side_effect=embeddings.EmbeddingUnavailableError("no token")),
-        patch("app.routes.chat.model_chat", return_value="Hola.") as chat,
-        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
-        patch("app.vocab.suggest.schedule_post_turn"),
-    ):
-        result = take_turn(ChatTurnRequest(session_id="s", message="hola"), session=session)
+    with patch("app.vocab.embeddings.embed_query", side_effect=embeddings.EmbeddingUnavailableError("no token")):
+        with (
+            patch("app.routes.chat.CONTEXTUAL_VOCAB_ENABLED", True),
+            patch("app.routes.chat.model_chat", return_value="Hola.") as chat,
+            patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
+            patch("app.vocab.suggest.schedule_post_turn"),
+        ):
+            result = take_turn(ChatTurnRequest(session_id="s", message="hola"), session=session)
     assert result.text == "Hola."
     system_prompt = chat.call_args.args[0][0]["content"]
     assert "Related to the current conversation" not in system_prompt
     assert "Low priority" in system_prompt
+    # The debug view says why there are no search results.
+    assert result.vocab_debug.searched is False
+    assert "no token" in result.vocab_debug.error
+    assert len(result.vocab_debug.wildcards) == 1
 
 
 def test_words_offered_or_used_recently_are_on_cooldown():
     session = _session()
     _seed_bank(session)
-    common = (
-        patch("app.routes.chat.CONTEXTUAL_VOCAB_ENABLED", True),
-        patch("app.vocab.embeddings.embed_query", return_value=_one_hot(0)),
-        patch("app.translate.llm_translate.model_chat", side_effect=ModelServerUnavailableError("down")),
-        patch("app.vocab.suggest.schedule_post_turn"),
+    _turn(session, reply="Me gusta el fútbol.", message="deportes")
+    result, system_prompt = _turn(session, reply="Sí.", message="más deportes")
+    assert "fútbol" not in system_prompt.split("Optional vocabulary")[-1]
+    row = next(w for w in result.vocab_debug.search if w.lemma == "fútbol")
+    assert row.status == "cooldown" and row.z >= result.vocab_debug.cutoff_z
+
+
+def test_debug_payload_shows_scores_cutoff_and_use_and_is_saved_for_history():
+    session = _session()
+    _seed_bank(session)
+    result, _ = _turn(session, reply="Me gusta el fútbol.", message="¿Te gustan los deportes?")
+
+    debug = result.vocab_debug
+    assert debug.searched and debug.error == ""
+    futbol = debug.search[0]
+    assert (futbol.lemma, futbol.status, futbol.used) == ("fútbol", "offered", True)
+    assert futbol.sim > 0.99 and futbol.z >= debug.cutoff_z and futbol.translation == "en-fútbol"
+    assert all(w.status == "below" for w in debug.search[1:])
+    assert [w.sim for w in debug.search] == sorted((w.sim for w in debug.search), reverse=True)
+    (wildcard,) = debug.wildcards
+    assert wildcard.status == "wildcard" and wildcard.sim is None and not wildcard.used
+
+    from_history = next(m for m in get_history("s", session=session).messages if m.role == "assistant")
+    assert from_history.vocab_debug == debug
+    assert next(m for m in get_history("s", session=session).messages if m.role == "user").vocab_debug is None
+
+
+def test_saved_words_join_the_pool_even_with_no_word_bank_entry():
+    session = _session()
+    _seed_bank(session)
+    session.add(SavedWord(session_id="s", word="Cerveza", word_key="cerveza", gloss="beer"))
+    session.commit()
+    # The saved word was never embedded - it's embedded on the spot, and the
+    # conversation is shaped exactly like it.
+    with patch("app.vocab.embeddings.embed_texts", return_value=np.stack([_one_hot(20)])) as embed:
+        result, system_prompt = _turn(session, reply="Una cerveza, por favor.", query=_one_hot(20))
+
+    assert embed.call_args.args[0] == ["cerveza: beer"]
+    assert "cerveza (beer)" in system_prompt
+    row = result.vocab_debug.search[0]
+    assert (row.lemma, row.status, row.saved, row.used) == ("cerveza", "offered", True, True)
+    # Its bandit counts now have somewhere to live.
+    entry = session.query(WordBankEntry).filter_by(lemma="cerveza").one()
+    assert entry.primary_translation == "beer" and entry.suggest_alpha > 1.0
+
+
+def test_saved_words_are_preferred_wildcards():
+    session = _session()
+    _seed_bank(session)
+    session.add(SavedWord(session_id="s", word="tren", word_key="tren", gloss="train"))
+    session.commit()
+    suggestions = [suggest.suggest_for_turn(session, "s", "es", [], "hola") for _ in range(60)]
+    saved_hits = sum(1 for sug in suggestions for w in sug.wildcard if w.lemma == "tren")
+    # One word of 12 - but saved, so it should win far more often than 1 in 12.
+    assert saved_hits > 60 * 0.4
+
+
+def test_another_languages_words_are_never_offered():
+    session = _session()
+    _seed_bank(session, language="fr", bank=["chat", "chien", "maison", "table", "livre", "rue", "pain", "eau", "vin", "lait", "sel", "riz"])
+    _seed_bank(session, language="es")
+    result, system_prompt = _turn(session, session_id="fr-session", language="fr", query=_one_hot(0))
+    offered = {w.lemma for w in result.vocab_debug.search} | {w.lemma for w in result.vocab_debug.wildcards}
+    assert offered and offered <= {"chat", "chien", "maison", "table", "livre", "rue", "pain", "eau", "vin", "lait", "sel", "riz"}
+    assert "fútbol" not in system_prompt
+
+
+def test_closed_class_and_name_words_are_not_candidates_but_untagged_words_are():
+    session = _session()
+    session.add_all(
+        [
+            WordBankEntry(language="es", lemma="el", pos="DET"),
+            WordBankEntry(language="es", lemma="ana", pos="PROPN"),
+            WordBankEntry(language="es", lemma="casa", pos="NOUN"),
+            WordBankEntry(language="ja", lemma="猫", pos="", primary_translation="cat"),
+            WordBankEntry(language="es", lemma="!!", pos=""),
+        ]
     )
-    with common[0], common[1], common[2], common[3], patch("app.routes.chat.model_chat", return_value="Me gusta el fútbol."):
-        take_turn(ChatTurnRequest(session_id="s", message="deportes"), session=session)
-    with common[0], common[1], common[2], common[3], patch("app.routes.chat.model_chat", return_value="Sí.") as chat:
-        take_turn(ChatTurnRequest(session_id="s", message="más deportes"), session=session)
-    assert "fútbol" not in chat.call_args.args[0][0]["content"].split("Optional vocabulary")[-1]
+    session.commit()
+    assert {c.lemma for c in suggest._candidates(session, "s", "es")} == {"casa"}
+    assert {c.lemma for c in suggest._candidates(session, "s", "ja")} == {"猫"}
 
 
 def test_learner_typing_an_offered_word_rewards_it_once():
@@ -298,7 +415,7 @@ def test_learner_typing_an_offered_word_rewards_it_once():
     session.add(VocabSuggestion(session_id="s", assistant_message_id=1, lemma="playa", kind="wildcard"))
     session.commit()
 
-    reward_event(RewardEventRequest(event_type="userTypedSpanishWord", lemma="playa"), session=session)
+    reward_event(RewardEventRequest(event_type="userTypedTargetWord", lemma="playa"), session=session)
     reward_event(RewardEventRequest(event_type="userTypedSpanishWord", lemma="playa"), session=session)
 
     entry = session.query(WordBankEntry).filter_by(lemma="playa").one()

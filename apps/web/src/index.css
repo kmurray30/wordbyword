@@ -7,6 +7,24 @@
   box-sizing: border-box;
 }
 
+/* The page itself never scrolls - only the chat inside .app does (see
+   App.css), so the header and the input bars stay on screen. */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  /* No double-tap zoom (pinch is blocked in main.tsx). */
+  touch-action: manipulation;
+}
+
+/* iOS zooms into any text field under 16px when it's focused. */
+input,
+textarea,
+select {
+  font-size: max(16px, 1em);
+}
+
 body {
   margin: 0;
   background: #14171f;

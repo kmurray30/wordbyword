@@ -54,12 +54,61 @@
   padding-right: 8px;
 }
 
+/* Flush under/over the anchor, as wide as it (never narrower than a side
+   popup), growing past a short anchor away from the edge it's lined up
+   with. A side popup that doesn't fit drops into one of these too. */
+.docked-popover-wrap--under,
+.docked-popover-wrap--over {
+  left: 0;
+  right: 0;
+  display: flex;
+}
+
+.docked-popover-wrap--under {
+  top: 100%;
+  padding-top: 4px;
+}
+
+.docked-popover-wrap--over {
+  bottom: 100%;
+  padding-bottom: 4px;
+}
+
+.docked-popover-wrap--align-end {
+  justify-content: flex-end;
+}
+
+.docked-popover-wrap.docked-popover-wrap--under .docked-popover,
+.docked-popover-wrap.docked-popover-wrap--over .docked-popover {
+  flex: none;
+  width: 100%;
+  min-width: min(240px, 60vw);
+  max-width: none;
+}
+
+/* A side popup lined up with the anchor's bottom, growing upward. */
+.docked-popover-wrap--right.docked-popover-wrap--grow-up,
+.docked-popover-wrap--left.docked-popover-wrap--grow-up {
+  top: auto;
+  bottom: 0;
+}
+
 .docked-popover {
   pointer-events: auto;
 }
 
+/* In normal flow, on its own full-width row (the parent wraps). */
+.docked-popover-wrap--inline {
+  position: static;
+  flex-basis: 100%;
+  order: 10;
+  display: flex;
+  justify-content: center;
+}
+
 .docked-popover-wrap--above .docked-popover,
-.docked-popover-wrap--below .docked-popover {
+.docked-popover-wrap--below .docked-popover,
+.docked-popover-wrap--inline .docked-popover {
   width: 100%;
   max-width: 420px;
   margin: 0 12px;

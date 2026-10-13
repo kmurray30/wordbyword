@@ -1,37 +1,58 @@
+/* Fills exactly the visible part of the screen (--vv-* are set by
+   lib/visibleViewport.ts; 100dvh until they are) - header at the top,
+   input bars at the bottom, only the chat in between scrolls. */
 .app {
+  position: fixed;
+  top: var(--vv-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--vv-height, 100dvh);
   display: flex;
   flex-direction: column;
-  height: 100vh;
   max-width: 720px;
   margin: 0 auto;
+  /* Clear of a notch/status bar (top) and a landscape notch (sides) - 0 on
+     screens without them. Nothing at the bottom: the bottom row runs all
+     the way down, and instead rounds its outer corners to follow the
+     screen's (--bottom-round). */
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  /* Roughly how round the screen's bottom corners are: phones with a home
+     bar report its height as the bottom inset, which scales with the corner
+     radius; 0 (square) everywhere else. Elements in the bottom row use it
+     minus their distance from the edge, so the curves run parallel. */
+  --bottom-round: calc(env(safe-area-inset-bottom, 0px) * 1.35);
+}
+
+/* Keyboard up: the bottom row sits on the keyboard, not the screen corners. */
+.app--keyboard {
+  --bottom-round: 0px;
 }
 
 .app__header {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 0 12px 0 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* The title, with the language's flag right after it. */
+.app__brand {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .app__header h1 {
   margin: 0;
-  font-size: 1.3rem;
-  flex-shrink: 0;
-}
-
-/* Takes up whatever space is left between the title and the menu button -
-   truncates instead of wrapping/pushing the menu off-screen on a narrow
-   viewport. */
-.app__tagline {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  color: #9aa1b1;
-  font-size: 0.8rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 1.15rem;
+  line-height: 1.2;
 }
 
 .app__menu {
@@ -44,9 +65,10 @@
   color: #9aa1b1;
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 6px;
-  padding: 4px 10px;
+  margin: 3px 0;
+  padding: 0 8px;
   font-size: 1rem;
-  line-height: 1.4;
+  line-height: 1.5;
   cursor: pointer;
 }
 
@@ -102,7 +124,9 @@
 
 .app__chat {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px;
 }
 
@@ -115,4 +139,40 @@
 .app__error {
   color: #f28b82;
   font-size: 0.85rem;
+}
+
+.app__update {
+  display: block;
+  width: 100%;
+  border: none;
+  padding: 10px 16px;
+  background: #2fae5a;
+  color: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+
+/* The partner's voices: label on top, the voices in a grid under it. */
+.app__voice-picker--voices {
+  display: block;
+}
+
+.app__voice-picker--voices .segmented-control {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* A setting with its label on top and the choices under it. */
+.app__voice-picker--block {
+  display: block;
+}
+
+.app__voice-picker--block .segmented-control {
+  display: flex;
+  margin-top: 6px;
 }

@@ -1,9 +1,14 @@
 import type { components, paths } from "./schema";
+import { apiLanguage } from "../lib/language";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
-type ChatTurnRequest =
-  paths["/chat/turn"]["post"]["requestBody"]["content"]["application/json"];
+// A request whose `language` is filled in by default (see withLanguage).
+type WithOptionalLanguage<T> = Omit<T, "language"> & { language?: string };
+
+type ChatTurnRequest = WithOptionalLanguage<
+  paths["/chat/turn"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type ChatTurnResponse =
   paths["/chat/turn"]["post"]["responses"][200]["content"]["application/json"];
 type ChatHistoryResponse =
@@ -16,89 +21,52 @@ type TranslateTextRequest =
 type TranslateTextResponse =
   paths["/translate/text"]["post"]["responses"][200]["content"]["application/json"];
 
-type TagInputRequest =
-  paths["/translate/tag-input"]["post"]["requestBody"]["content"]["application/json"];
+type TagInputRequest = WithOptionalLanguage<
+  paths["/translate/tag-input"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type TagInputResponse =
   paths["/translate/tag-input"]["post"]["responses"][200]["content"]["application/json"];
 
-type GlossSpansRequest =
-  paths["/translate/gloss-spans"]["post"]["requestBody"]["content"]["application/json"];
+type GlossSpansRequest = WithOptionalLanguage<
+  paths["/translate/gloss-spans"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type GlossSpansResponse =
   paths["/translate/gloss-spans"]["post"]["responses"][200]["content"]["application/json"];
 
-type InterpretInputRequest =
-  paths["/translate/interpret"]["post"]["requestBody"]["content"]["application/json"];
+type InterpretInputRequest = WithOptionalLanguage<
+  paths["/translate/interpret"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type InterpretInputResponse =
   paths["/translate/interpret"]["post"]["responses"][200]["content"]["application/json"];
 
 type SaveUserInterpretationRequest =
   paths["/chat/message/interpretation"]["post"]["requestBody"]["content"]["application/json"];
+type MessageGlossesRequest =
+  paths["/chat/message/glosses"]["post"]["requestBody"]["content"]["application/json"];
+export type MessageGlosses = components["schemas"]["MessageGlosses"];
+
 type SaveUserInterpretationResponse =
   paths["/chat/message/interpretation"]["post"]["responses"][200]["content"]["application/json"];
 
-type CoachDraftRequest =
-  paths["/translate/coach"]["post"]["requestBody"]["content"]["application/json"];
+type CoachDraftRequest = WithOptionalLanguage<
+  paths["/translate/coach"]["post"]["requestBody"]["content"]["application/json"]
+>;
 
-// /translate/coach streams Server-Sent Events rather than a single JSON
-// response (see app/routes/translate.py's coach_draft), so there's no
-// OpenAPI-generated response type for it - these mirror app/schemas.py's
-// Coach*Event classes by hand instead. See app/translate/llm_translate.py's
-// coach_draft_stream docstring for the full field-by-field sequence these
-// correspond to: a "verdict" event first (usable instantly, before
-// anything else has streamed - see ChatInput.tsx's coachReady), then the
-// "you mean"/"did you mean" restatement streaming live, then - depending
-// on the verdict - either nothing further ("clean"), one single streamed
-// suggestion ("minor"), or three formality-ranked options streamed
-// interleaved, each one's own English translation arriving right after
-// its own Spanish text ("fix"). A picked option's word-by-word gloss
-// breakdown is NOT part of this stream at all - see
-// ChatInput.tsx's handleSelectCoachOption, which fetches it lazily via the
-// existing /translate/gloss-spans instead.
-export interface CoachVerdictEvent {
-  verdict: "clean" | "minor" | "fix";
-}
-
-export interface CoachMeaningChunkEvent {
-  delta: string;
-}
-
-export interface CoachMeaningCompleteEvent {
-  meaning: string;
-}
-
-export interface CoachSuggestionChunkEvent {
-  delta: string;
-}
-
-export interface CoachSuggestionCompleteEvent {
-  suggestion: string;
-}
-
-export interface CoachOptionChunkEvent {
-  index: number;
-  field: "spanish" | "english";
-  delta: string;
-}
-
-export interface CoachOptionCompleteEvent {
-  index: number;
-  field: "spanish" | "english";
-  text: string;
-}
-
-export interface CoachErrorEvent {
-  message: string;
-}
+// /translate/coach streams Server-Sent Events (see app/routes/translate.py's
+// coach_draft and app.translate.llm_translate.coach_reply_stream): which
+// partner message the reply is about (null = the learner's next message),
+// whether the learner's own target-language text is ready to send, then the
+// coach's reply text - suggestions are written inside it as
+// [[target language | English]].
+export type ThreadEntry = components["schemas"]["ThreadEntryOut"];
+export type ThreadEntryIn = components["schemas"]["ThreadEntryIn"];
 
 export type CoachStreamEvent =
-  | { type: "verdict"; data: CoachVerdictEvent }
-  | { type: "meaning_chunk"; data: CoachMeaningChunkEvent }
-  | { type: "meaning_complete"; data: CoachMeaningCompleteEvent }
-  | { type: "suggestion_chunk"; data: CoachSuggestionChunkEvent }
-  | { type: "suggestion_complete"; data: CoachSuggestionCompleteEvent }
-  | { type: "option_chunk"; data: CoachOptionChunkEvent }
-  | { type: "option_complete"; data: CoachOptionCompleteEvent }
-  | { type: "error"; data: CoachErrorEvent };
+  | { type: "about"; data: { message_id: number | null } }
+  | { type: "ready"; data: { ready: boolean } }
+  | { type: "reply_chunk"; data: { delta: string } }
+  | { type: "reply_complete"; data: { reply: string; entries: ThreadEntry[] } }
+  | { type: "error"; data: { message: string } };
 
 // Reads any `event: <name>\ndata: <json>\n\n`-framed SSE response body
 // incrementally, yielding each raw (name, data-string) pair as soon as its
@@ -134,22 +102,13 @@ async function* readServerSentEvents(response: Response): AsyncGenerator<{ event
 // event as it completes - see CoachStreamEvent's own comment for the full
 // field-by-field sequence. `signal` lets the caller abort mid-stream (e.g.
 // the draft changed before coaching finished).
-const COACH_EVENT_NAMES = new Set([
-  "verdict",
-  "meaning_chunk",
-  "meaning_complete",
-  "suggestion_chunk",
-  "suggestion_complete",
-  "option_chunk",
-  "option_complete",
-  "error",
-]);
+const COACH_EVENT_NAMES = new Set(["about", "ready", "reply_chunk", "reply_complete", "error"]);
 
 async function* coachDraftStream(body: CoachDraftRequest, signal?: AbortSignal): AsyncGenerator<CoachStreamEvent> {
   const response = await fetchWithColdStartRetry(`${BASE_URL}/translate/coach`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(withLanguage(body)),
     signal,
   });
   if (!response.ok || !response.body) {
@@ -196,38 +155,6 @@ export function voiceListenUrl(): string {
   return `${BASE_URL.replace(/^http/, "ws")}/voice/listen`;
 }
 
-// POST /voice/coach - the spoken coach's turn (see app/routes/voice.py and
-// app.translate.llm_translate.voice_coach_stream).
-export type VoiceCoachRequest =
-  paths["/voice/coach"]["post"]["requestBody"]["content"]["application/json"];
-export type VoiceDialogTurn = VoiceCoachRequest["coach_dialog"][number];
-export type VoiceCoachStreamEvent =
-  | { type: "intent"; data: { intent: string } }
-  | { type: "verdict"; data: { verdict: string } }
-  | { type: "draft"; data: { draft: string } }
-  | { type: "say_chunk"; data: { delta: string } }
-  | { type: "say_complete"; data: { say: string } }
-  | { type: "error"; data: { message: string } };
-
-const VOICE_COACH_EVENT_NAMES = new Set(["intent", "verdict", "draft", "say_chunk", "say_complete", "error"]);
-
-async function* voiceCoachStream(body: VoiceCoachRequest, signal?: AbortSignal): AsyncGenerator<VoiceCoachStreamEvent> {
-  const response = await fetchWithColdStartRetry(`${BASE_URL}/voice/coach`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!response.ok || !response.body) {
-    const detail = response.body ? await response.text() : "";
-    throw new Error(`/voice/coach failed (${response.status}): ${detail}`);
-  }
-  for await (const { event, data } of readServerSentEvents(response)) {
-    if (VOICE_COACH_EVENT_NAMES.has(event)) {
-      yield { type: event, data: JSON.parse(data) } as VoiceCoachStreamEvent;
-    }
-  }
-}
 
 export type ChatTurnStreamEvent =
   | { type: "chunk"; data: ChatTurnChunkEvent }
@@ -243,7 +170,7 @@ async function* chatTurnStream(body: ChatTurnRequest, signal?: AbortSignal): Asy
   const response = await fetchWithColdStartRetry(`${BASE_URL}/chat/turn/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(withLanguage(body)),
     signal,
   });
   if (!response.ok || !response.body) {
@@ -257,8 +184,9 @@ async function* chatTurnStream(body: ChatTurnRequest, signal?: AbortSignal): Asy
   }
 }
 
-type RewardEventRequest =
-  paths["/events/reward"]["post"]["requestBody"]["content"]["application/json"];
+type RewardEventRequest = WithOptionalLanguage<
+  paths["/events/reward"]["post"]["requestBody"]["content"]["application/json"]
+>;
 type RewardEventResponse =
   paths["/events/reward"]["post"]["responses"][200]["content"]["application/json"];
 
@@ -266,6 +194,14 @@ type TTSRequest =
   paths["/tts/speak"]["post"]["requestBody"]["content"]["application/json"];
 type TTSVoicesResponse =
   paths["/tts/voices"]["get"]["responses"][200]["content"]["application/json"];
+
+type ReadingsRequest = WithOptionalLanguage<
+  paths["/translate/readings"]["post"]["requestBody"]["content"]["application/json"]
+>;
+type ReadingsResponse =
+  paths["/translate/readings"]["post"]["responses"][200]["content"]["application/json"];
+export type TextReadings = components["schemas"]["TextReadings"];
+export type Reading = components["schemas"]["ReadingOut"];
 
 type LlmHealthResponse =
   paths["/health/llm"]["get"]["responses"][200]["content"]["application/json"];
@@ -295,6 +231,13 @@ async function fetchWithColdStartRetry(input: string, init?: RequestInit): Promi
       throw err;
     }
   }
+}
+
+// Requests about the conversation carry the language being learned (and,
+// for Mandarin, which characters - see apiLanguage), unless they say
+// otherwise.
+function withLanguage<T extends object>(body: T): T & { language: string } {
+  return { language: apiLanguage(), ...body };
 }
 
 async function post<Req, Res>(path: string, body: Req): Promise<Res> {
@@ -330,8 +273,28 @@ async function clearChatHistory(sessionId: string): Promise<ClearHistoryResponse
   return response.json() as Promise<ClearHistoryResponse>;
 }
 
-async function listVoices(language: string): Promise<TTSVoicesResponse> {
-  const response = await fetchWithColdStartRetry(`${BASE_URL}/tts/voices?language=${encodeURIComponent(language)}`);
+export type SavedWord = components["schemas"]["SavedWordOut"];
+type SavedWordIn = components["schemas"]["SavedWordIn"];
+
+// The learner's saved words (tap a word twice in a chat message).
+async function listSavedWords(sessionId: string): Promise<SavedWord[]> {
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/words?session_id=${encodeURIComponent(sessionId)}`);
+  if (!response.ok) throw new Error(`/words failed (${response.status})`);
+  return ((await response.json()) as { words: SavedWord[] }).words;
+}
+
+async function removeSavedWord(sessionId: string, word: string): Promise<void> {
+  const response = await fetchWithColdStartRetry(
+    `${BASE_URL}/words?session_id=${encodeURIComponent(sessionId)}&word=${encodeURIComponent(word)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw new Error(`/words delete failed (${response.status})`);
+}
+
+// `provider`: "elevenlabs" | "kokoro"; omitted, the server's default.
+async function listVoices(language: string, provider?: string): Promise<TTSVoicesResponse> {
+  const query = `language=${encodeURIComponent(language)}${provider ? `&provider=${encodeURIComponent(provider)}` : ""}`;
+  const response = await fetchWithColdStartRetry(`${BASE_URL}/tts/voices?${query}`);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`/tts/voices failed (${response.status}): ${detail}`);
@@ -340,17 +303,17 @@ async function listVoices(language: string): Promise<TTSVoicesResponse> {
 }
 
 async function speak(body: TTSRequest): Promise<Blob> {
-  // Observed live: DeepInfra itself hung for the backend's full timeout on
+  // Observed live: a TTS provider hung for the backend's full timeout on
   // every request during a rough patch, leaving the speaker button stuck
   // on its loading spinner with no feedback. A plain fetch() has no
   // built-in ceiling - abort client-side a bit past the backend's own
-  // worst case (3 attempts * 15s timeout each, see deepinfra_client.py) so
+  // worst case (3 attempts * 20s timeout each, see elevenlabs_client.py) so
   // this call always settles into a real error the UI can show, rather
   // than spinning indefinitely if something between the browser and the
   // backend hangs too, and - the actual live bug - rather than aborting
   // before the backend's own retries had a chance to succeed.
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 50_000);
+  const timeoutId = setTimeout(() => controller.abort(), 65_000);
   try {
     const response = await fetchWithColdStartRetry(`${BASE_URL}/tts/speak`, {
       method: "POST",
@@ -383,24 +346,34 @@ async function healthLlm(): Promise<LlmHealthResponse> {
 }
 
 export const api = {
-  chatTurn: (body: ChatTurnRequest) => post<ChatTurnRequest, ChatTurnResponse>("/chat/turn", body),
+  chatTurn: (body: ChatTurnRequest) => post<ChatTurnRequest, ChatTurnResponse>("/chat/turn", withLanguage(body)),
   translateText: (body: TranslateTextRequest) =>
     post<TranslateTextRequest, TranslateTextResponse>("/translate/text", body),
-  tagInput: (body: TagInputRequest) => post<TagInputRequest, TagInputResponse>("/translate/tag-input", body),
-  glossSpans: (body: GlossSpansRequest) => post<GlossSpansRequest, GlossSpansResponse>("/translate/gloss-spans", body),
+  tagInput: (body: TagInputRequest) =>
+    post<TagInputRequest, TagInputResponse>("/translate/tag-input", withLanguage(body)),
+  glossSpans: (body: GlossSpansRequest) =>
+    post<GlossSpansRequest, GlossSpansResponse>("/translate/gloss-spans", withLanguage(body)),
   interpretInput: (body: InterpretInputRequest) =>
-    post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", body),
+    post<InterpretInputRequest, InterpretInputResponse>("/translate/interpret", withLanguage(body)),
+  // How to read Japanese/Korean/Chinese text (see lib/readings.ts, which
+  // batches and caches these).
+  readings: (body: ReadingsRequest) => post<ReadingsRequest, ReadingsResponse>("/translate/readings", withLanguage(body)),
   saveUserInterpretation: (body: SaveUserInterpretationRequest) =>
     post<SaveUserInterpretationRequest, SaveUserInterpretationResponse>("/chat/message/interpretation", body),
+  // A message's word/phrase glosses, made and saved on first request.
+  messageGlosses: (body: MessageGlossesRequest) =>
+    post<MessageGlossesRequest, MessageGlosses>("/chat/message/glosses", body),
   coachDraftStream,
-  voiceCoachStream,
   chatTurnStream,
   rewardEvent: (body: RewardEventRequest) =>
-    post<RewardEventRequest, RewardEventResponse>("/events/reward", body),
+    post<RewardEventRequest, RewardEventResponse>("/events/reward", withLanguage(body)),
   speak,
   listVoices,
   chatHistory,
   clearChatHistory,
+  listSavedWords,
+  saveWord: (body: SavedWordIn) => post<SavedWordIn, SavedWord>("/words", body),
+  removeSavedWord,
   healthLlm,
 };
 

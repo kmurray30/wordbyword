@@ -58,13 +58,24 @@ def test_keyterms_are_most_recent_alphabetic_lemmas():
     assert voice.keyterms_for(session) == ["nuevo", "viejo"]
 
 
+def test_keyterms_are_the_language_being_spoken():
+    session = _session()
+    store.get_or_create(session, "nuevo")
+    store.get_or_create(session, "nouveau", language="fr")
+    session.commit()
+
+    assert "nouveau" not in voice.keyterms_for(session, language="es")
+    assert voice.keyterms_for(session, language="fr") == ["nouveau"]
+
+
 def _fake_stream(received: list):
     """Stands in for deepgram_client.stream_transcripts: drains the frame
     iterator (recording what the route forwarded) and emits a canned
     interim -> final -> utterance_end sequence once audio shows up."""
 
-    async def fake(audio_frames, keyterms=()):
+    async def fake(audio_frames, keyterms=(), language="es"):
         received.append(("keyterms", list(keyterms)))
+        received.append(("language", language))
         async for frame in audio_frames:
             if frame is None:
                 return
@@ -97,7 +108,7 @@ def test_listen_relays_audio_and_transcript_events():
 def test_listen_drops_audio_while_muted():
     received: list = []
 
-    async def fake(audio_frames, keyterms=()):
+    async def fake(audio_frames, keyterms=(), language="es"):
         async for frame in audio_frames:
             if frame is None:
                 return
@@ -126,7 +137,7 @@ def test_listen_requires_a_start_frame_first():
 
 
 def test_listen_reports_provider_unavailable_as_an_error_event():
-    async def unavailable(audio_frames, keyterms=()):
+    async def unavailable(audio_frames, keyterms=(), language="es"):
         raise STTUnavailableError("DEEPGRAM_API_KEY is not configured on the server")
         yield  # pragma: no cover
 
@@ -138,77 +149,15 @@ def test_listen_reports_provider_unavailable_as_an_error_event():
             assert "DEEPGRAM_API_KEY" in error["message"]
 
 
-# --- POST /voice/coach ------------------------------------------------------
-
-import asyncio  # noqa: E402
-
-from app.models import ChatMessage  # noqa: E402
-from app.schemas import VoiceCoachRequest, VoiceDialogTurn, VoiceWord  # noqa: E402
-from app.translate.llm_translate import TranslationUnavailableError  # noqa: E402
 
 
-async def _collect(body_iterator):
-    return "".join([chunk async for chunk in body_iterator])
+def test_listen_passes_the_start_frames_language_on():
+    received: list = []
+    with patch("app.routes.voice.deepgram_client.stream_transcripts", _fake_stream(received)):
+        with _client().websocket_connect("/voice/listen") as ws:
+            ws.send_text(json.dumps({"type": "start", "language": "zh-Hant"}))
+            ws.send_bytes(b"\x00\x01" * 10)
+            ws.receive_json()
+            ws.send_text(json.dumps({"type": "stop"}))
 
-
-def _parse_sse(raw: str):
-    parsed = []
-    for block in raw.split("\n\n"):
-        if not block.strip() or block.startswith(":"):
-            continue
-        lines = block.splitlines()
-        name = next(line[len("event:") :].strip() for line in lines if line.startswith("event:"))
-        data = next(line[len("data:") :].strip() for line in lines if line.startswith("data:"))
-        parsed.append((name, json.loads(data)))
-    return parsed
-
-
-def test_voice_coach_sse_sequence_and_context_plumbing():
-    session = _session()
-    session.add(ChatMessage(session_id="s1", role="assistant", text="¿Qué te gusta hacer?"))
-    session.add(ChatMessage(session_id="other", role="assistant", text="not this session"))
-    session.commit()
-
-    events = [
-        ("intent", "attempt"),
-        ("verdict", "revise"),
-        ("draft", "¿Te gusta correr?"),
-        ("say_chunk", "Did you mean: "),
-        ("say_chunk", "do you like running?"),
-        ("say_complete", "Did you mean: do you like running?"),
-    ]
-    req = VoiceCoachRequest(
-        transcript="te gusta running",
-        words=[VoiceWord(word="gusta", confidence=0.6)],
-        coach_dialog=[VoiceDialogTurn(role="learner", text="hola")],
-        session_id="s1",
-    )
-    with patch("app.routes.voice.llm_translate.voice_coach_stream", return_value=iter(events)) as mock_stream:
-        response = voice.voice_coach(req, session=session)
-        parsed = _parse_sse(asyncio.run(_collect(response.body_iterator)))
-
-    assert response.media_type == "text/event-stream"
-    assert [name for name, _ in parsed] == ["intent", "verdict", "draft", "say_chunk", "say_chunk", "say_complete"]
-    assert parsed[0][1] == {"intent": "attempt"}
-    assert parsed[2][1] == {"draft": "¿Te gusta correr?"}
-    assert parsed[-1][1] == {"say": "Did you mean: do you like running?"}
-
-    args, _ = mock_stream.call_args
-    transcript, words, coach_dialog, history, native, target = args
-    assert transcript == "te gusta running"
-    assert words == [{"word": "gusta", "confidence": 0.6}]
-    assert coach_dialog == [("learner", "hola")]
-    assert history == [("assistant", "¿Qué te gusta hacer?")]  # only this session's rows
-    assert (native, target) == ("en", "es")
-
-
-def test_voice_coach_reports_unavailable_as_error_event():
-    def boom(*args, **kwargs):
-        raise TranslationUnavailableError("no usable intent")
-        yield  # pragma: no cover
-
-    with patch("app.routes.voice.llm_translate.voice_coach_stream", boom):
-        response = voice.voice_coach(VoiceCoachRequest(transcript="hola", session_id="s1"), session=_session())
-        parsed = _parse_sse(asyncio.run(_collect(response.body_iterator)))
-
-    assert parsed == [("error", {"message": "no usable intent"})]
+    assert ("language", "zh-Hant") in received

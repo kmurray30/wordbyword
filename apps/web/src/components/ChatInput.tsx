@@ -1,19 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { api } from "../api/client";
 import type { DraftSpan, DraftToken } from "../api/client";
-import { CoachPopover } from "./CoachPopover";
 import { DockedPopover } from "./DockedPopover";
-import { SegmentedControl } from "./SegmentedControl";
-import { VoiceCoachPopover } from "./VoiceCoachPopover";
 import { WordCandidatesPopover } from "./WordCandidatesPopover";
-import { useVoiceSession } from "../voice/useVoiceSession";
+import { TalkButton } from "./TalkButton";
+import { stopSpeech, unlockSpeech } from "../voice/speech";
+import { useDictation } from "../voice/useDictation";
+import { apiLanguage } from "../lib/language";
+import { isComposing } from "../lib/ime";
 import "./ChatInput.css";
-
-type SendMode = "checkFirst" | "direct";
-const SEND_MODE_STORAGE_KEY = "wordbyword.sendMode";
-// Holding the Send button down this long opens the mode picker instead of
-// sending/checking - a plain tap (released before this fires) is unaffected.
-const SEND_LONG_PRESS_MS = 500;
 
 // The cheap, LLM-free per-word pass (/translate/tag-input - spaCy
 // tokenize/lemmatize only) still runs on a short debounce as the user
@@ -24,9 +20,10 @@ const SEND_LONG_PRESS_MS = 500;
 // separately and lazily, only once a word is actually hovered/tapped.
 const BOUNDARY_DEBOUNCE_MS = 60;
 const IDLE_DEBOUNCE_MS = 400;
-const WORD_BOUNDARY_RE = /[\s.,!?;:¡¿()"'«»…]/;
+const WORD_BOUNDARY_RE = /[\s.,!?;:¡¿()"'«»…。、！？「」『』，]/;
 const PHRASE_DEBOUNCE_MS = 300;
-const SPANISH_WORD_RE = /^[a-zA-Zñáéíóúü]+$/i;
+// A real word (letters only, any script) - what counts toward the word bank.
+const TARGET_WORD_RE = /^\p{L}+$/u;
 // How far a touch can drift between start and end before it's treated as a
 // drag/scroll/selection rather than a tap.
 const TAP_MOVE_TOLERANCE_PX = 10;
@@ -38,22 +35,9 @@ const TAP_MOVE_TOLERANCE_PX = 10;
 // lands on it.
 const HOVER_CLOSE_DELAY_MS = 200;
 
-type CoachVerdict = "clean" | "minor" | "fix";
-type CoachPhase = "idle" | "loading" | "error";
-const FORMALITIES: CoachOptionState["formality"][] = ["neutral", "casual", "formal"];
-
-// One of a "fix" verdict's three suggestions - starts as an empty skeleton
-// entry the instant the verdict itself arrives (see fetchCoach below),
-// well before any of its own text has streamed in. `formality` is a fixed
-// positional label (index 0/1/2), never sent by the backend - matches
-// app.translate.llm_translate._COACH_FORMALITIES there. Exported for
-// CoachPopover.tsx's own props.
-export interface CoachOptionState {
-  formality: "neutral" | "casual" | "formal";
-  spanish: string;
-  spanishDone: boolean;
-  english: string;
-  englishDone: boolean;
+// Lets App put text into this box ("Use this" on a coach suggestion).
+export interface ChatInputControl {
+  setText: (text: string) => void;
 }
 
 interface Segment {
@@ -88,22 +72,35 @@ function buildSegments(text: string, ranges: { start: number; end: number; span?
   return segments;
 }
 
+// The FINAL input: the message the learner will actually send to their
+// partner. Working out what to say happens in the next-message panel above
+// it (NextMessagePanel); this box only holds the result. Send sends as-is;
+// Check (or finishing a dictation) asks the coach to check it, and the check
+// shows up in that panel.
 export function ChatInput({
   onSend,
+  onCheck,
   sessionId,
-  partnerVoice,
+  readyText,
+  onValueChange,
+  controlRef,
 }: {
-  // Resolves with the partner's reply (voice mode speaks it); a plain
-  // void return is fine for callers that don't care.
-  onSend: (text: string) => void | Promise<{ text: string } | null>;
+  onSend: (text: string) => void;
+  onCheck: (text: string) => void;
   sessionId: string;
-  partnerVoice?: string;
+  // Text the coach has approved (or the learner took from a suggestion) -
+  // the Send button turns green while the box holds exactly this.
+  readyText: string | null;
+  onValueChange?: (text: string) => void;
+  controlRef?: RefObject<ChatInputControl | null>;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   const dragAnchorRef = useRef<number | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const touchMovedRef = useRef(false);
+  // The word whose popover a tap just closed (see handleTextareaTouchStart).
+  const closedOnTouchRef = useRef<{ start: number; end: number } | null>(null);
   const wasFocusedRef = useRef(false);
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Bumped on every /translate/tag-input request fired, and checked again
@@ -140,82 +137,21 @@ export function ChatInput({
   // naively-hovered single word can later resolve to a wider real
   // multi-word group once ensureGlossSpans's fetch completes.
   const [openOffset, setOpenOffset] = useState<number | null>(null);
-  // Per-word-instance memory of the dual Spanish/English toggle (see
+  // Per-word-instance memory of the dual target/English toggle (see
   // DraftSpan.alternate_gloss), keyed by that span's own start offset -
   // reset whenever a fresh gloss-spans fetch lands (a genuinely new
   // instance, offsets may no longer mean the same thing).
   const [altToggles, setAltToggles] = useState<Record<number, boolean>>({});
-  // The combined Send button's coaching-check state for the current draft -
-  // cleared whenever the draft text changes from typing/replacing a word
-  // (handleValueChange below), same as the old draft-translation preview
-  // it replaced. NOT cleared by picking one of a "fix" verdict's own
-  // options (see handleSelectCoachOption) - the whole point of #9 is that
-  // the popover survives a pick, so the learner can compare a different
-  // option afterward.
-  const [coachPhase, setCoachPhase] = useState<CoachPhase>("idle");
-  // Known the INSTANT the "verdict" event arrives - well before the rest
-  // of the check has finished streaming. This is what lets the Send
-  // button light up green right away (see coachReady below) instead of
-  // waiting for the full explanation/suggestions.
-  const [coachVerdict, setCoachVerdict] = useState<CoachVerdict | null>(null);
-  // The "you mean"/"did you mean" restatement's live text, streamed in via
-  // "meaning_chunk" events the same token-by-token "zipper" feel the chat
-  // reply itself already has (see api.coachDraftStream's docstring).
-  const [coachMeaning, setCoachMeaning] = useState("");
-  const [coachMeaningDone, setCoachMeaningDone] = useState(false);
-  // Only populated for a "minor" verdict - the single lightweight
-  // corrected-text suggestion, streamed the same way.
-  const [coachSuggestion, setCoachSuggestion] = useState("");
-  const [coachSuggestionDone, setCoachSuggestionDone] = useState(false);
-  // Only populated for a "fix" verdict - seeded with 3 empty skeleton
-  // entries the instant the verdict itself arrives (see fetchCoach), each
-  // one's spanish/english filling in independently as its own events
-  // stream in.
-  const [coachOptions, setCoachOptions] = useState<CoachOptionState[]>([]);
-  // Which option the learner has most recently picked, if any - purely
-  // for the popover's own "which one is this" highlight; applying it to
-  // the draft happens immediately in handleSelectCoachOption, not here.
-  const [selectedCoachOptionIndex, setSelectedCoachOptionIndex] = useState<number | null>(null);
-  const coachAbortRef = useRef<AbortController | null>(null);
-  // Whether the coach popover (opened automatically by the combined Send
-  // button in "check first" mode, see handlePrimaryAction) is visually
-  // hidden - separate from coachResult/coachState themselves, so dismissing
-  // a COMPLETED check (clean confirm or flagged suggestions) just hides the
-  // UI without losing the fact that this draft is already checked and
-  // ready to send (see coachVerified below). Dismissing a check that's
-  // still LOADING has nothing to preserve, so dismissCoach resets state
-  // fully in that case instead.
-  const [coachDismissed, setCoachDismissed] = useState(false);
-  // Persisted per-device (localStorage, like the voice picker) - set via
-  // the bubble opened by press-and-hold on the Send button (see
-  // startSendHold/handleSendModeChange below). "checkFirst" is the
-  // default: Send runs the draft-coaching check first and only sends once
-  // it comes back clean or the learner picks/accepts a phrasing.
-  // "direct" skips the check entirely and sends on the spot, same as the
-  // button always did before this existed.
-  const [sendMode, setSendMode] = useState<SendMode>(() => {
-    try {
-      return localStorage.getItem(SEND_MODE_STORAGE_KEY) === "direct" ? "direct" : "checkFirst";
-    } catch {
-      return "checkFirst";
-    }
-  });
-  const [showSendModePicker, setShowSendModePicker] = useState(false);
-  const sendHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Set by the long-press timer firing - tells the trailing click (mouseup/
-  // touchend always fire a click right after) to no-op instead of ALSO
-  // treating this same press as a tap on the button.
-  const sendLongPressFiredRef = useRef(false);
   const [phraseSelection, setPhraseSelection] = useState<{ text: string; start: number; end: number } | null>(null);
   const [phraseTranslation, setPhraseTranslation] = useState<string | null>(null);
   const [phraseState, setPhraseState] = useState<"idle" | "loading" | "error">("idle");
-  // Which way the phrase popover translates: "es" (candidate IS Spanish -
-  // a mostly-English/mixed selection, corrected and translated INTO
-  // Spanish, clickable to swap in) or "en" (candidate IS English - a
-  // mostly-Spanish selection, translated INTO English, just a gloss).
-  // Decided per-selection below from the majority language of the words it
-  // covers.
-  const [phraseDirection, setPhraseDirection] = useState<"es" | "en">("es");
+  // Which way the phrase popover translates: "target" (the candidate is in
+  // the language being learned - a mostly-English/mixed selection,
+  // corrected and translated INTO it, clickable to swap in) or "native"
+  // (the candidate is English - a mostly-target-language selection,
+  // translated INTO English, just a gloss). Decided per-selection below
+  // from the majority language of the words it covers.
+  const [phraseDirection, setPhraseDirection] = useState<"target" | "native">("target");
 
   const fireTagInput = (text: string) => {
     const seq = ++tagSeqRef.current;
@@ -365,55 +301,47 @@ export function ChatInput({
           : "loading"
         : "ready";
 
-  // Shared base for anything that changes the draft text - just the value
-  // itself and clearing a stale phrase selection. Used directly (bypassing
-  // handleValueChange's coach-clearing below) only by
-  // handleSelectCoachOption, since picking one of the coach's OWN options
-  // must not make its own popover disappear.
+  // Shared base for anything that changes the draft text.
   const applyValue = (next: string) => {
     setValue(next);
+    onValueChange?.(next);
     setPhraseSelection(null);
   };
 
   const handleValueChange = (next: string) => {
+    // While dictation owns the box, the learner's own edits would just be
+    // overwritten by the next transcript update - ignore them instead of
+    // making the box read-only (toggling readonly on a focused field is
+    // what left iOS unable to bring the keyboard back).
+    if (dictation.active && next !== dictationTextRef.current) return;
     applyValue(next);
-    // Typing or a word-candidate replace means any previously fetched
-    // coaching result is now of stale text, so drop it (and stop
-    // streaming one that's still in flight).
-    coachAbortRef.current?.abort();
-    setCoachPhase("idle");
-    setCoachVerdict(null);
-    setCoachMeaning("");
-    setCoachMeaningDone(false);
-    setCoachSuggestion("");
-    setCoachSuggestionDone(false);
-    setCoachOptions([]);
-    setSelectedCoachOptionIndex(null);
   };
 
-  // Voice mode lives INSIDE this input rather than on its own screen: what
-  // the learner says shows up in the draft box (hoverable words and all),
-  // the coach's spoken reply shows in the same docked coach popover the
-  // text "Check" uses, a ready verdict lights the Send button green, and
-  // the sent message / partner reply are ordinary chat bubbles. Interim
-  // (still-being-spoken) text is only previewed in the mic pill; the draft
-  // only ever gets settled text.
-  const voice = useVoiceSession({
+  // Voice input is plain dictation: words stream into this box as the
+  // learner speaks (see useDictation); finishing it keeps the text here
+  // (it's the message) and asks the coach to check it.
+  const dictationTextRef = useRef("");
+  const dictation = useDictation({
     sessionId,
-    partnerVoice,
-    onSend: (text) => sendText(text),
-    // Each settled segment replaces the draft with the whole utterance so
-    // far - a spoken attempt is one message, not an append to a typed one.
-    onTranscript: (text) => handleValueChange(text),
-    // The coach's corrected sentence goes into the draft like picking a
-    // text-coach option does (applyValue, not handleValueChange, so the
-    // in-flight voice turn isn't treated as a stale edit).
-    onDraft: (draft) => applyValue(draft),
+    onText: (text) => {
+      dictationTextRef.current = text;
+      applyValue(text);
+    },
   });
-  const voiceActive = voice.state !== "idle";
   const handleMicClick = () => {
-    if (voiceActive) voice.stop();
-    else void voice.start();
+    unlockSpeech();
+    if (dictation.active) {
+      void finishDictation();
+      return;
+    }
+    // A focused textarea would otherwise keep the keyboard up (or, on iOS,
+    // get stuck unable to show it again) while words stream in.
+    textareaRef.current?.blur();
+    void dictation.start(value);
+  };
+  const finishDictation = async () => {
+    const text = await dictation.done();
+    if (text.trim()) onCheck(text.trim());
   };
 
   const handleReplace = (span: DraftSpan, translation: string) => {
@@ -458,24 +386,24 @@ export function ChatInput({
       return;
     }
     // Majority-vote the language of the real words the selection covers
-    // (same per-word is_spanish flags /translate/tag-input's cheap token
+    // (same per-word is_target flags /translate/tag-input's cheap token
     // pass already computed) to decide which way to translate: a mostly-
-    // Spanish selection goes to English, a mostly-English (or mixed/typo-
-    // ridden) one goes to Spanish, same as the per-word popover's two
-    // directions.
+    // target-language selection goes to English, a mostly-English (or
+    // mixed/typo-ridden) one goes to the target language, same as the
+    // per-word popover's two directions.
     const overlapping = effectiveTokens.filter(
       (t) => t.end > phraseSelection.start && t.start < phraseSelection.end,
     );
-    const spanishCount = overlapping.filter((t) => t.is_spanish).length;
-    const isSpanishPhrase = overlapping.length > 0 && spanishCount * 2 > overlapping.length;
-    setPhraseDirection(isSpanishPhrase ? "en" : "es");
+    const targetCount = overlapping.filter((t) => t.is_target).length;
+    const isTargetPhrase = overlapping.length > 0 && targetCount * 2 > overlapping.length;
+    setPhraseDirection(isTargetPhrase ? "native" : "target");
 
     setPhraseState("loading");
     setPhraseTranslation(null);
     const handle = setTimeout(() => {
-      const translation = isSpanishPhrase
+      const translation = isTargetPhrase
         ? api
-            .translateText({ text: phraseSelection.text, source_lang: "es", target_lang: "en" })
+            .translateText({ text: phraseSelection.text, source_lang: apiLanguage(), target_lang: "en" })
             .then((res) => res.translation)
         : api.interpretInput({ text: phraseSelection.text }).then((res) => res.target);
       translation
@@ -526,6 +454,12 @@ export function ChatInput({
   const handleWordMouseDown = (e: React.MouseEvent<HTMLSpanElement>, seg: Segment) => {
     if ((e.target as HTMLElement).closest(".word-candidates-popover")) return;
     e.preventDefault();
+    // Clicking the word whose popover is open closes it (hover reopens it
+    // only once the pointer leaves and comes back).
+    if (openOffset !== null && openOffset >= seg.start && openOffset < seg.end) {
+      cancelHoverClose();
+      setOpenOffset(null);
+    }
     const textarea = textareaRef.current;
     if (!textarea) return;
     const pos = charOffsetAtPoint(e.clientX, e.clientY) ?? seg.start;
@@ -570,6 +504,9 @@ export function ChatInput({
   // the popover both happen from the same tap, same as clicking a word in
   // a chat bubble already does.
   const handleTextareaTouchStart = (e: React.TouchEvent<HTMLTextAreaElement>) => {
+    // Remember what was open: tapping that same word again just closes it.
+    const open = openOffset !== null ? segments.find((s) => s.hoverable && openOffset >= s.start && openOffset < s.end) : undefined;
+    closedOnTouchRef.current = open ? { start: open.start, end: open.end } : null;
     if (openOffset !== null) setOpenOffset(null);
     const touch = e.touches[0];
     touchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
@@ -598,7 +535,9 @@ export function ChatInput({
     if (offset === null) return;
     const seg = segments.find((s) => s.hoverable && offset >= s.start && offset <= s.end);
     if (!seg) return;
-    setCoachDismissed(true);
+    const closed = closedOnTouchRef.current;
+    closedOnTouchRef.current = null;
+    if (closed && seg.start < closed.end && seg.end > closed.start) return;
     setOpenOffset(seg.start);
     ensureGlossSpans();
   };
@@ -621,22 +560,22 @@ export function ChatInput({
     }, HOVER_CLOSE_DELAY_MS);
   };
 
-  // The one send path, for the Send button and voice mode alike: reward
-  // events for the Spanish the learner produced, hand the text up, clear
-  // the draft and everything derived from it. Resolves with the partner's
-  // reply when the parent provides it (voice mode speaks it).
-  const sendText = (raw: string): Promise<{ text: string } | null> => {
+  // The one send path: reward events for the target-language words the
+  // learner produced,
+  // hand the text up, clear the draft and everything derived from it.
+  const sendText = (raw: string) => {
     const text = raw.trim();
-    if (!text) return Promise.resolve(null);
+    if (!text) return;
 
     for (const tok of effectiveTokens) {
-      if (tok.is_spanish && SPANISH_WORD_RE.test(tok.surface) && tok.surface.length > 1) {
-        api.rewardEvent({ event_type: "userTypedSpanishWord", lemma: tok.lemma }).catch(() => {});
+      if (tok.is_target && TARGET_WORD_RE.test(tok.surface)) {
+        api.rewardEvent({ event_type: "userTypedTargetWord", lemma: tok.lemma }).catch(() => {});
       }
     }
 
-    const result = onSend(text);
-    handleValueChange("");
+    stopSpeech();
+    onSend(text);
+    applyValue("");
     tagSeqRef.current += 1; // invalidate any outstanding tagInput request for the just-sent draft
     glossSeqRef.current += 1; // same, for any outstanding gloss-spans request
     glossPendingKeyRef.current = null;
@@ -645,263 +584,40 @@ export function ChatInput({
     setGlossState("idle");
     setOpenOffset(null);
     setAltToggles({});
-    return Promise.resolve(result ?? null);
   };
 
-  const handleSend = () => {
-    void sendText(value);
-  };
-
-  // The combined Send button's draft-coaching check (see handlePrimaryAction
-  // below) - reads the streamed /translate/coach SSE response field by
-  // field as it arrives (see api.coachDraftStream's own docstring for the
-  // full sequence): a "verdict" event lands FIRST, before anything else,
-  // and alone is enough to light the Send button green (see coachReady) -
-  // the meaning restatement, then (depending on the verdict) a single
-  // suggestion or three interleaved options stream in afterward. Always
-  // starts a fresh fetch - a draft that's already been checked
-  // (coachVerified below) skips this call entirely rather than re-running
-  // it, so callers that want the cached result left alone (clicking Send
-  // again on an already-checked draft) just don't call this.
-  const fetchCoach = () => {
-    if (!value.trim()) return;
-    setCoachDismissed(false);
-    coachAbortRef.current?.abort();
-    const controller = new AbortController();
-    coachAbortRef.current = controller;
-    setCoachPhase("loading");
-    setCoachVerdict(null);
-    setCoachMeaning("");
-    setCoachMeaningDone(false);
-    setCoachSuggestion("");
-    setCoachSuggestionDone(false);
-    setCoachOptions([]);
-    setSelectedCoachOptionIndex(null);
-
-    (async () => {
-      try {
-        for await (const event of api.coachDraftStream({ text: value, session_id: sessionId }, controller.signal)) {
-          if (controller.signal.aborted) return;
-          switch (event.type) {
-            case "verdict":
-              setCoachVerdict(event.data.verdict);
-              if (event.data.verdict === "fix") {
-                // Rendered as 3 skeleton boxes immediately, before any of
-                // their own content exists - see CoachPopover's "fix"
-                // branch.
-                setCoachOptions(
-                  FORMALITIES.map((formality) => ({ formality, spanish: "", spanishDone: false, english: "", englishDone: false })),
-                );
-              }
-              break;
-            case "meaning_chunk":
-              setCoachMeaning((prev) => prev + event.data.delta);
-              break;
-            case "meaning_complete":
-              setCoachMeaning(event.data.meaning);
-              setCoachMeaningDone(true);
-              break;
-            case "suggestion_chunk":
-              setCoachSuggestion((prev) => prev + event.data.delta);
-              break;
-            case "suggestion_complete":
-              setCoachSuggestion(event.data.suggestion);
-              setCoachSuggestionDone(true);
-              setCoachPhase("idle"); // the whole "minor" check is done
-              break;
-            case "option_chunk":
-              setCoachOptions((prev) =>
-                prev.map((opt, i) => {
-                  if (i !== event.data.index) return opt;
-                  return event.data.field === "spanish"
-                    ? { ...opt, spanish: opt.spanish + event.data.delta }
-                    : { ...opt, english: opt.english + event.data.delta };
-                }),
-              );
-              break;
-            case "option_complete":
-              setCoachOptions((prev) =>
-                prev.map((opt, i) => {
-                  if (i !== event.data.index) return opt;
-                  return event.data.field === "spanish"
-                    ? { ...opt, spanish: event.data.text, spanishDone: true }
-                    : { ...opt, english: event.data.text, englishDone: true };
-                }),
-              );
-              // The last field of the last option - the whole "fix" check
-              // is done. There's no explicit "all done" event (each field
-              // is independent, see coach_draft_stream's own docstring on
-              // graceful degradation), so this is inferred from position.
-              if (event.data.index === FORMALITIES.length - 1 && event.data.field === "english") setCoachPhase("idle");
-              break;
-            case "error":
-              setCoachPhase("error");
-              break;
-          }
-        }
-        // A "clean" verdict has nothing after "meaning_complete" to flip
-        // coachPhase on - catch that (and any other stream that just ends
-        // without a trailing completion event, e.g. a truncated one) once
-        // the stream itself is done. Already "idle"/"error" from inside
-        // the loop above is left alone.
-        if (!controller.signal.aborted) {
-          setCoachPhase((prev) => (prev === "loading" ? "idle" : prev));
-        }
-      } catch {
-        if (!controller.signal.aborted) setCoachPhase("error");
-      }
-    })();
-  };
-
-  // Picking one of a "fix" verdict's own suggestions must NOT close/clear
-  // the popover (see #9) - the learner can keep comparing other options
-  // afterward, so this bypasses handleValueChange's coach-clearing
-  // entirely (applyValue only) and just records which option is now
-  // applied. No word-by-word gloss data travels with the coach stream at
-  // all anymore (unlike the earlier version of this protocol) - clearing
-  // glossCache here just lets the EXISTING lazy ensureGlossSpans fetch
-  // pick up the newly-applied text on next hover, same as any other edit.
-  const handleSelectCoachOption = (option: CoachOptionState, index: number) => {
-    applyValue(option.spanish);
-    setSelectedCoachOptionIndex(index);
-    setGlossCache(null);
-    setAltToggles({});
-    textareaRef.current?.focus();
-  };
-
-  // A "minor" verdict's one-line fix, confirmed via the popover's own Send
-  // button - unlike a "clean" verdict (whose own confirm button just
-  // sends the draft verbatim via handleSend), this applies the corrected
-  // suggestion into the draft FIRST, since that's what's actually meant
-  // to be sent, not the original typo-ridden text.
-  const handleConfirmMinorSend = () => {
-    if (coachSuggestion) applyValue(coachSuggestion);
-    handleSend();
-  };
-
-  const handleRegenerateCoach = () => fetchCoach();
-
-  // Hides the coach popover without losing a COMPLETED check's result -
-  // coachVerdict (and so coachVerified/coachReady below) survive a
-  // dismiss, since the draft itself hasn't changed and is still just as
-  // checked as it was a moment ago. A check still LOADING has nothing
-  // worth keeping, so that case aborts and resets to idle/null instead -
-  // otherwise the button would be stuck waiting on a check nobody can see
-  // the result of.
-  const dismissCoach = () => {
-    if (coachPhase === "loading") {
-      coachAbortRef.current?.abort();
-      setCoachPhase("idle");
-      setCoachVerdict(null);
-    }
-    setCoachDismissed(true);
-    textareaRef.current?.focus();
-  };
-
-  // True the INSTANT the verdict itself is known good (clean OR minor) -
-  // well before the rest of the check has finished streaming. This is
-  // what lets the Send button light up green right away (see its
-  // className below) rather than waiting for coachVerified, which still
-  // waits for the WHOLE check to resolve before it's safe to actually
-  // send on a click. Also true the instant the learner picks one of a
-  // "fix" verdict's own suggestions (handleSelectCoachOption) - picking
-  // one is just as safe to send as a clean/minor verdict, even while its
-  // sibling options are still streaming in.
-  const coachReady = coachVerdict === "clean" || coachVerdict === "minor" || selectedCoachOptionIndex !== null;
-  // True once a check has fully resolved for the CURRENT draft text with
-  // nothing left to do but send - either the model judged it clean/minor,
-  // or the learner already picked/accepted a "fix" option
-  // (handleSelectCoachOption, which deliberately leaves coachVerdict alone
-  // so this stays true). Any edit since (handleValueChange) clears
-  // coachVerdict, so this goes false again the moment the draft actually
-  // changes - exactly the "if you make any edits it will go back to check
-  // and send" behavior.
-  const coachVerified = coachPhase === "idle" && coachVerdict !== null;
-  const coachPopoverVisible =
-    !voiceActive &&
-    sendMode === "checkFirst" &&
-    !coachDismissed &&
-    (coachPhase === "loading" || coachPhase === "error" || coachVerdict !== null);
-  // The voice coach's box replaces the text coach's while a voice chat is
-  // on; shown whenever there's something to say or a state worth seeing
-  // (plain listening with nothing said yet stays out of the way).
-  const voicePopoverVisible = voiceActive && (voice.state !== "listening" || !!voice.coachSay || !!voice.error);
-
-  // The combined Send button's single entry point, fired by both a plain
-  // click/tap (handleSendClick) and the Enter key. "direct" mode always
-  // just sends. "checkFirst" mode sends outright ONLY once this exact
-  // draft has already been checked (coachVerified) - otherwise it runs
-  // the check instead and waits for the learner to see the result (a
-  // second press/Enter after that, or picking a suggestion, is what
-  // actually sends).
+  // Enter / Send: sends the box as-is (a dictation still running is
+  // finished first, which checks it instead).
   const handlePrimaryAction = () => {
-    if (!value.trim() || coachPhase === "loading") return;
-    // A voice chat owns sending (so the partner's reply gets spoken): a
-    // tap on the green button skips the rest of the coach's readout and
-    // sends; between turns it sends the draft as-is; mid-turn before a
-    // ready verdict there's nothing to do yet.
-    if (voiceActive) {
-      voice.sendNow(value);
+    unlockSpeech();
+    if (dictation.active) {
+      void finishDictation();
       return;
     }
-    // selectedCoachOptionIndex !== null covers clicking Send right after
-    // picking a "fix" suggestion, even while sibling options are still
-    // streaming (coachVerified alone would still be false then, since it
-    // waits for coachPhase to settle back to "idle").
-    if (sendMode === "direct" || coachVerified || selectedCoachOptionIndex !== null) {
-      handleSend();
-      return;
-    }
-    fetchCoach();
+    sendText(value);
   };
 
-  // Press-and-hold the Send button to change its mode instead of acting on
-  // it - most presses are quick taps (handleSendClick fires normally,
-  // sendLongPressFiredRef stays false since this timer gets cancelled
-  // first by the mouseup/touchend that always precedes a click), so this
-  // never gets in the way of an ordinary send.
-  const startSendHold = () => {
-    sendLongPressFiredRef.current = false;
-    sendHoldTimerRef.current = setTimeout(() => {
-      sendHoldTimerRef.current = null;
-      sendLongPressFiredRef.current = true;
-      setShowSendModePicker(true);
-    }, SEND_LONG_PRESS_MS);
-  };
-  const cancelSendHold = () => {
-    if (sendHoldTimerRef.current !== null) {
-      clearTimeout(sendHoldTimerRef.current);
-      sendHoldTimerRef.current = null;
-    }
-  };
-  const handleSendClick = () => {
-    // The hold already opened the mode picker - this trailing click
-    // (mouseup/touchend always fire one right after) shouldn't also act
-    // on the button as if it were a normal tap.
-    if (sendLongPressFiredRef.current) {
-      sendLongPressFiredRef.current = false;
-      return;
-    }
-    handlePrimaryAction();
-  };
-  const handleSendModeChange = (mode: SendMode) => {
-    setSendMode(mode);
-    try {
-      localStorage.setItem(SEND_MODE_STORAGE_KEY, mode);
-    } catch {
-      // per-viewer convenience only - fine if it can't persist
-    }
-    setShowSendModePicker(false);
-    textareaRef.current?.focus();
+  const handleCheck = () => {
+    unlockSpeech();
+    if (value.trim()) onCheck(value.trim());
   };
 
   useEffect(() => {
-    return () => {
-      coachAbortRef.current?.abort();
-      cancelSendHold();
+    if (!controlRef) return;
+    controlRef.current = {
+      setText: (text: string) => {
+        applyValue(text);
+        setGlossCache(null);
+        setAltToggles({});
+      },
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  });
+
+  const ready = !!readyText && value.trim() === readyText.trim();
+
+  // Taps in the message box open/close/switch its popups themselves (see
+  // the touch and mouse handlers above); a click anywhere else closes them.
+  const inEditor = (target: Element) => !!target.closest(".chat-input__editor");
 
   return (
     <div className="chat-input">
@@ -921,8 +637,7 @@ export function ChatInput({
                 onMouseEnter={() => {
                   cancelHoverClose();
                   setOpenOffset(seg.start);
-                  setCoachDismissed(true);
-                  ensureGlossSpans();
+                                ensureGlossSpans();
                 }}
                 onMouseLeave={scheduleHoverClose}
                 onMouseDown={(e) => handleWordMouseDown(e, seg)}
@@ -939,8 +654,9 @@ export function ChatInput({
         <textarea
           ref={textareaRef}
           className="chat-input__textarea"
+          rows={1}
           value={value}
-          placeholder="Type here - mix in English if stuck, we'll help"
+          placeholder={dictation.active ? "Listening - tap the bubble when you're done" : "Your message to them"}
           // These don't remove iOS/Safari's native keyboard accessory bar
           // (the row with done/prev/next above the keyboard) - that's
           // rendered by WKWebView itself, not this page, and no web-page
@@ -957,56 +673,54 @@ export function ChatInput({
           onTouchMove={handleTextareaTouchMove}
           onTouchEnd={handleTextareaTouchEnd}
           onKeyDown={(e) => {
+            // Enter while a Japanese/Chinese/Korean input method is still
+            // composing confirms the characters - it doesn't send.
+            if (isComposing(e)) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               handlePrimaryAction();
             }
           }}
         />
-        {voiceActive && voice.interim && <div className="chat-input__mic-pill">{voice.interim}</div>}
+        {dictation.error && !dictation.active && (
+          <div className="chat-input__mic-pill chat-input__mic-pill--error">{dictation.error}</div>
+        )}
       </div>
+      <TalkButton state={dictation.state} onClick={handleMicClick} finishLabel="Finish - check what you said" />
       <button
         type="button"
-        className={`chat-input__mic${voiceActive ? " chat-input__mic--active" : ""}${voice.state === "listening" ? " chat-input__mic--listening" : ""}`}
-        onClick={handleMicClick}
-        aria-pressed={voiceActive}
-        aria-label={voiceActive ? "End voice chat" : "Start voice chat"}
-        title={voiceActive ? "End voice chat" : "Talk instead of typing - the coach answers out loud and sends when it's right"}
-      >
-        {voiceActive ? "⏹" : "🎤"}
-      </button>
-      <button
-        type="button"
-        className={`chat-input__send${voice.readyToSend || (sendMode === "checkFirst" && coachReady) ? " chat-input__send--ready" : ""}`}
-        onMouseDown={startSendHold}
-        onMouseUp={cancelSendHold}
-        onMouseLeave={cancelSendHold}
-        onTouchStart={startSendHold}
-        onTouchEnd={cancelSendHold}
-        onClick={handleSendClick}
+        className="chat-input__check"
+        hidden={dictation.active}
+        onClick={handleCheck}
         disabled={!value.trim()}
-        title={
-          voiceActive
-            ? "Send what's in the box - the voice coach does the checking"
-            : sendMode === "direct"
-              ? "Send - press and hold to check your draft before sending"
-              : "Checks your draft, then sends - press and hold to send directly instead"
-        }
+        title="Ask the coach to check this message (shows up in Discuss your next message)"
       >
-        {voiceActive || sendMode === "direct"
-          ? "Send"
-          : coachPhase === "loading"
-            ? "⏳ Checking…"
-            : coachVerified
-              ? "Send"
-              : "💡 Check"}
+        Check
       </button>
-      {/* Docked flush against the input bar's own top edge (see
-          DockedPopover) rather than floating next to whatever word/button
-          triggered it - a single, predictable, always-on-screen spot
-          regardless of where in the draft that word or selection sits. */}
+      <button
+        type="button"
+        hidden={dictation.active}
+        className={`chat-input__send${ready ? " chat-input__send--ready" : ""}`}
+        onClick={handlePrimaryAction}
+        disabled={!value.trim()}
+        title="Send this to your partner"
+      >
+        Send
+      </button>
+      {/* Right under the message box (see DockedPopover's "inline") rather
+          than floating next to whatever word triggered it - one
+          predictable spot, out of the way of the text being edited. */}
       {popoverState !== "none" && (
-        <DockedPopover onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
+        <DockedPopover
+          position="inline"
+          onMouseEnter={cancelHoverClose}
+          onMouseLeave={scheduleHoverClose}
+          onDismiss={() => {
+            cancelHoverClose();
+            setOpenOffset(null);
+          }}
+          keepOpenFor={inEditor}
+        >
           <WordCandidatesPopover
             loading={popoverState === "loading"}
             candidates={
@@ -1030,7 +744,7 @@ export function ChatInput({
         </DockedPopover>
       )}
       {phraseSelection && (
-        <DockedPopover>
+        <DockedPopover position="inline" onDismiss={() => setPhraseSelection(null)} keepOpenFor={inEditor}>
           <WordCandidatesPopover
             candidates={[
               phraseState === "loading"
@@ -1039,7 +753,7 @@ export function ChatInput({
                   ? { translation: "(translation failed)" }
                   : { translation: phraseTranslation ?? "…" },
             ]}
-            clickable={phraseDirection === "es"}
+            clickable={phraseDirection === "target"}
             onSelect={(translation) => {
               const next = value.slice(0, phraseSelection.start) + translation + value.slice(phraseSelection.end);
               handleValueChange(next);
@@ -1047,72 +761,6 @@ export function ChatInput({
               textareaRef.current?.focus();
             }}
           />
-        </DockedPopover>
-      )}
-      {voicePopoverVisible && (
-        <DockedPopover position="below">
-          <VoiceCoachPopover
-            state={voice.state}
-            say={voice.coachSay}
-            error={voice.error}
-            keepAwakeMode={voice.keepAwakeMode}
-            onStop={voice.stop}
-          />
-        </DockedPopover>
-      )}
-      {coachPopoverVisible && (
-        <DockedPopover
-          // Remounts (and so re-runs DockedPopover's scroll-into-view
-          // effect) right at the one transition that meaningfully grows
-          // this popover's height - the verdict arriving and replacing
-          // the small "Thinking…" placeholder with real content. Without
-          // this, a popover that opened near the bottom of the viewport
-          // stayed scrolled to fit its small loading-state height and
-          // never scrolled further once the real content (and its real
-          // height) landed.
-          key={coachVerdict === null ? "loading" : "ready"}
-          position="below"
-        >
-          <CoachPopover
-            phase={coachPhase}
-            verdict={coachVerdict}
-            meaning={coachMeaning}
-            meaningDone={coachMeaningDone}
-            suggestion={coachSuggestion}
-            suggestionDone={coachSuggestionDone}
-            options={coachOptions}
-            selectedIndex={selectedCoachOptionIndex}
-            onSelect={handleSelectCoachOption}
-            onClose={dismissCoach}
-            onRegenerate={handleRegenerateCoach}
-            onConfirmMinorSend={handleConfirmMinorSend}
-          />
-        </DockedPopover>
-      )}
-      {showSendModePicker && (
-        <DockedPopover position="below">
-          <div className="send-mode-picker">
-            <button
-              type="button"
-              className="send-mode-picker__close"
-              onClick={() => {
-                setShowSendModePicker(false);
-                textareaRef.current?.focus();
-              }}
-              aria-label="Close"
-            >
-              ✕
-            </button>
-            <div className="send-mode-picker__label">Send button</div>
-            <SegmentedControl
-              value={sendMode}
-              onChange={handleSendModeChange}
-              options={[
-                { value: "checkFirst", label: "Check first" },
-                { value: "direct", label: "Send directly" },
-              ]}
-            />
-          </div>
         </DockedPopover>
       )}
     </div>

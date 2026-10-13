@@ -1,7 +1,7 @@
 """Text embeddings via DeepInfra's OpenAI-compatible /embeddings endpoint,
-plus the word-bank embedding cache (table word_embedding).
+plus the word embedding cache (table word_embedding).
 
-No vector database: the bank is at most a few thousand words, so ranking it
+No vector database: the candidate words are at most a few thousand words, so ranking it
 is a single matrix-vector product over an in-memory numpy array - well
 under a millisecond.
 """
@@ -14,14 +14,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import DEEPINFRA_API_TOKEN, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL
-from app.models import WordBankEntry, WordEmbedding
+from app.models import WordEmbedding
 
 DEEPINFRA_EMBEDDINGS_URL = "https://api.deepinfra.com/v1/openai/embeddings"
 
 # Qwen3-Embedding is instruction-aware on the query side only: documents
 # (the words) are embedded bare, queries carry a one-line task description.
 _QUERY_INSTRUCTION = (
-    "Given a snippet of a Spanish-learning conversation, retrieve Spanish vocabulary words "
+    "Given a snippet of a {language}-learning conversation, retrieve {language} vocabulary words "
     "that would come up naturally in the next reply"
 )
 
@@ -80,8 +80,9 @@ def embed_texts(texts: list[str], timeout: float = 15.0) -> np.ndarray:
     return _normalize(np.asarray(rows, dtype=np.float32))
 
 
-def embed_query(text: str) -> np.ndarray:
-    return embed_texts([f"Instruct: {_QUERY_INSTRUCTION}\nQuery:{text}"])[0]
+def embed_query(text: str, language_name: str = "Spanish") -> np.ndarray:
+    instruction = _QUERY_INSTRUCTION.format(language=language_name)
+    return embed_texts([f"Instruct: {instruction}\nQuery:{text}"])[0]
 
 
 def word_document(lemma: str, translation: str) -> str:
@@ -91,42 +92,66 @@ def word_document(lemma: str, translation: str) -> str:
     return f"{lemma}: {translation}" if translation else lemma
 
 
-# lemma -> vector for the current EMBEDDING_MODEL. Rows are immutable once
-# written (a re-embed only ever happens under a different model name), so
-# the cache only ever needs to learn about new lemmas, never invalidate.
-_cache: dict[str, np.ndarray] = {}
+# (language, lemma) -> vector for the current EMBEDDING_MODEL. Rows are
+# immutable once written (a re-embed only ever happens under a different
+# model name), so the cache only ever needs to learn about new words, never
+# invalidate.
+_cache: dict[tuple[str, str], np.ndarray] = {}
 
 
-def load_vectors(session: Session, lemmas: list[str]) -> dict[str, np.ndarray]:
+def load_vectors(session: Session, language: str, lemmas: list[str]) -> dict[str, np.ndarray]:
     """Cached vectors for whichever of `lemmas` have been embedded so far."""
-    missing = [lemma for lemma in lemmas if lemma not in _cache]
+    missing = [lemma for lemma in lemmas if (language, lemma) not in _cache]
     if missing:
         rows = session.execute(
             select(WordEmbedding.lemma, WordEmbedding.vector).where(
-                WordEmbedding.model == EMBEDDING_MODEL, WordEmbedding.lemma.in_(missing)
+                WordEmbedding.model == EMBEDDING_MODEL,
+                WordEmbedding.language == language,
+                WordEmbedding.lemma.in_(missing),
             )
         ).all()
         for lemma, blob in rows:
-            _cache[lemma] = np.frombuffer(blob, dtype=np.float32)
-    return {lemma: _cache[lemma] for lemma in lemmas if lemma in _cache}
+            _cache[(language, lemma)] = np.frombuffer(blob, dtype=np.float32)
+    return {lemma: _cache[(language, lemma)] for lemma in lemmas if (language, lemma) in _cache}
 
 
-def embed_missing_words(session: Session, open_class_pos: frozenset[str], limit: int = 256) -> int:
-    """Embeds up to `limit` word-bank lemmas that don't have a vector under
-    the current model yet, and commits them. Returns how many it added. Run
-    from the post-turn background job, never on the request path."""
-    embedded = select(WordEmbedding.lemma).where(WordEmbedding.model == EMBEDDING_MODEL)
-    entries = session.scalars(
-        select(WordBankEntry)
-        .where(WordBankEntry.pos.in_(open_class_pos), WordBankEntry.lemma.not_in(embedded))
-        .order_by(WordBankEntry.id)
-        .limit(limit)
-    ).all()
-    if not entries:
+def remember_vectors(language: str, words: list[tuple[str, str]]) -> None:
+    """Embeds `words` ((lemma, translation) pairs) into the in-memory cache
+    only - no DB write, so it's safe on the reply's read-only request path.
+    embed_missing later persists them without paying for the API call again."""
+    vectors = embed_texts([word_document(lemma, translation) for lemma, translation in words])
+    for (lemma, _), vector in zip(words, vectors):
+        _cache[(language, lemma)] = vector
+
+
+def embed_missing(session: Session, language: str, words: list[tuple[str, str]], limit: int = 256) -> int:
+    """Embeds up to `limit` of `words` ((lemma, translation) pairs) that
+    don't have a vector under the current model yet, and commits them.
+    Returns how many it added. Run from the post-turn background job (and
+    when the word list changes), never on the reply's request path."""
+    if not words:
+        return 0
+    have = set(
+        session.scalars(
+            select(WordEmbedding.lemma).where(
+                WordEmbedding.model == EMBEDDING_MODEL,
+                WordEmbedding.language == language,
+                WordEmbedding.lemma.in_([lemma for lemma, _ in words]),
+            )
+        ).all()
+    )
+    todo = [(lemma, translation) for lemma, translation in words if lemma not in have][:limit]
+    if not todo:
         return 0
 
-    vectors = embed_texts([word_document(e.lemma, e.primary_translation) for e in entries])
-    for entry, vector in zip(entries, vectors):
-        session.add(WordEmbedding(lemma=entry.lemma, model=EMBEDDING_MODEL, vector=vector.astype(np.float32).tobytes()))
+    cached = [(lemma, _cache[(language, lemma)]) for lemma, _ in todo if (language, lemma) in _cache]
+    fresh = [(lemma, translation) for lemma, translation in todo if (language, lemma) not in _cache]
+    fetched = embed_texts([word_document(lemma, translation) for lemma, translation in fresh]) if fresh else []
+    for (lemma, vector) in cached + [(lemma, v) for (lemma, _), v in zip(fresh, fetched)]:
+        session.add(
+            WordEmbedding(
+                language=language, lemma=lemma, model=EMBEDDING_MODEL, vector=vector.astype(np.float32).tobytes()
+            )
+        )
     session.commit()
-    return len(entries)
+    return len(todo)

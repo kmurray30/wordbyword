@@ -3,7 +3,7 @@ each span back to exact character offsets in the real draft it was run on.
 The model is asked to copy each span's surface text exactly, but small
 models can't reliably report character offsets themselves - this does a
 sequential, case/accent-insensitive scan instead, with the same tolerant
-philosophy as gloss_reply's word-map lookups: a span that can't be located
+philosophy as gloss_message's word-map lookups: a span that can't be located
 (hallucinated text, or copied with some other normalization-insensitive
 difference) is dropped rather than crashing or misplacing it."""
 

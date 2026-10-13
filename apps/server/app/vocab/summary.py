@@ -21,7 +21,7 @@ from app.models import ConversationSummary
 # config.MAX_REPLY_TOKENS's comment).
 _SUMMARY_MAX_TOKENS = 800
 
-_SUMMARY_PROMPT = """You maintain a running summary of a casual Spanish-practice chat \
+_SUMMARY_PROMPT = """You maintain a running summary of a casual language-practice chat \
 between a learner and a conversation partner. Given the previous summary and the newest \
 exchange, write the updated summary: 1-3 short sentences in English covering the topics \
 being discussed, the situation or setting, and anything the learner has said about \

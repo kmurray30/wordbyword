@@ -15,3 +15,77 @@
 .word-token--active {
   background: rgba(255, 255, 255, 0.18);
 }
+
+/* The phrase the open word belongs to: one color across all its words (and
+   the spaces between), with the open word's grey stacked on top. */
+.word-token--phrase {
+  background-color: rgba(255, 196, 70, 0.33);
+  border-radius: 0;
+  /* Edge to edge with the next piece of the phrase - an overlap would show
+     as a darker seam. */
+  padding: 3px 0;
+  margin: -3px 0;
+}
+
+.word-token--phrase.word-token--active {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.22));
+}
+
+/* "add word? (tap again)" / "Added" - floating just above the word. Taps
+   go straight through to the word underneath. */
+.word-ask {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: #3a4256;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  color: #f2f2f2;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.word-ask__hint {
+  color: #a9adba;
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.word-ask--done {
+  background: #2f8a50;
+  animation: word-ask-fade 1.3s ease forwards;
+}
+
+@keyframes word-ask-fade {
+  0%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Asking "add word?" / "remove?" about this word. */
+.word-token.word-token--add {
+  background-color: rgba(90, 210, 130, 0.38);
+  background-image: none;
+}
+
+.word-token.word-token--remove {
+  background-color: rgba(255, 110, 110, 0.38);
+  background-image: none;
+}
+
+.word-ask--removed {
+  background: #b23b3b;
+}

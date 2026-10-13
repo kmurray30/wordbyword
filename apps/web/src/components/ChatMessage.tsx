@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "../api/client";
-import type { DraftSpan, TokenAnnotation } from "../api/client";
-import { joinTokens } from "../lib/spacing";
+import type { MessageGlosses, ThreadEntry, TokenAnnotation } from "../api/client";
+import { apiLanguage, htmlLang, useLanguage } from "../lib/language";
 import { diffRawWords, pickDiffReference, tokenizeSegments } from "../lib/wordDiff";
 import { DockedPopover } from "./DockedPopover";
-import { TranslatePopover } from "./TranslatePopover";
-import { WordCandidatesPopover } from "./WordCandidatesPopover";
 import { WordToken } from "./WordToken";
 import { AudioButton } from "./AudioButton";
 import { TranslationRow } from "./TranslationRow";
+import { ReadingText } from "./ReadingText";
+import type { Piece, WordRange } from "./ReadingText";
+import type { LiveCoachReply } from "./MessageThread";
 import "./ChatMessage.css";
 
 const TRANSLATION_FAILED = "(translation failed)";
@@ -52,24 +54,166 @@ export interface DisplayMessage {
   // or whose original /translate/interpret call failed.
   native?: string;
   target?: string;
+  // The side conversation about this message (see MessageThread): coach
+  // checks behind a sent message, questions and the coach's replies.
+  thread?: ThreadEntry[];
+  // What each word (and multi-word phrase) means - see MessageGlosses.
+  // Saved with the message; null/absent until made (fetched below).
+  glosses?: MessageGlosses | null;
+}
+
+// Where each token sits in the message text (tokens are its words and
+// punctuation in order, so a forward scan finds them).
+function tokenOffsets(text: string, tokens: TokenAnnotation[]): { start: number; end: number }[] {
+  const lower = text.toLowerCase();
+  let cursor = 0;
+  return tokens.map((tok) => {
+    const at = lower.indexOf(tok.surface.toLowerCase(), cursor);
+    const start = at === -1 ? cursor : at;
+    const end = at === -1 ? cursor : at + tok.surface.length;
+    cursor = end;
+    return { start, end };
+  });
+}
+
+// The tapped word's meaning, beside the bubble: first just the short
+// meaning ("it can"); tapping the popup opens the details - any note on its
+// form (a verb's infinitive, person and tense) - with a "?" that asks the
+// coach about it.
+function WordGlossPopup({
+  gloss,
+  grammar,
+  pending,
+  expanded,
+  onExpand,
+  onExplain,
+}: {
+  gloss: string;
+  grammar: string;
+  pending: boolean;
+  expanded: boolean;
+  onExpand: () => void;
+  onExplain?: () => void;
+}) {
+  const text = gloss || (pending ? "…" : "(no translation)");
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        className="chat-message__popup chat-message__word-popover chat-message__word-popover--short"
+        lang="en"
+        onClick={onExpand}
+        title="More about this word"
+      >
+        <span className="chat-message__word-gloss">{text}</span>
+        <span className="chat-message__more" aria-hidden="true">
+          ›
+        </span>
+      </button>
+    );
+  }
+  return (
+    <div className="chat-message__popup chat-message__word-popover" role="tooltip" lang="en">
+      <div className="chat-message__popup-head">
+        <div className="chat-message__word-gloss">{text}</div>
+        {onExplain && <ExplainButton onClick={onExplain} />}
+      </div>
+      {grammar && <div className="chat-message__word-grammar">{grammar}</div>}
+    </div>
+  );
+}
+
+// "?": asks this message's coach to explain the word/phrase here.
+function ExplainButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="chat-message__explain"
+      onClick={onClick}
+      aria-label="Ask the coach to explain this"
+      title="Ask the coach to explain this"
+    >
+      ?
+    </button>
+  );
+}
+
+// A tapped phrase's meaning, and any note on it.
+function PhraseGlossPopup({ gloss, note, onExplain }: { gloss: string; note: string; onExplain?: () => void }) {
+  return (
+    <div className="chat-message__popup chat-message__phrase-popover" role="tooltip">
+      <div className="chat-message__popup-head">
+        <div className="chat-message__phrase-gloss">{gloss}</div>
+        {onExplain && <ExplainButton onClick={onExplain} />}
+      </div>
+      {note && <div className="chat-message__phrase-note">{note}</div>}
+    </div>
+  );
 }
 
 // How long an agent word can go un-hovered before we count that as passive
 // recognition (a small familiarity boost) rather than "still pending".
 const RESOLUTION_DELAY_MS = 6000;
 
-export function ChatMessage({ message, voice }: { message: DisplayMessage; voice?: string }) {
+export function ChatMessage({
+  message,
+  voice,
+  variant = "chat",
+  onExplain,
+  threadOpen = false,
+  onToggleThread,
+  liveCoach = null,
+  latest = false,
+  savedWords,
+  onSaveWord,
+  onRemoveWord,
+}: {
+  // "sheet": the same bubble at the top of its coach overlay (ThreadOverlay)
+  // - every popup opens underneath it (over the conversation below, word
+  // and phrase side by side), no 💬.
+  variant?: "chat" | "sheet";
+  // The "?" on a word's/phrase's details: ask this message's coach to
+  // explain that text here.
+  onExplain?: (text: string) => void;
+  message: DisplayMessage;
+  // The newest reply in the chat: its popups open upward, so they don't
+  // run off the bottom of the conversation.
+  latest?: boolean;
+  // Words the learner has saved (lowercased), and how to save/remove one:
+  // tap a word to see its meaning, tap it again for "add word?", and once
+  // more to add it (or "remove?" / remove, if it's saved already).
+  savedWords?: Set<string>;
+  onSaveWord?: (entry: { word: string; gloss: string; grammar: string; sentence: string; messageId?: number }) => void;
+  onRemoveWord?: (word: string) => void;
+  voice?: string;
+  // Its coach conversation is open (the overlay - see ThreadOverlay).
+  threadOpen?: boolean;
+  onToggleThread?: () => void;
+  // The coach's reply while it's still streaming, when it's about this
+  // message.
+  liveCoach?: LiveCoachReply | null;
+}) {
+  const lang = useLanguage();
   const resolvedLemmas = useRef<Set<string>>(new Set());
+  // Checks count once each; a question and its answer count as one.
+  const threadCount = (message.thread ?? []).filter((e) => e.kind !== "answer").length;
 
-  // Which word's translation popover is open, if any - at most one per
-  // message, docked flush to the bottom of this message's own bubble
-  // (see the DockedPopover render below) rather than each word rendering
-  // its own floating popover. Hover takes precedence for display (so
-  // momentarily hovering a different word while one is pinned previews
-  // that word instead), falling back to whatever's pinned.
-  const [hoveredWordIndex, setHoveredWordIndex] = useState<number | null>(null);
-  const [pinnedWordIndex, setPinnedWordIndex] = useState<number | null>(null);
-  const openWordIndex = hoveredWordIndex ?? pinnedWordIndex;
+  // The tapped (pinned) or hovered word, by its character offset in the
+  // message. Its meaning shows beside the bubble; if it's part of a phrase,
+  // the phrase's meaning shows above the bubble.
+  const [hoverOffset, setHoverOffset] = useState<number | null>(null);
+  const [pinnedOffset, setPinnedOffset] = useState<number | null>(null);
+  const activeOffset = hoverOffset ?? pinnedOffset;
+  // The pinned word is showing "add word?"/"remove?"; then, briefly, what
+  // just happened.
+  const [askOffset, setAskOffset] = useState<number | null>(null);
+  // The word whose popup is showing its details (tapped open).
+  const [detailOffset, setDetailOffset] = useState<number | null>(null);
+  const [flash, setFlash] = useState<{ offset: number; text: string; removed: boolean } | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+  }, []);
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelHoverClose = () => {
@@ -82,7 +226,7 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
     cancelHoverClose();
     hoverCloseTimerRef.current = setTimeout(() => {
       hoverCloseTimerRef.current = null;
-      setHoveredWordIndex(null);
+      setHoverOffset(null);
     }, HOVER_CLOSE_DELAY_MS);
   };
   useEffect(() => {
@@ -91,59 +235,53 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
     };
   }, []);
 
-  // Hovering the message previews its translation (fetched eagerly below,
-  // so it's normally instant); the toggle button also pins it open on
-  // click, for touch/keyboard users and anyone who wants to read it without
-  // holding the hover (e.g. to use an audio button).
-  // The translation rows live in normal document flow directly under the
-  // bubble - not an absolutely-positioned popover - so there's no gap for
-  // the pointer to cross between them; hover can be driven safely off the
-  // whole column without the old "vanishes before you can reach it" bug
-  // that hover-based popovers elsewhere in the app had to work around.
-  const [isHovering, setIsHovering] = useState(false);
-  const [isPinned, setIsPinned] = useState(false);
-  const showTranslation = isHovering || isPinned;
+  // The 🌐 at the end of the bubble opens the whole message's translation
+  // in the same kind of popup a word gets (fetched eagerly below, so it's
+  // normally instant). One popup per message at a time.
+  const [globeOpen, setGlobeOpen] = useState(false);
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
 
-  // Assistant: single ES->EN translation row.
+  // Assistant: single target -> English translation row.
   const [assistantTranslation, setAssistantTranslation] = useState<string | null>(null);
   const [assistantTranslating, setAssistantTranslating] = useState(false);
 
   // User: two rows - a corrected/interpreted English restatement (in case
-  // the learner typed a mix of English/Spanish, or made mistakes in
-  // either) and its Spanish translation.
+  // the learner typed a mix of English and the target language, or made
+  // mistakes in either) and its target-language translation.
   const [userNative, setUserNative] = useState<string | null>(null);
   const [userTarget, setUserTarget] = useState<string | null>(null);
   const [userInterpreting, setUserInterpreting] = useState(false);
 
-  // Per-word/group glossing for the learner's OWN sent message - same
-  // backend call (tag_draft via /translate/gloss-spans) the chat input's
-  // own hover-translate uses on a still-being-typed draft, reused here
-  // read-only on the final, already-sent text. Lazy (fetched once on the
-  // first word click, not eagerly for every message) since it's a real
-  // LLM call, same convention as the input's own ensureGlossSpans.
-  const [userSpans, setUserSpans] = useState<DraftSpan[] | null>(null);
-  const [userSpansLoading, setUserSpansLoading] = useState(false);
-  // The raw character offset of the clicked word, re-resolved against
-  // userSpans on every render - mirrors ChatInput's openOffset: a word
-  // clicked before userSpans has loaded can still resolve to a wider
-  // multi-word group once it does, without re-clicking.
-  const [openUserOffset, setOpenUserOffset] = useState<number | null>(null);
-
-  const ensureUserSpans = () => {
-    if (userSpans !== null || userSpansLoading) return;
-    setUserSpansLoading(true);
+  // Word/phrase glosses: saved with the message. One that doesn't have
+  // them yet (your own messages, older replies) gets them once, in the
+  // background, and the server saves them for next time.
+  const [fetchedGlosses, setFetchedGlosses] = useState<MessageGlosses | null>(null);
+  const [glossesFailed, setGlossesFailed] = useState(false);
+  const glosses = message.glosses ?? fetchedGlosses;
+  const glossesRequestedRef = useRef(false);
+  const glossServerId = message.serverId ?? (message.id > 0 ? message.id : undefined);
+  useEffect(() => {
+    if (message.glosses || glossServerId === undefined || glossesRequestedRef.current) return;
+    glossesRequestedRef.current = true;
     api
-      .glossSpans({ text: message.text })
-      .then((res) => setUserSpans(res.spans))
-      .catch(() => setUserSpans([]))
-      .finally(() => setUserSpansLoading(false));
-  };
+      .messageGlosses({ message_id: glossServerId })
+      .then((g) => setFetchedGlosses({ words: g.words ?? [], phrases: g.phrases ?? [] }))
+      .catch(() => setGlossesFailed(true));
+  }, [message.glosses, glossServerId]);
 
-  const openUserSpan =
-    openUserOffset !== null ? userSpans?.find((s) => openUserOffset >= s.start && openUserOffset < s.end) : undefined;
+  const wordAt = (offset: number | null) =>
+    offset === null ? undefined : glosses?.words.find((w) => w.start <= offset && offset < w.end);
+  const phraseAt = (offset: number | null) =>
+    offset === null ? undefined : glosses?.phrases.find((p) => p.start <= offset && offset < p.end);
+  const activePhrase = phraseAt(activeOffset);
+  const inActivePhrase = (start: number, end: number) =>
+    !!activePhrase && start >= activePhrase.start && end <= activePhrase.end;
+
+  const sheet = variant === "sheet";
 
   useEffect(() => {
-    if (message.role !== "assistant" || !message.tokens || message.fromHistory) return;
+    // Counted once, by the bubble in the chat (not again in its overlay).
+    if (sheet || message.role !== "assistant" || !message.tokens || message.fromHistory) return;
     const trackedLemmas = [...new Set(message.tokens.filter((t) => t.gloss).map((t) => t.lemma))];
 
     const timer = setTimeout(() => {
@@ -164,28 +302,37 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
     api.rewardEvent({ event_type: "wordHovered", lemma }).catch(() => {});
   };
 
+  // Set once a translation had to be fetched here (rather than arriving
+  // saved with the message) - it then gets saved back (see below).
+  const fetchedTranslationRef = useRef(false);
+
+  // At most one translation request per message, however often it's asked.
+  const translationRequestedRef = useRef(false);
+
   const fetchAssistantTranslation = () => {
-    if (assistantTranslation !== null || assistantTranslating) return;
-    if (message.translation) {
-      setAssistantTranslation(message.translation);
-      return;
-    }
+    if (assistantTranslation !== null || translationRequestedRef.current) return;
+    translationRequestedRef.current = true;
     setAssistantTranslating(true);
     api
-      .translateText({ text: message.text, source_lang: "es", target_lang: "en" })
-      .then((res) => setAssistantTranslation(res.translation))
+      .translateText({ text: message.text, source_lang: apiLanguage(lang), target_lang: "en" })
+      .then((res) => {
+        fetchedTranslationRef.current = true;
+        setAssistantTranslation(res.translation ?? "");
+      })
       .catch(() => setAssistantTranslation("(translation failed)"))
       .finally(() => setAssistantTranslating(false));
   };
 
   const fetchUserInterpretation = () => {
-    if (userNative !== null || userInterpreting) return;
+    if (userNative !== null || translationRequestedRef.current) return;
+    translationRequestedRef.current = true;
     setUserInterpreting(true);
     api
       .interpretInput({ text: message.text })
       .then((res) => {
-        setUserNative(res.native);
-        setUserTarget(res.target);
+        fetchedTranslationRef.current = true;
+        setUserNative(res.native ?? "");
+        setUserTarget(res.target ?? "");
       })
       .catch(() => {
         setUserNative(TRANSLATION_FAILED);
@@ -194,86 +341,151 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
       .finally(() => setUserInterpreting(false));
   };
 
-  // A history-hydrated user message already carries its interpretation
-  // from GET /chat/history (see DisplayMessage.native/target) - show it
-  // immediately instead of leaving userNative/userTarget null, which would
-  // otherwise only resolve once the learner actually hovers/pins the
-  // translation (fetchUserInterpretation is on-demand, not eager, for a
-  // history row - see the effect below). Absent/empty just means this row
-  // predates the persistence feature or its original call failed; the
-  // on-demand fetch still covers that case.
+  // The translation is saved with the message (see DisplayMessage.native/
+  // target/translation), so 🌐 normally opens instantly. A message without
+  // one (sent before translations were saved, or its translation call
+  // failed) fetches it now, in the background, and saves it back - once.
   useEffect(() => {
-    if (!message.fromHistory || message.role !== "user") return;
-    if (message.native && message.target) {
+    if (message.role === "assistant") {
+      const saved = message.translation || message.native;
+      if (saved) setAssistantTranslation(saved);
+      else fetchAssistantTranslation();
+    } else if (message.native && message.target) {
       setUserNative(message.native);
       setUserTarget(message.target);
+    } else {
+      fetchUserInterpretation();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message.id]);
 
-  // Persists a freshly-sent user message's live-fetched interpretation back
-  // to the server, once BOTH pieces are known: the backend's real id for
-  // this message (message.serverId, patched in by App.tsx once the turn's
-  // "done" event arrives) and the interpretation itself (userNative/
-  // userTarget, from fetchUserInterpretation above) - whichever resolves
-  // last triggers this. Guarded by a ref (not just userNative !== null,
-  // which fetchUserInterpretation's own guard already covers) so a
-  // mid-flight state change can't fire this twice. Skipped entirely for a
-  // history row (already persisted, nothing new to save) or a failed
-  // translation (nothing worth persisting).
-  const persistedInterpretationRef = useRef(false);
+  // Saves a translation fetched above, once both it and the message's
+  // backend id are known (a just-sent user message only learns its id when
+  // the turn finishes - see App.tsx's handleSend).
+  const serverId = message.serverId ?? (message.id > 0 ? message.id : undefined);
+  const savedTranslationRef = useRef(false);
   useEffect(() => {
-    if (persistedInterpretationRef.current) return;
-    if (message.role !== "user" || message.fromHistory) return;
-    if (message.serverId === undefined) return;
-    if (userNative === null || userTarget === null) return;
-    if (userNative === TRANSLATION_FAILED || userTarget === TRANSLATION_FAILED) return;
-    persistedInterpretationRef.current = true;
-    api.saveUserInterpretation({ message_id: message.serverId, native: userNative, target: userTarget }).catch(() => {});
-  }, [message.role, message.fromHistory, message.serverId, userNative, userTarget]);
+    if (savedTranslationRef.current || !fetchedTranslationRef.current || serverId === undefined) return;
+    const native = message.role === "assistant" ? assistantTranslation : userNative;
+    const target = message.role === "assistant" ? "" : userTarget;
+    if (!native || native === TRANSLATION_FAILED || target === null || target === TRANSLATION_FAILED) return;
+    if (message.role === "user" && !target) return;
+    savedTranslationRef.current = true;
+    api.saveUserInterpretation({ message_id: serverId, native, target }).catch(() => {});
+  }, [message.role, serverId, assistantTranslation, userNative, userTarget]);
 
-  // Kick the translation off in the background as soon as the message is
-  // shown, rather than waiting for the toggle - the LLM-backed translation
-  // is slow enough that pre-fetching means it's usually ready by the time
-  // anyone actually opens it.
-  useEffect(() => {
-    if (message.fromHistory) return;
+  const closePopups = () => {
+    cancelHoverClose();
+    setHoverOffset(null);
+    setPinnedOffset(null);
+    setAskOffset(null);
+    setDetailOffset(null);
+    setGlobeOpen(false);
+  };
+
+  // "?": the word/phrase goes to the coach, and the popups get out of the
+  // way of the answer.
+  const explain = (text: string) => {
+    if (!onExplain || !text.trim()) return;
+    closePopups();
+    onExplain(text.trim());
+  };
+
+  const handleGlobe = () => {
+    if (globeOpen) {
+      setGlobeOpen(false);
+      return;
+    }
+    closePopups();
+    setGlobeOpen(true);
     if (message.role === "assistant") fetchAssistantTranslation();
     else fetchUserInterpretation();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [message.id]);
-
-  const fetchTranslation = () => {
-    if (message.role === "assistant") fetchAssistantTranslation();
-    else fetchUserInterpretation();
   };
 
-  const handleMouseEnter = () => {
-    setIsHovering(true);
-    fetchTranslation();
-  };
-
-  const handleTogglePin = () => {
-    setIsPinned((pinned) => {
-      const next = !pinned;
-      // A real click always lands while the mouse is still physically
-      // over the button - onMouseEnter already fired and won't fire
-      // again until the pointer actually leaves and comes back, so
-      // showTranslation = isHovering || isPinned stays true from the
-      // lingering hover alone, masking the toggle: a second click looked
-      // like it did nothing. An explicit close should win over that.
-      if (!next) setIsHovering(false);
-      return next;
-    });
-    fetchTranslation();
-  };
+  // A click anywhere closes this message's popup (see DockedPopover),
+  // except on its own words and 🌐, which open/close/switch it themselves,
+  // and inside its other popups (the word popup's "more" and "?" while the
+  // phrase popup is open beside it).
+  const keepOpenFor = (target: Element) =>
+    !!bubbleRef.current?.contains(target) && !!target.closest(".word-token, .chat-message__globe, .docked-popover");
 
   // Only assistant replies get per-token annotations from the backend -
   // history rows for a user message come back with tokens: [] (truthy as
   // an array, so this has to check length, not just presence) and should
   // fall through to plain/diffed text below.
   const hasTokens = !!message.tokens && message.tokens.length > 0;
-  const spaced = hasTokens ? joinTokens(message.tokens!.map((t) => t.surface)) : null;
+  const offsets = useMemo(
+    () => (hasTokens ? tokenOffsets(message.text, message.tokens!) : []),
+    [hasTokens, message.text, message.tokens],
+  );
+
+  // A tap pins the word; tapping the pinned word again closes it.
+  // First tap shows the word's meaning; tapping that same word again asks
+  // "add word?" (or "remove?"), and once more does it.
+  const wordText = (offset: number) => {
+    const w = wordAt(offset);
+    if (w) return message.text.slice(w.start, w.end);
+    const i = offsets.findIndex((o) => o.start <= offset && offset < o.end);
+    if (i !== -1) return message.tokens?.[i]?.surface ?? "";
+    return userWordSegments?.find((seg) => seg.start === offset)?.text ?? "";
+  };
+  const isSaved = (offset: number) => !!savedWords?.has(wordText(offset).toLowerCase());
+  const togglePinned = (offset: number) => {
+    if (pinnedOffset !== offset) {
+      setGlobeOpen(false);
+      setAskOffset(null);
+      setDetailOffset(null);
+      setPinnedOffset(offset);
+      return;
+    }
+    if (askOffset !== offset) {
+      setAskOffset(offset);
+      return;
+    }
+    const word = wordText(offset);
+    setAskOffset(null);
+    if (!word) return;
+    const saved = isSaved(offset);
+    if (saved) onRemoveWord?.(word);
+    else
+      onSaveWord?.({
+        word,
+        gloss: wordAt(offset)?.gloss ?? fallbackGloss(offset),
+        grammar: wordAt(offset)?.grammar ?? "",
+        sentence: message.text,
+        messageId: glossServerId,
+      });
+    setFlash({ offset, text: saved ? "Removed" : "Added ✓", removed: saved });
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlash(null), 1300);
+  };
+  // What floats above a word: the question, or what just happened.
+  const badgeFor = (offset: number) => {
+    if (flash?.offset === offset)
+      return (
+        <span className={`word-ask word-ask--done${flash.removed ? " word-ask--removed" : ""}`} role="status">
+          {flash.text}
+        </span>
+      );
+    if (askOffset === offset && pinnedOffset === offset)
+      return (
+        <span className="word-ask" role="status">
+          {isSaved(offset) ? "remove?" : "add word?"}
+          <span className="word-ask__hint">(tap again)</span>
+        </span>
+      );
+    return null;
+  };
+  // The word being asked about turns green (add) or red (remove).
+  const toneFor = (offset: number): "add" | "remove" | null =>
+    askOffset === offset && pinnedOffset === offset ? (isSaved(offset) ? "remove" : "add") : null;
+
+  // A reply saved before word glosses existed still has its per-token
+  // gloss - shown until the new ones arrive.
+  const fallbackGloss = (offset: number) => {
+    const i = offsets.findIndex((o) => o.start <= offset && offset < o.end);
+    return i === -1 ? "" : (message.tokens?.[i]?.gloss ?? "");
+  };
 
   // One segment per word/non-word run of the raw typed message, each
   // carrying its own character offsets (for matching against userSpans
@@ -288,7 +500,7 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
   const userWordSegments = useMemo(() => {
     if (message.role !== "user") return null;
 
-    const rawSegments = tokenizeSegments(message.text);
+    const rawSegments = tokenizeSegments(message.text, lang);
     const rawWords = rawSegments.filter((s) => s.isWord).map((s) => s.text);
 
     let matched: boolean[] | null = null;
@@ -302,7 +514,7 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
       const nativeWords = tokenizeSegments(userNative)
         .filter((s) => s.isWord)
         .map((s) => s.text);
-      const targetWords = tokenizeSegments(userTarget)
+      const targetWords = tokenizeSegments(userTarget, lang)
         .filter((s) => s.isWord)
         .map((s) => s.text);
       const reference = pickDiffReference(rawWords, nativeWords, targetWords);
@@ -320,137 +532,200 @@ export function ChatMessage({ message, voice }: { message: DisplayMessage; voice
       wordIndex++;
       return { text: seg.text, start, end, isWord: true, flagged };
     });
-  }, [message.role, message.text, userNative, userTarget]);
+  }, [message.role, message.text, userNative, userTarget, lang]);
+
+  // The tappable words: a reply's tokens (or its glossed words), your own
+  // message's words.
+  const userWords = userWordSegments?.filter((seg) => seg.isWord) ?? [];
+  const glossWords = !hasTokens && message.role === "assistant" ? (glosses?.words ?? []) : [];
+  const wordRanges: WordRange[] = hasTokens ? offsets : message.role === "user" ? userWords : glossWords;
+
+  // One piece of one word (see ReadingText) - `content` is the word as
+  // shown (as written, romanized, ...).
+  const renderPiece = (piece: Piece, content: ReactNode, first: boolean) => {
+    if (piece.word === -1) {
+      // Text between words inside the open phrase is part of its highlight.
+      return inActivePhrase(piece.start, piece.end) ? <span className="word-token--phrase">{content}</span> : content;
+    }
+    if (message.role === "user") {
+      const seg = userWords[piece.word];
+      const active = activeOffset !== null && seg.start <= activeOffset && activeOffset < seg.end;
+      return (
+        <span
+          className={`word-token${active ? " word-token--active" : ""}${
+            inActivePhrase(seg.start, seg.end) ? " word-token--phrase" : ""
+          }${seg.flagged ? " chat-message__typo" : ""}${toneFor(seg.start) ? ` word-token--${toneFor(seg.start)}` : ""}`}
+          title={seg.flagged ? "Looks different from the corrected version" : undefined}
+          onClick={() => togglePinned(seg.start)}
+        >
+          {content}
+          {first && badgeFor(seg.start)}
+        </span>
+      );
+    }
+    const { start, end } = wordRanges[piece.word];
+    const tok = hasTokens ? message.tokens![piece.word] : undefined;
+    const lemma = tok?.lemma ?? message.text.slice(start, end).toLowerCase();
+    return (
+      <WordToken
+        surface={content}
+        gloss={tok?.gloss || wordAt(start)?.gloss || ""}
+        open={activeOffset !== null && start <= activeOffset && activeOffset < end}
+        inPhrase={inActivePhrase(start, end)}
+        badge={first ? badgeFor(start) : null}
+        tone={toneFor(start)}
+        onOpen={() => {
+          cancelHoverClose();
+          setGlobeOpen(false);
+          setHoverOffset(start);
+          handleHover(lemma);
+        }}
+        onClose={scheduleHoverClose}
+        onTogglePin={() => {
+          togglePinned(start);
+          handleHover(lemma);
+        }}
+      />
+    );
+  };
 
   return (
-    <div className={`chat-message chat-message--${message.role}`}>
+    <div className={`chat-message chat-message--${message.role}${sheet ? " chat-message--sheet" : ""}`}>
       <div className="chat-message__column">
-        <div className="chat-message__bubble">
-          {hasTokens && spaced ? (
-            message.tokens!.map((tok, i) => (
-              <span key={i}>
-                {spaced[i].spaceBefore && " "}
-                <WordToken
-                  surface={tok.surface}
-                  gloss={tok.gloss}
-                  open={openWordIndex === i}
-                  onOpen={() => {
-                    cancelHoverClose();
-                    setHoveredWordIndex(i);
-                    handleHover(tok.lemma);
-                  }}
-                  onClose={scheduleHoverClose}
-                  onTogglePin={() => {
-                    setPinnedWordIndex((cur) => (cur === i ? null : i));
-                    handleHover(tok.lemma);
-                  }}
-                />
-              </span>
-            ))
-          ) : userWordSegments ? (
-            userWordSegments.map((seg, i) =>
-              seg.isWord ? (
-                <span
-                  key={i}
-                  className={`word-token${openUserOffset === seg.start ? " word-token--active" : ""}${
-                    seg.flagged ? " chat-message__typo" : ""
-                  }`}
-                  title={seg.flagged ? "Looks different from the corrected version" : undefined}
-                  onClick={() => {
-                    ensureUserSpans();
-                    setOpenUserOffset((cur) => (cur === seg.start ? null : seg.start));
-                  }}
-                >
-                  {seg.text}
-                </span>
-              ) : (
-                <span key={i}>{seg.text}</span>
-              ),
-            )
-          ) : (
-            message.text
+        <div className="chat-message__bubble" ref={bubbleRef} lang={htmlLang(lang)}>
+          <ReadingText text={message.text} words={wordRanges} renderPiece={renderPiece} />
+          <button
+            type="button"
+            className={`chat-message__globe${globeOpen ? " chat-message__globe--active" : ""}`}
+            onClick={handleGlobe}
+            aria-label="Translate the whole message"
+            aria-expanded={globeOpen}
+            title="Translate the whole message"
+          >
+            🌐
+          </button>
+          {globeOpen && (
+            <DockedPopover
+              position={sheet ? "under" : message.role === "assistant" ? "right" : "left"}
+              overflow={latest ? "over" : "under"}
+              autoScroll={!sheet}
+              onDismiss={() => setGlobeOpen(false)}
+              keepOpenFor={keepOpenFor}
+            >
+              {/* The whole message in English (what your own message meant,
+                  for yours) - the language goes without saying. */}
+              <div className="chat-message__popup chat-message__translation-popover" role="tooltip">
+                {message.role === "assistant" ? (
+                  <TranslationRow
+                    variant="assistant"
+                    text={assistantTranslation}
+                    loading={assistantTranslating || assistantTranslation === null}
+                    language="en"
+                  />
+                ) : (
+                  <TranslationRow
+                    variant="user-native"
+                    text={userNative}
+                    loading={userInterpreting || userNative === null}
+                    language="en"
+                  />
+                )}
+              </div>
+            </DockedPopover>
           )}
-          {openWordIndex !== null && message.tokens?.[openWordIndex] && (
-            <DockedPopover position="right" onMouseEnter={cancelHoverClose} onMouseLeave={scheduleHoverClose}>
-              <TranslatePopover
-                candidates={[
-                  {
-                    translation: message.tokens[openWordIndex].gloss,
-                    description: message.tokens[openWordIndex].note || undefined,
-                  },
-                ]}
-                literal={message.tokens[openWordIndex].literal || undefined}
+          {sheet && (activeOffset !== null || activePhrase) && (
+            <DockedPopover
+              key={`under-${activeOffset}`}
+              position="under"
+              autoScroll={false}
+              onMouseEnter={cancelHoverClose}
+              onMouseLeave={scheduleHoverClose}
+              onDismiss={closePopups}
+              keepOpenFor={keepOpenFor}
+            >
+              {/* Under the bubble, over whatever's below: the word and its
+                  phrase side by side. */}
+              <div className="chat-message__under-row">
+                {activeOffset !== null && (
+                  <WordGlossPopup
+                    gloss={wordAt(activeOffset)?.gloss ?? fallbackGloss(activeOffset)}
+                    grammar={wordAt(activeOffset)?.grammar ?? ""}
+                    pending={!glosses && !glossesFailed}
+                    expanded={detailOffset === activeOffset}
+                    onExpand={() => setDetailOffset(activeOffset)}
+                    onExplain={onExplain ? () => explain(wordText(activeOffset)) : undefined}
+                  />
+                )}
+                {activePhrase && (
+                  <PhraseGlossPopup
+                    gloss={activePhrase.gloss}
+                    note={activePhrase.note}
+                    onExplain={onExplain ? () => explain(message.text.slice(activePhrase.start, activePhrase.end)) : undefined}
+                  />
+                )}
+              </div>
+            </DockedPopover>
+          )}
+          {!sheet && activeOffset !== null && (
+            <DockedPopover
+              key={`word-${activeOffset}`}
+              position={message.role === "assistant" ? "right" : "left"}
+              overflow="wrap"
+              growUp={latest}
+              onMouseEnter={cancelHoverClose}
+              onMouseLeave={scheduleHoverClose}
+              onDismiss={closePopups}
+              keepOpenFor={keepOpenFor}
+            >
+              <WordGlossPopup
+                gloss={wordAt(activeOffset)?.gloss ?? fallbackGloss(activeOffset)}
+                grammar={wordAt(activeOffset)?.grammar ?? ""}
+                pending={!glosses && !glossesFailed}
+                expanded={detailOffset === activeOffset}
+                onExpand={() => {
+                  // Tapping it pins it, so it stays open on desktop too.
+                  setPinnedOffset(activeOffset);
+                  setDetailOffset(activeOffset);
+                }}
+                onExplain={onExplain ? () => explain(wordText(activeOffset)) : undefined}
               />
             </DockedPopover>
           )}
-          {openUserOffset !== null && (
-            // Mirrors the assistant popover right above: nested directly in
-            // the bubble, docked sideways rather than "below" - growing
-            // vertically here would overlap the actions/translations rows
-            // beneath it (absolutely-positioned content reserves no layout
-            // space of its own - see Fix 1's history on this component).
-            // "left" rather than "right" since a user bubble sits flush
-            // against the right edge of the viewport - "right" would run
-            // off-screen there.
-            <DockedPopover position="left">
-              <WordCandidatesPopover
-                candidates={openUserSpan?.candidates ?? []}
-                clickable={false}
-                onSelect={() => {}}
-                loading={userSpansLoading}
-                literal={openUserSpan?.literal}
+          {!sheet && activePhrase && (
+            <DockedPopover
+              key={`phrase-${activePhrase.start}`}
+              position="over"
+              align={message.role === "assistant" ? "start" : "end"}
+              onMouseEnter={cancelHoverClose}
+              onMouseLeave={scheduleHoverClose}
+              onDismiss={closePopups}
+              keepOpenFor={keepOpenFor}
+            >
+              <PhraseGlossPopup
+                gloss={activePhrase.gloss}
+                note={activePhrase.note}
+                onExplain={onExplain ? () => explain(message.text.slice(activePhrase.start, activePhrase.end)) : undefined}
               />
             </DockedPopover>
           )}
         </div>
         <div className="chat-message__actions">
+          {message.role === "assistant" && (
+            <AudioButton text={message.text} language={lang} voice={voice} label="Play pronunciation" />
+          )}
+          {!sheet && (
           <button
             type="button"
-            className={`chat-message__translate-toggle${isPinned ? " chat-message__translate-toggle--active" : ""}`}
-            onClick={handleTogglePin}
-            onMouseEnter={handleMouseEnter}
-            onMouseLeave={() => setIsHovering(false)}
-            aria-label="Pin translation open"
-            aria-pressed={isPinned}
-            title="Hover to preview - click to keep it open"
+            className={`chat-message__thread-toggle${threadOpen ? " chat-message__thread-toggle--active" : ""}`}
+            onClick={onToggleThread}
+            aria-expanded={threadOpen}
+            aria-label="Talk to the coach about this message"
+            title="Talk to the coach about this message"
           >
-            🌐
+            💬{threadCount + (liveCoach ? 1 : 0) > 0 ? ` ${threadCount + (liveCoach ? 1 : 0)}` : ""}
           </button>
-          {message.role === "assistant" && (
-            <AudioButton text={message.text} language="es" voice={voice} label="Play pronunciation" />
           )}
         </div>
-        {showTranslation && (
-          <div className="chat-message__translations">
-            {message.role === "assistant" ? (
-              <TranslationRow
-                variant="assistant"
-                label="EN"
-                text={assistantTranslation}
-                loading={assistantTranslating}
-                language="en"
-              />
-            ) : (
-              <>
-                <TranslationRow
-                  variant="user-native"
-                  label="EN"
-                  text={userNative}
-                  loading={userInterpreting}
-                  language="en"
-                />
-                <TranslationRow
-                  variant="user-target"
-                  label="ES"
-                  text={userTarget}
-                  loading={userInterpreting}
-                  language="es"
-                  voice={voice}
-                />
-              </>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -23,9 +25,85 @@ class TokenAnnotation(BaseModel):
     literal: str = ""
 
 
+class ThreadEntryIn(BaseModel):
+    role: str
+    kind: str
+    text: str = ""
+    # JSON-encoded structured detail (a check's verdict/options/pick).
+    data: str = ""
+
+
+class ThreadEntryOut(ThreadEntryIn):
+    id: int
+
+
 class ChatTurnRequest(BaseModel):
     message: str
     session_id: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
+    # The coach checks the learner ran before sending this message - stored
+    # as the sent message's thread so the deliberation stays viewable under
+    # it instead of cluttering the main conversation.
+    thread: list[ThreadEntryIn] = []
+
+
+class WordGloss(BaseModel):
+    # Character offsets into the message text.
+    start: int
+    end: int
+    # Just that one word's meaning ("good", "to eat").
+    gloss: str
+    # Optional detail about its form - a verb's infinitive, person, tense.
+    grammar: str = ""
+
+
+class PhraseGloss(BaseModel):
+    start: int
+    end: int
+    # What the whole expression means ("how wonderful").
+    gloss: str
+    note: str = ""
+
+
+class MessageGlosses(BaseModel):
+    """What a tapped word in a chat message shows: its own meaning (to the
+    side) and, if it's part of an expression, the expression's (below).
+    See app.translate.llm_translate.gloss_message."""
+
+    words: list[WordGloss] = []
+    phrases: list[PhraseGloss] = []
+
+
+class MessageGlossesRequest(BaseModel):
+    message_id: int
+
+
+class VocabDebugWord(BaseModel):
+    """One row of the debug view's embedding-search results."""
+
+    lemma: str
+    translation: str = ""
+    sim: float | None = None  # cosine similarity to the conversation (null for a wildcard)
+    z: float | None = None  # std-devs above the pool's average similarity
+    urgency: float = 0.0  # how due for review, 0-1
+    # offered | passed | cooldown | below | wildcard - see
+    # app.vocab.suggest.DebugWord.status
+    status: str = "below"
+    saved: bool = False  # from the learner's saved word list
+    used: bool = False  # the reply actually used this word
+
+
+class VocabDebug(BaseModel):
+    """What the embedding search did for one assistant reply (debug view)."""
+
+    cutoff_z: float
+    searched: bool = False  # the embedding search actually ran
+    error: str = ""  # why it didn't, if it couldn't
+    search: list[VocabDebugWord] = []  # top results, highest similarity first
+    wildcards: list[VocabDebugWord] = []  # the random picks
 
 
 class ChatTurnResponse(BaseModel):
@@ -33,7 +111,7 @@ class ChatTurnResponse(BaseModel):
     text: str
     tokens: list[TokenAnnotation]
     # From the same LLM call that produced `tokens`' per-word glosses (see
-    # app.translate.llm_translate.gloss_reply) - guaranteed to agree with
+    # app.translate.llm_translate.gloss_message) - guaranteed to agree with
     # them on word sense, unlike a translation fetched separately. Empty
     # string if that call failed (rare; the per-word glosses are then also
     # empty - no dictionary/MT fallback).
@@ -47,6 +125,9 @@ class ChatTurnResponse(BaseModel):
     # serial LLM call to every turn's latency for no benefit, since the
     # frontend already has its own copy on the way.
     user_message_id: int = 0
+    glosses: MessageGlosses | None = None
+    # Contextual vocab on: what the embedding search offered for this reply.
+    vocab_debug: VocabDebug | None = None
 
 
 class SaveUserInterpretationRequest(BaseModel):
@@ -62,7 +143,7 @@ class SaveUserInterpretationResponse(BaseModel):
 # POST /chat/turn/stream sends these as SSE events rather than a single JSON
 # response (see app/routes/chat.py's take_turn_stream) - "chunk" events
 # stream the reply's own text as the model generates it, for a live
-# typing-style display; once generation finishes, gloss_reply (which needs
+# typing-style display; once generation finishes, gloss_message (which needs
 # the complete text) runs and the full, final payload - the exact same
 # shape the non-streaming POST /chat/turn returns - is sent as one "done"
 # event.
@@ -79,14 +160,17 @@ class ChatHistoryMessage(BaseModel):
     role: str
     text: str
     tokens: list[TokenAnnotation] = []
-    # Only meaningful for role == "user" (see ChatMessage.native_text/
-    # target_text) - persisted so the frontend can hydrate its two
-    # translation rows straight from history instead of re-fetching
-    # /translate/interpret (and showing "Translating…" indefinitely while
-    # that fetch is stuck/slow) on every reload. Empty for an assistant row,
-    # or if the interpret call failed when this message was first sent.
+    # The saved translation (see ChatMessage.native_text/target_text): for a
+    # user row its native/target interpretation, for an assistant row
+    # `native` is the reply's translation. Empty if not known yet.
     native: str = ""
     target: str = ""
+    thread: list[ThreadEntryOut] = []
+    # Saved word/phrase glosses; null if not made yet (POST
+    # /chat/message/glosses makes and saves them).
+    glosses: MessageGlosses | None = None
+    # Assistant rows, contextual vocab on: what the embedding search offered.
+    vocab_debug: VocabDebug | None = None
 
 
 class ChatHistoryResponse(BaseModel):
@@ -114,6 +198,10 @@ class TranslateTextResponse(BaseModel):
 
 class InterpretInputRequest(BaseModel):
     text: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
 
 
 class InterpretInputResponse(BaseModel):
@@ -123,19 +211,24 @@ class InterpretInputResponse(BaseModel):
 
 class TagInputRequest(BaseModel):
     text: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
 
 
 class DraftToken(BaseModel):
-    # Cheap, LLM-free per-word classification (spaCy tokenize/lemmatize +
-    # app.translate.lemmatizer's existing is_spanish heuristic) from
+    # Cheap, LLM-free per-word classification (app.translate.lemmatizer:
+    # spaCy for Spanish, a plain tokenizer otherwise) from
     # /translate/tag-input - fast enough to keep calling on every keystroke
     # (debounced), unlike the LLM-backed per-word/group glossing
     # (GlossSpansResponse.spans below), which is fetched lazily instead.
-    # Needed for reward-event tracking (userTypedSpanishWord) and the
+    # Needed for reward-event tracking (userTypedTargetWord) and the
     # phrase-selection direction vote.
     surface: str
     lemma: str
-    is_spanish: bool
+    # In the language being learned, not an English word dropped in.
+    is_target: bool
     start: int
     end: int
 
@@ -148,10 +241,10 @@ class DraftSpan(BaseModel):
     surface: str
     start: int
     end: int
-    # False for a span that's already natural, correct Spanish as typed -
-    # nothing to replace, candidates[0] is just its in-context gloss. True
-    # for a span offering a Spanish replacement to swap in. Always the
-    # EN->ES direction - the default/primary reading.
+    # False for a span that's already natural, correct target language as
+    # typed - nothing to replace, candidates[0] is just its in-context
+    # gloss. True for a span offering a replacement to swap in. Always the
+    # English -> target direction - the default/primary reading.
     clickable: bool
     candidates: list[TranslateCandidate]
     # Non-empty only for a standalone word that's ALSO a legitimate,
@@ -181,124 +274,77 @@ class TagInputResponse(BaseModel):
 
 class GlossSpansRequest(BaseModel):
     text: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
 
 
 class GlossSpansResponse(BaseModel):
     spans: list[DraftSpan]
 
 
+class DraftTurn(BaseModel):
+    role: str
+    text: str
+
+
 class CoachDraftRequest(BaseModel):
     text: str
     session_id: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
+    # The message this conversation is about (opened from its 💬), if any;
+    # otherwise it's about the learner's next message.
+    thread_message_id: int | None = None
+    # Whatever is in the message box right now (typed, not sent) - so "is
+    # that right?" can be about it.
+    message_draft: str = ""
+    # The learner's discussion with the coach about the message they're
+    # about to send (not yet saved anywhere), as (role, text) turns with
+    # role "learner" | "coach".
+    draft_thread: list[DraftTurn] = []
+    # True when `text` is the exact message in the message box (💡 or a
+    # finished dictation there), rather than talk in the coach panel.
+    check: bool = False
 
 
-# The streamed /translate/coach endpoint sends these as SSE events
-# (`data: <json>\n\n`, with `event:` set to the matching name below) rather
-# than a single JSON response - see app.translate.llm_translate.
-# coach_draft_stream's own docstring for the full field-by-field sequence
-# each of these corresponds to. Notably: a picked option's word-by-word
-# gloss breakdown is NOT part of this event set at all (unlike the earlier
-# version of this protocol) - it's fetched lazily via the existing
-# /translate/gloss-spans (GlossSpansRequest/Response above) only once an
-# option is actually picked, same as any hand-typed draft text.
-class CoachVerdictEvent(BaseModel):
-    verdict: str  # "clean" | "minor" | "fix"
+# /translate/coach streams these as SSE events (see
+# app.translate.llm_translate.coach_reply_stream): which message the reply
+# is about, whether the learner's own target-language text is ready to send, then the
+# coach's reply text (suggestions inside it as [[target language | English]]).
+class CoachAboutEvent(BaseModel):
+    message_id: int | None  # None = the learner's next message
 
 
-class CoachMeaningChunkEvent(BaseModel):
-    # One newly-arrived piece of the streaming "you mean"/"did you mean"
-    # restatement - the same "zipper" delta-at-a-time feel
-    # /chat/turn/stream's own ChatTurnChunkEvent already has.
+class CoachReadyEvent(BaseModel):
+    ready: bool
+
+
+class CoachReplyChunkEvent(BaseModel):
     delta: str
 
 
-class CoachMeaningCompleteEvent(BaseModel):
-    meaning: str
-
-
-class CoachSuggestionChunkEvent(BaseModel):
-    # Only sent for a "minor" verdict - one newly-arrived piece of the
-    # single lightweight corrected-text suggestion.
-    delta: str
-
-
-class CoachSuggestionCompleteEvent(BaseModel):
-    suggestion: str
-
-
-class CoachOptionChunkEvent(BaseModel):
-    # Only sent for a "fix" verdict. `index` is 0/1/2 (neutral/casual/
-    # formal, a fixed positional mapping - see app.translate.llm_translate.
-    # _COACH_FORMALITIES, never parsed from the model). `field` is
-    # "spanish" or "english" - that option's own suggested text, or its
-    # own whole-sentence back-translation, which streams in right after
-    # its Spanish text (not batched with the other options' translations
-    # at the end, unlike the earlier version of this protocol).
-    index: int
-    field: str
-    delta: str
-
-
-class CoachOptionCompleteEvent(BaseModel):
-    index: int
-    field: str
-    text: str
+class CoachReplyCompleteEvent(BaseModel):
+    reply: str
+    # The question/reply entries saved on the message it was about (empty
+    # when it's about the learner's next message).
+    entries: list[ThreadEntryOut] = []
 
 
 class CoachErrorEvent(BaseModel):
     message: str
 
 
-# Voice mode's spoken coach (POST /voice/coach, streamed as SSE - see
-# app/routes/voice.py and app.translate.llm_translate.voice_coach_stream).
-class VoiceWord(BaseModel):
-    word: str
-    confidence: float
-
-
-class VoiceDialogTurn(BaseModel):
-    role: str  # "learner" | "coach"
-    text: str
-
-
-class VoiceCoachRequest(BaseModel):
-    # What the learner just said, as transcribed (may be mixed Spanish/
-    # English, may contain mis-heard words - see `words`).
-    transcript: str
-    # Per-word recognizer confidence for `transcript`, so the coach can
-    # call out likely mis-hearings ("it sounded like X - did you mean Y?").
-    words: list[VoiceWord] = []
-    # The back-and-forth with the coach about the CURRENT attempt so far
-    # (client-held, reset once something is sent).
-    coach_dialog: list[VoiceDialogTurn] = []
-    session_id: str
-
-
-class VoiceCoachIntentEvent(BaseModel):
-    # attempt | question | clarify | confirm | pick | cancel | translate_last
-    intent: str
-
-
-class VoiceCoachVerdictEvent(BaseModel):
-    verdict: str  # "ready" | "revise" | "none"
-
-
-class VoiceCoachDraftEvent(BaseModel):
-    # The single best Spanish sentence to send right now ("" if none).
-    draft: str
-
-
-class VoiceCoachSayChunkEvent(BaseModel):
-    delta: str
-
-
-class VoiceCoachSayCompleteEvent(BaseModel):
-    say: str
-
-
 class RewardEventRequest(BaseModel):
-    event_type: str  # "wordSeenNoHover" | "wordHovered" | "userTypedSpanishWord"
+    event_type: str  # "wordSeenNoHover" | "wordHovered" | "userTypedTargetWord"
     lemma: str
+    # The language being learned: "es" | "fr" | "ja" | "ko" | "zh", or for
+    # Mandarin "zh-Hans"/"zh-Hant" (the learner's characters) - see
+    # app/languages.py.
+    language: str = "es"
 
 
 class RewardEventResponse(BaseModel):
@@ -309,17 +355,28 @@ class RewardEventResponse(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
+    # The text's language. ElevenLabs' multilingual voices read anything;
+    # Kokoro's are one language each, so it picks the Kokoro voice.
     language: str = "es"
+    # A voice id from /tts/voices (for the same provider). None: the role's
+    # voice.
     voice: str | None = None
-    # "partner" (default): the conversation partner's Kokoro voice, picked
-    # by `language`/`voice` as before. "coach": voice mode's coach voice
-    # (ElevenLabs multilingual - English with embedded Spanish phrases);
-    # `language`/`voice` are ignored for it.
+    # "partner" (default): the conversation partner's voice (`voice`, else
+    # the partner default). "coach": the coach's own voice; `voice` is
+    # ignored for it.
     role: str = "partner"
+    # "elevenlabs" | "kokoro"; None: the server's TTS_PROVIDER.
+    provider: str | None = None
+
+
+class TTSVoice(BaseModel):
+    id: str
+    name: str
 
 
 class TTSVoicesResponse(BaseModel):
-    voices: list[str]
+    provider: str
+    voices: list[TTSVoice]
     default: str
 
 
@@ -332,3 +389,63 @@ class WordBankEntryOut(BaseModel):
     review_interval_days: float
 
     model_config = {"from_attributes": True}
+
+
+class SavedWordIn(BaseModel):
+    session_id: str
+    word: str
+    gloss: str = ""
+    grammar: str = ""
+    sentence: str = ""
+    message_id: int | None = None
+
+
+class SavedWordOut(BaseModel):
+    id: int
+    word: str
+    gloss: str
+    grammar: str
+    sentence: str
+    message_id: int | None
+    created_at: datetime
+
+
+class SavedWordsResponse(BaseModel):
+    words: list[SavedWordOut]
+
+
+class RemoveSavedWordResponse(BaseModel):
+    removed: int
+
+
+class ReadingsRequest(BaseModel):
+    texts: list[str]
+    # Optional, one per text: its words as [start, end] offsets, where the
+    # app knows them (a reply's glossed words) - Japanese readings are then
+    # split at them.
+    words: list[list[list[int]] | None] | None = None
+    # As on every request (see ChatTurnRequest.language) - for Mandarin,
+    # "zh-Hant" also returns the text in Traditional characters.
+    language: str = "es"
+
+
+class ReadingOut(BaseModel):
+    start: int
+    end: int
+    # Romanization (romaji, pinyin, Korean romanization).
+    roman: str
+    # Japanese: the kana over a word written in kanji (furigana).
+    kana: str = ""
+    # Same word as the reading before it - romanized without a space.
+    cont: bool = False
+
+
+class TextReadings(BaseModel):
+    # The text as it should be shown - differs from what was sent only for
+    # Mandarin in the other script (same length, same offsets).
+    text: str
+    readings: list[ReadingOut]
+
+
+class ReadingsResponse(BaseModel):
+    items: list[TextReadings]

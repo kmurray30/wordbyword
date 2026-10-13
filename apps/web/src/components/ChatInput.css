@@ -1,8 +1,9 @@
 .chat-input {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
   padding: 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
@@ -11,6 +12,7 @@
   position: relative;
   display: grid;
   flex: 1;
+  min-width: 0;
   border-radius: 10px;
   background: #20242e;
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -99,7 +101,7 @@
    matches this rule) - that leak was giving word-hover's buttons this same
    blue/bold Send-button look instead of their own minimal styling. */
 .chat-input > button {
-  padding: 10px 16px;
+  padding: 10px 12px;
   border-radius: 10px;
   border: none;
   background: #3b6ef0;
@@ -129,39 +131,23 @@
   background: #39c468;
 }
 
-/* Dictation. The mic button sits between the editor and Send; it inherits
-   ".chat-input > button"'s shape above but is deliberately neutral so the
-   (blue/green) Send button stays the one that reads as "primary". */
-.chat-input > button.chat-input__mic {
+/* Check - quiet, so Send stays the primary action. */
+.chat-input > button.chat-input__check {
   background: #2a2f3b;
-  padding: 10px 12px;
-  font-size: 1rem;
-  line-height: 1;
 }
 
-/* A voice chat is on (any state) - red; pulses only while actually
-   listening, so "the coach is talking" reads as steady. */
-.chat-input > button.chat-input__mic--active {
-  background: #c43d3d;
+/* The mic here is narrower than the other buttons - it's an icon. */
+.chat-input > button.talk-button {
+  padding: 10px 6px;
+  font-size: 0.9rem;
 }
 
-.chat-input > button.chat-input__mic--listening {
-  animation: chat-input-mic-pulse 1.4s ease-in-out infinite;
+.chat-input > button.talk-button--talking {
+  padding: 8px 6px;
 }
 
-@keyframes chat-input-mic-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(196, 61, 61, 0.55);
-  }
-  50% {
-    box-shadow: 0 0 0 7px rgba(196, 61, 61, 0);
-  }
-}
-
-/* Live preview of the words still being spoken (Deepgram's "interim"
-   results) - shown over the editor's top edge rather than written into
-   the draft, which only ever gets settled "final" text. */
+/* A dictation problem (mic blocked, voice server unreachable), shown over
+   the editor's top edge. */
 .chat-input__mic-pill {
   position: absolute;
   left: 8px;
@@ -183,42 +169,4 @@
 .chat-input__mic-pill--error {
   color: #ff8a8a;
   font-style: normal;
-}
-
-/* The press-and-hold bubble for choosing the Send button's mode. */
-.send-mode-picker {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  background: #1f2430;
-  color: #f2f2f2;
-  border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  padding: 10px 36px 10px 12px;
-  font-size: 0.85rem;
-}
-
-.send-mode-picker__label {
-  font-weight: 700;
-  opacity: 0.6;
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-}
-
-.send-mode-picker__close {
-  all: unset;
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  cursor: pointer;
-  opacity: 0.6;
-  font-size: 0.8rem;
-  padding: 4px;
-}
-
-.send-mode-picker__close:hover {
-  opacity: 1;
 }

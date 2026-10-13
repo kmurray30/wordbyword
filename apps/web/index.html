@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- No zooming, ever: not into a text field on focus, not by pinch.
+         viewport-fit=cover: use the whole screen, round corners and home
+         bar included - App.css keeps content clear of them with
+         env(safe-area-inset-*), which is 0 on screens without them. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>wordbyword</title>
   </head>
   <body>

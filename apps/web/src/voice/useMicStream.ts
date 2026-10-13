@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { voiceListenUrl } from "../api/client";
 import type { VoiceTranscriptEvent } from "../api/client";
+import { apiLanguage } from "../lib/language";
 
-export type MicState = "idle" | "starting" | "listening" | "error";
+export type MicState = "idle" | "starting" | "listening" | "finishing" | "error";
+
+// How long finish() waits for the server to flush the last words and close
+// the socket before giving up and tearing down anyway.
+const FINISH_TIMEOUT_MS = 2500;
 
 interface UseMicStreamOptions {
   sessionId: string;
@@ -12,7 +17,10 @@ interface UseMicStreamOptions {
 // Streams the microphone to WS /voice/listen as 16kHz PCM (via
 // public/pcm-worklet.js) and hands back the transcript events the server
 // relays from Deepgram. Owns the whole mic/AudioContext/WebSocket lifecycle;
-// callers just start()/stop() and read `state`/`interim`.
+// callers just start()/finish()/stop() and read `state`/`interim`.
+// finish() is the graceful end (the learner pressed Done): it stops sending
+// audio and waits for the recognizer's last words before closing, where
+// stop() drops everything at once.
 //
 // Everything that has to keep running with the phone's screen off is driven
 // by audio-worklet and WebSocket events - never timers, which iOS throttles
@@ -35,6 +43,8 @@ export function useMicStream({ sessionId, onEvent }: UseMicStreamOptions) {
   const nodeRef = useRef<AudioWorkletNode | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const mutedRef = useRef(false);
+  // Set while finish() waits for the server to close the socket.
+  const finishingRef = useRef<(() => void) | null>(null);
   const needsReconnectRef = useRef(false);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
@@ -145,12 +155,17 @@ export function useMicStream({ sessionId, onEvent }: UseMicStreamOptions) {
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "start", session_id: sessionIdRef.current }));
+        // The language decides how Deepgram listens (see app/languages.py).
+        ws.send(JSON.stringify({ type: "start", session_id: sessionIdRef.current, language: apiLanguage() }));
         if (mutedRef.current) ws.send(JSON.stringify({ type: "mute" }));
         resolve();
       };
       ws.onerror = () => reject(new Error("Couldn't reach the voice server"));
       ws.onclose = () => {
+        if (finishingRef.current) {
+          finishingRef.current();
+          return;
+        }
         if (wsRef.current !== ws) return;
         if (document.hidden) {
           needsReconnectRef.current = true;
@@ -228,7 +243,36 @@ export function useMicStream({ sessionId, onEvent }: UseMicStreamOptions) {
 
   useEffect(() => teardown, [teardown]);
 
+  const finish = useCallback(async () => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      stop();
+      return;
+    }
+    setState("finishing");
+    // No more audio from here on; the socket stays open for the last words.
+    mutedRef.current = true;
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        finishingRef.current = null;
+        resolve();
+      }, FINISH_TIMEOUT_MS);
+      finishingRef.current = () => {
+        clearTimeout(timer);
+        finishingRef.current = null;
+        resolve();
+      };
+      try {
+        ws.send(JSON.stringify({ type: "stop" }));
+      } catch {
+        finishingRef.current?.();
+      }
+    });
+    stop();
+  }, [stop]);
+
   const audioContext = useCallback(() => ctxRef.current, []);
 
-  return { state, interim, error, start, stop, setMuted, audioContext };
+  return { state, interim, error, start, finish, stop, setMuted, audioContext };
 }
