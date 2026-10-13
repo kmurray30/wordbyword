@@ -523,3 +523,11 @@ def test_coach_reply_stream_raises_on_empty_or_unreachable_model():
     with patch("app.translate.llm_translate.model_chat_stream", side_effect=ModelServerUnavailableError("down")):
         with pytest.raises(TranslationUnavailableError):
             list(coach_reply_stream("q", _MESSAGES, None, [], [], "en", "es"))
+
+
+def test_coach_reply_stream_sees_the_unsent_message_box():
+    _, mock_stream = _reply(["no<<<READY>>>ok"], text="is this right?", message_draft="Me gusta nadar mucho")
+    system = mock_stream.call_args.args[0][0]["content"]
+    assert 'message box right now (typed, not sent yet): "Me gusta nadar mucho"' in system
+    _, mock_stream = _reply(["no<<<READY>>>ok"], text="hola")
+    assert "message box right now" not in mock_stream.call_args.args[0][0]["content"]

@@ -118,9 +118,9 @@ export function NextMessagePanel({
   const abortRef = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const propsRef = useRef({ onUse, onReady });
+  const propsRef = useRef({ onUse, onReady, messageText });
   useEffect(() => {
-    propsRef.current = { onUse, onReady };
+    propsRef.current = { onUse, onReady, messageText };
   });
 
   const update = (fn: (prev: DraftTurn[]) => DraftTurn[]) => {
@@ -179,6 +179,8 @@ export function NextMessagePanel({
             text: clean,
             session_id: sessionId,
             thread_message_id: null,
+            // What's in the message box, so "is that right?" can be about it.
+            message_draft: propsRef.current.messageText,
             draft_thread: history,
             check: source === "box",
           },

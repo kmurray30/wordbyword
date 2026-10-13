@@ -159,3 +159,20 @@ def test_coach_failure_is_an_error_event_and_nothing_is_stored():
     assert "event: error" in raw
     assert "reply_complete" not in raw
     assert session.get(ChatMessage, partner.id).thread == []
+
+
+def test_the_unsent_message_box_reaches_the_coach_except_on_a_check():
+    session = _session()
+    _, partner, _ = _seed(session)
+    _, _, stream = _run(
+        session,
+        CoachDraftRequest(text="is this right?", session_id="s1", thread_message_id=partner.id, message_draft="Me llamo Kyle"),
+        [("ready", False), ("reply_complete", "Yes.")],
+    )
+    assert stream.call_args.kwargs["message_draft"] == "Me llamo Kyle"
+    _, _, stream = _run(
+        session,
+        CoachDraftRequest(text="Me llamo Kyle", session_id="s1", check=True, message_draft="Me llamo Kyle"),
+        [("ready", True), ("reply_complete", "Yes.")],
+    )
+    assert stream.call_args.kwargs["message_draft"] == ""

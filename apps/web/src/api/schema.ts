@@ -186,14 +186,14 @@ export interface paths {
         put?: never;
         /**
          * Coach Draft
-         * @description The coach's reply to whatever the learner wrote in the coach panel
-         *     (or the message they're about to send, with `check`), streamed as SSE:
-         *     "about" (the partner message it's about, or null for the learner's
-         *     next message), "ready" (their own Spanish is fine to send as written),
-         *     then "reply_chunk"s and "reply_complete". A reply about a partner
-         *     message is saved in that message's thread; one about the next message
-         *     lives in the coach panel until it's sent. "error" if nothing came back.
-         *     See app.translate.llm_translate.coach_reply_stream.
+         * @description The coach's reply, streamed as SSE. With `thread_message_id` it's
+         *     the side conversation about that message (opened from its 💬) and is
+         *     saved in its thread; without it, it's about the learner's next message
+         *     (the coach box at the bottom; with `check`, the exact message they're
+         *     about to send) and lives in the coach panel until it's sent. Events:
+         *     "about" (that message's id, or null), "ready" (their own Spanish is
+         *     fine to send as written), "reply_chunk"s and "reply_complete"; "error"
+         *     if nothing came back. See app.translate.llm_translate.coach_reply_stream.
          */
         post: operations["coach_draft_translate_coach_post"];
         delete?: never;
@@ -452,6 +452,11 @@ export interface components {
             session_id: string;
             /** Thread Message Id */
             thread_message_id?: number | null;
+            /**
+             * Message Draft
+             * @default
+             */
+            message_draft: string;
             /**
              * Draft Thread
              * @default []

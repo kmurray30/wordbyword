@@ -621,6 +621,7 @@ def coach_reply_stream(
     native_lang: str,
     target_lang: str,
     check: bool = False,
+    message_draft: str = "",
 ):
     """Streams the coach's reply to `text`.
 
@@ -632,6 +633,8 @@ def coach_reply_stream(
     under that message; `draft_turns` the conversation about the next
     message, both as (role, text) with role "learner" | "coach". `check` =
     `text` is the message the learner is about to send, as written.
+    `message_draft` is what's in their message box right now (typed, not
+    sent), if anything.
 
     Yields, in order:
       ("ready", bool) - the learner's own Spanish in `text` is already
@@ -668,6 +671,12 @@ def coach_reply_stream(
     else:
         context += "This side conversation is about what they'll say next.\n"
         context += f"So far:\n{draft_lines}\n\n" if draft_lines else "\n"
+    if message_draft.strip():
+        context += (
+            f"Their message box right now (typed, not sent yet): \"{message_draft.strip()}\". If they ask "
+            f"whether it's right, how it sounds, or refer to \"this\"/\"it\" without saying what, they "
+            f"mean this.\n\n"
+        )
     check_note = (
         "\nThe learner's message below is the exact message they're about to send to their partner "
         "(typed or dictated in their message box) - treat it as what they want to say.\n"

@@ -172,6 +172,7 @@ def coach_draft(req: CoachDraftRequest, session: Session = Depends(get_session))
                     NATIVE_LANGUAGE,
                     TARGET_LANGUAGE,
                     check=req.check,
+                    message_draft="" if req.check else req.message_draft,
                 )
             ):
                 if item is None:

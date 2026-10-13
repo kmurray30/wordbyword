@@ -254,6 +254,7 @@ function App() {
         text: question,
         session_id: sessionId,
         thread_message_id: messageId,
+        message_draft: messageText,
         draft_thread: [],
         check: false,
       })) {

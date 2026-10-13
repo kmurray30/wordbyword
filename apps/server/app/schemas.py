@@ -246,9 +246,12 @@ class DraftTurn(BaseModel):
 class CoachDraftRequest(BaseModel):
     text: str
     session_id: str
-    # The partner message whose thread is open on screen, if any - a bare
-    # follow-up ("llamas?") then continues that thread.
+    # The message this conversation is about (opened from its 💬), if any;
+    # otherwise it's about the learner's next message.
     thread_message_id: int | None = None
+    # Whatever is in the message box right now (typed, not sent) - so "is
+    # that right?" can be about it.
+    message_draft: str = ""
     # The learner's discussion with the coach about the message they're
     # about to send (not yet saved anywhere), as (role, text) turns with
     # role "learner" | "coach".
