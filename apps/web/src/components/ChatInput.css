@@ -131,34 +131,34 @@
   background: #39c468;
 }
 
-/* A thin pill centered on the line between the message box and the coach
-   section below it. */
+/* "Check ↓": a tab hanging flush off the message box's bottom-left edge. */
 .chat-input {
-  padding-bottom: 18px;
+  padding-bottom: 26px;
 }
 
-.chat-input > button.chat-input__check {
+.chat-input__check {
   position: absolute;
-  left: 50%;
-  bottom: 0;
-  transform: translate(-50%, 50%);
+  top: 100%;
+  left: 12px;
   z-index: 2;
-  padding: 2px 12px;
-  border-radius: 999px;
+  padding: 1px 12px 3px;
   border: 1px solid rgba(47, 174, 90, 0.5);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
   background: #1d3326;
   color: #b9e6c6;
+  font: inherit;
   font-size: 0.72rem;
   font-weight: 600;
   line-height: 1.4;
   white-space: nowrap;
+  cursor: pointer;
 }
 
-.chat-input > button.chat-input__check:disabled {
+.chat-input__check:disabled {
   border-color: rgba(255, 255, 255, 0.12);
   background: #23262d;
   color: #6b7080;
-  opacity: 1;
   cursor: default;
 }
 
