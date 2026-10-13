@@ -1,35 +1,16 @@
-// Diagnostic against the deployed backend: one chat turn in a throwaway
-// session (so there's a partner message), then "Check with coach" on a few
-// versions of a reply - right, right but sloppy punctuation/capitals, and
-// missing an accent - printing the coach's ready flag and reply for each.
+// Diagnostic against the deployed backend: glosses for one learner message
+// (one chat turn in a throwaway session, then POST /chat/message/glosses on
+// the learner's message), printing each word's meaning and each phrase -
+// to check words get their own dictionary meaning, not their idiom's.
 // Clears the session afterwards.
 const BASE = process.env.BACKEND_URL;
-const session = `coach-probe-${Date.now()}`;
-const post = async (path, body) => {
-  const res = await fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  return res;
-};
+const session = `gloss-probe-${Date.now()}`;
+const text = "Me encanta seguir la broma con mis amigos, pero echo de menos a mi familia.";
+const post = async (path, body) => (await fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
 
-const turn = await (await post("/chat/turn", { session_id: session, message: "Hola, ¿qué te gusta hacer en verano?" })).json();
-console.log(`partner: ${turn.text}`);
-
-const check = async (label, text) => {
-  const res = await post("/translate/coach", { text, session_id: session, thread_message_id: null, message_draft: text, draft_thread: [], check: true });
-  const body = await res.text();
-  const events = body.split("\n\n").filter(Boolean).map((block) => {
-    const ev = /^event: (.*)$/m.exec(block)?.[1];
-    const data = /^data: (.*)$/m.exec(block)?.[1];
-    return [ev, data ? JSON.parse(data) : null];
-  });
-  const ready = events.find(([e]) => e === "ready")?.[1]?.ready;
-  const reply = events.find(([e]) => e === "reply_complete")?.[1]?.reply;
-  const err = events.find(([e]) => e === "error")?.[1];
-  console.log(`\n=== ${label}: ${JSON.stringify(text)}\n  HTTP ${res.status} ready=${ready}${err ? ` error=${JSON.stringify(err)}` : ""}\n  coach: ${reply}`);
-  console.log(`  suggestion block: ${/\[\[/.test(reply ?? "") ? "yes" : "no"}`);
-};
-
-await check("right", "Me encanta nadar en el mar.");
-await check("right, sloppy punctuation/capitals", "me encanta nadar en el mar");
-await check("missing accent", "Me encanta nadar en el mar y tu?");
-await check("real mistake", "Me gusto nadar en la mar");
+const turn = await post("/chat/turn", { session_id: session, message: text });
+const g = await post("/chat/message/glosses", { message_id: turn.user_message_id });
+console.log(`=== ${text}`);
+for (const w of g.words ?? []) console.log(`  ${text.slice(w.start, w.end).padEnd(10)} -> ${w.gloss}${w.grammar ? `   [${w.grammar}]` : ""}`);
+for (const p of g.phrases ?? []) console.log(`  PHRASE "${text.slice(p.start, p.end)}" -> ${p.gloss}${p.note ? `   (${p.note})` : ""}`);
 await post(`/chat/history/clear?session_id=${session}`, {});

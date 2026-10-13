@@ -150,9 +150,13 @@ def gloss_message(
                 f"{intro}\n\n"
                 f"`words`: EVERY word in the message, one word per entry, in order (left to right), "
                 f"including short words like el, la, de, que, y, mi - skip only punctuation. Copy "
-                f"`surface` exactly as written (same spelling, case and accents). `gloss`: what that "
-                f"single word means here, as short as a dictionary entry - one to three words, e.g. "
-                f'"good", "to eat", "the", "you (informal)". No explanations in `gloss`. `grammar`: '
+                f"`surface` exactly as written (same spelling, case and accents). `gloss`: the word's "
+                f"OWN basic dictionary meaning - the sense that fits here, but never the meaning of an "
+                f"idiom or phrase it's part of (that goes in `phrases`, so the learner sees both and "
+                f'can connect them): in "seguir la broma" ("to play along"), seguir is "to follow", '
+                f'not "to play along"; in "echar de menos", echar is "to throw". As short as a '
+                f'dictionary entry - one to three words, e.g. "good", "to eat", "the", "you '
+                f'(informal)". No explanations in `gloss`. `grammar`: '
                 f"optional, in {native_name}, about the word's form - for a conjugated verb give the "
                 f'infinitive and its meaning, then person and tense, e.g. "comer (to eat): I, present" '
                 f'or "ir (to go): they, preterite"; for a plural, feminine, contracted (del, al) or '
