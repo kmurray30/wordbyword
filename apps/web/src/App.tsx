@@ -403,6 +403,8 @@ function App() {
       />
       {threadMessage && (
         <ThreadOverlay
+          key={threadMessage.id}
+          messageId={threadMessage.id}
           message={threadMessage}
           live={liveCoach && liveCoach.messageId === serverIdOf(threadMessage) ? liveCoach : null}
           sessionId={sessionId}
